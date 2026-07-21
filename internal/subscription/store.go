@@ -33,7 +33,7 @@ func NewStore(path string) (*Store, error) {
 	s := &Store{
 		path: path,
 		data: map[string]*apitypes.Subscription{},
-		http: &http.Client{Timeout: 30 * time.Second},
+		http: newUTLSClient(),
 	}
 	if err := s.load(); err != nil {
 		return nil, err
