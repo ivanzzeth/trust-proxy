@@ -1,0 +1,63 @@
+.qr-copy {
+  display: flex;
+  justify-content: center;
+  font-size: var(--text-sm);
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.peer-list {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-card);
+}
+
+.peer-item {
+  display: flex;
+  align-items: center;
+}
+
+.peer-item + .peer-item {
+  border-top: 1px solid var(--border);
+}
+
+.peer-item:hover {
+  background: var(--hover);
+}
+
+.peer-item:first-child {
+  border-radius: calc(var(--radius-card) - var(--radius-xs)) calc(var(--radius-card) - var(--radius-xs)) 0 0;
+}
+
+.peer-item:last-child {
+  border-radius: 0 0 calc(var(--radius-card) - var(--radius-xs)) calc(var(--radius-card) - var(--radius-xs));
+}
+
+.peer-item:only-child {
+  border-radius: calc(var(--radius-card) - var(--radius-xs));
+}
+
+.peer-item-main {
+  display: flex;
+  flex: 1;
+  gap: var(--space-10);
+  align-items: center;
+  min-width: 0;
+  padding: var(--space-12) var(--space-14);
+  font-size: var(--text-base);
+  color: inherit;
+  text-align: start;
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+}
+
+.peer-menu {
+  margin-inline-end: var(--space-8);
+}
+
+.peer-menu :global(.icon-button) {
+  width: 26px;
+  height: 26px;
+}
