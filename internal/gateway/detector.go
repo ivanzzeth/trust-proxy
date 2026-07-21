@@ -1,4 +1,4 @@
-package main
+package gateway
 
 import (
 	"context"
@@ -10,17 +10,16 @@ import (
 	N "github.com/sagernet/sing/common/network"
 )
 
-// detector implements adapter.ConnectionTracker. It is attached to the router
-// via Box.Router().AppendTracker and therefore sits on the data path: it
-// receives every connection the router *allows* (rejected connections are
-// short-circuited before this point, which under our default-deny whitelist
-// means the detector observes exactly the permitted egress).
+// detector implements adapter.ConnectionTracker. Attached via
+// Box.Router().AppendTracker, it sits on the data path and receives every
+// connection the router *allows* (rejected connections are short-circuited
+// before this point, so under default-deny it observes exactly permitted
+// egress).
 //
-// Milestone 1: telemetry stub. It logs each connection's metadata and returns
-// the connection unchanged (pass-through). This is the seam where the
-// detection engine grows next: reputation match, beaconing, abnormal upload /
-// producer-consumer ratio, exfil scoring — then act (wrap-and-close here, or
-// DELETE /connections/{id} via the Clash API).
+// Milestone 1: telemetry stub — logs each allowed connection and returns it
+// unchanged. This is the seam where detection (reputation, beaconing, abnormal
+// upload, exfil scoring) and enforcement (wrap-and-close, or Clash
+// DELETE /connections/{id}) will grow.
 type detector struct {
 	logger log.Logger
 }
@@ -42,7 +41,7 @@ func (d *detector) RoutedPacketConnection(ctx context.Context, conn N.PacketConn
 }
 
 // RoutedFlow is only invoked on the TUN gvisor flow path; nil is filtered out
-// by the router, so returning nil is safe while we are not running in TUN mode.
+// by the router, so returning nil is safe while not running in TUN mode.
 func (d *detector) RoutedFlow(ctx context.Context, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) tun.FlowTracker {
 	return nil
 }

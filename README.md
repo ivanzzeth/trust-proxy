@@ -23,11 +23,18 @@ make deps            # git submodule update --init --recursive
 ```
 sing-box 子模块跟踪 `testing` 分支——官方 dashboard 依赖的 `service/api` 尚未进入稳定 tag（v1.13.x 无此模块）。
 
-### 跑起来
+### 跑起来（单一二进制，子命令区分）
 ```bash
-make build           # 编译 Go 后端 -> ./trust-proxy
-make run             # 用 configs/config.json 启动
+make build                 # 编译 -> ./trust-proxy（默认带 with_clash_api）
+./trust-proxy serve        # 跑网关：sing-box + detection + 后端 /api(:9096)
+
+# 另开终端，CLI 即客户端（经 Go SDK 调后端）：
+./trust-proxy sub add https://airport.example/subscribe --name my-airport  # 订阅(上层 SDK)
+./trust-proxy sub ls
+./trust-proxy conn ls                     # 活动连接(底层 Clash 原语)
+./trust-proxy conn kill <id|all>          # 断连
 ```
+SDK 分层：`pkg/clash`（标准 Clash API 原语，可复用）+ `pkg/client`（trust-proxy 易用封装，组合 clash）。
 
 验证（白名单默认拒绝）：
 ```bash
@@ -62,7 +69,8 @@ make run             # 浏览器打开 http://127.0.0.1:9095/  (会跳 /dashboar
 |---|---|---|
 | 代理入站 (mixed) | `127.0.0.1:17070` | socks/http 混合，验证用 |
 | API / dashboard | `127.0.0.1:9095` | 官方 UI 对接口 (Connect/protobuf) |
-| Clash API | `127.0.0.1:9090` | 我们后端消费 (REST/WS)，secret=`trust-proxy` |
+| Clash API | `127.0.0.1:9090` | 底层 SDK(pkg/clash)消费 (REST/WS)，secret=`trust-proxy` |
+| 后端 /api | `127.0.0.1:9096` | 我们自己的 API，上层 SDK(pkg/client)消费（订阅等） |
 
 均绑 loopback。**别开 TUN / 别设系统代理**，以免与 Surge 等打架。
 
