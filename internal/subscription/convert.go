@@ -255,6 +255,170 @@ func fromTUIC(rest string) (string, string, int, map[string]any, bool) {
 	return "tuic", host, port, ob, true
 }
 
+// clashProxyToOutbound converts one Clash `proxies:` entry (already decoded
+// from YAML into a map) into a sing-box outbound. Clash is the format most
+// airports (and Clash Verge) serve/store, so this lets us consume a local
+// clash-verge profile via `sub add file://...`.
+func clashProxyToOutbound(p map[string]any) (proto, server string, port int, ob map[string]any, ok bool) {
+	typ := strings.ToLower(mstr(p, "type"))
+	server = mstr(p, "server")
+	port = mint(p, "port")
+	if server == "" || port == 0 {
+		return "", server, port, nil, false
+	}
+	ob = map[string]any{"tag": nz(mstr(p, "name"), typ+"-"+server), "server": server, "server_port": port}
+
+	switch typ {
+	case "vless":
+		ob["type"] = "vless"
+		ob["uuid"] = mstr(p, "uuid")
+		if fl := mstr(p, "flow"); fl != "" {
+			ob["flow"] = fl
+		}
+		applyClashTLS(ob, p, true)
+		applyClashTransport(ob, p)
+		return "vless", server, port, ob, true
+	case "vmess":
+		ob["type"] = "vmess"
+		ob["uuid"] = mstr(p, "uuid")
+		ob["alter_id"] = mint(p, "alterId")
+		ob["security"] = nz(mstr(p, "cipher"), "auto")
+		applyClashTLS(ob, p, false)
+		applyClashTransport(ob, p)
+		return "vmess", server, port, ob, true
+	case "trojan":
+		ob["type"] = "trojan"
+		ob["password"] = mstr(p, "password")
+		tls := map[string]any{"enabled": true, "server_name": nz(mstr(p, "sni"), mstr(p, "servername"), server)}
+		if boolOf(p, "skip-cert-verify") {
+			tls["insecure"] = true
+		}
+		ob["tls"] = tls
+		applyClashTransport(ob, p)
+		return "trojan", server, port, ob, true
+	case "ss", "shadowsocks":
+		ob["type"] = "shadowsocks"
+		ob["method"] = mstr(p, "cipher")
+		ob["password"] = mstr(p, "password")
+		return "shadowsocks", server, port, ob, true
+	case "hysteria2", "hy2":
+		ob["type"] = "hysteria2"
+		ob["password"] = mstr(p, "password")
+		tls := map[string]any{"enabled": true, "server_name": nz(mstr(p, "sni"), server)}
+		if boolOf(p, "skip-cert-verify") {
+			tls["insecure"] = true
+		}
+		ob["tls"] = tls
+		return "hysteria2", server, port, ob, true
+	case "tuic":
+		ob["type"] = "tuic"
+		ob["uuid"] = mstr(p, "uuid")
+		ob["password"] = mstr(p, "password")
+		tls := map[string]any{"enabled": true, "server_name": nz(mstr(p, "sni"), server)}
+		if boolOf(p, "skip-cert-verify") {
+			tls["insecure"] = true
+		}
+		ob["tls"] = tls
+		if cc := mstr(p, "congestion-controller"); cc != "" {
+			ob["congestion_control"] = cc
+		}
+		return "tuic", server, port, ob, true
+	default:
+		return "", server, port, nil, false
+	}
+}
+
+func applyClashTLS(ob, p map[string]any, isVless bool) {
+	if reality := msub(p, "reality-opts"); isVless && reality != nil {
+		tls := map[string]any{"enabled": true, "server_name": nz(mstr(p, "servername"), mstr(p, "sni"), mstr(p, "server"))}
+		r := map[string]any{"enabled": true, "public_key": mstr(reality, "public-key")}
+		if sid := mstr(reality, "short-id"); sid != "" {
+			r["short_id"] = sid
+		}
+		tls["reality"] = r
+		if fp := mstr(p, "client-fingerprint"); fp != "" {
+			tls["utls"] = map[string]any{"enabled": true, "fingerprint": fp}
+		}
+		ob["tls"] = tls
+		return
+	}
+	if !boolOf(p, "tls") {
+		return
+	}
+	tls := map[string]any{"enabled": true, "server_name": nz(mstr(p, "servername"), mstr(p, "sni"), mstr(p, "server"))}
+	if fp := mstr(p, "client-fingerprint"); fp != "" {
+		tls["utls"] = map[string]any{"enabled": true, "fingerprint": fp}
+	}
+	if boolOf(p, "skip-cert-verify") {
+		tls["insecure"] = true
+	}
+	ob["tls"] = tls
+}
+
+func applyClashTransport(ob, p map[string]any) {
+	switch mstr(p, "network") {
+	case "ws":
+		t := map[string]any{"type": "ws"}
+		if ws := msub(p, "ws-opts"); ws != nil {
+			if pth := mstr(ws, "path"); pth != "" {
+				t["path"] = pth
+			}
+			if hd := msub(ws, "headers"); hd != nil {
+				if h := mstr(hd, "Host"); h != "" {
+					t["headers"] = map[string]any{"Host": h}
+				}
+			}
+		}
+		ob["transport"] = t
+	case "grpc":
+		sn := ""
+		if g := msub(p, "grpc-opts"); g != nil {
+			sn = mstr(g, "grpc-service-name")
+		}
+		ob["transport"] = map[string]any{"type": "grpc", "service_name": sn}
+	}
+}
+
+func mstr(m map[string]any, k string) string {
+	if v, ok := m[k]; ok && v != nil {
+		if s, ok := v.(string); ok {
+			return s
+		}
+		return strconv.Itoa(mintVal(m[k]))
+	}
+	return ""
+}
+
+func mint(m map[string]any, k string) int { return mintVal(m[k]) }
+
+func mintVal(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case int64:
+		return int(n)
+	case float64:
+		return int(n)
+	case string:
+		i, _ := strconv.Atoi(n)
+		return i
+	default:
+		return 0
+	}
+}
+
+func msub(m map[string]any, k string) map[string]any {
+	if v, ok := m[k].(map[string]any); ok {
+		return v
+	}
+	return nil
+}
+
+func boolOf(m map[string]any, k string) bool {
+	b, _ := m[k].(bool)
+	return b
+}
+
 // ---- helpers ----
 
 func nz(vals ...string) string {

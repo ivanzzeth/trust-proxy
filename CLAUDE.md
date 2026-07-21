@@ -33,8 +33,10 @@
 | **检测面** 异常/外泄识别 + 处置 | 🟡 里程碑 1（遥测 stub 已跑通） | `detector.go` 实现 `adapter.ConnectionTracker`，经 `Box.Router().AppendTracker` 挂上；当前记录每条放行连接，后续长检测算法 + 处置（wrap-close / Clash `DELETE /connections/{id}`） |
 
 ### 订阅 → apply（热重载）
-- `internal/subscription`：抓取订阅 URL → 解析成节点（每个带完整 sing-box outbound JSON）。解析支持：① **sing-box JSON**（直取 outbounds，无损）② base64/明文 **share 链**（vless/trojan/ss/vmess/hysteria2/tuic，见 `convert.go`）。**Clash YAML 暂不支持**。
-- **UA 门控**：机场常按 User-Agent 放行，generic UA 会 403。默认 UA=`clash-verge/v2.0.0`，可 `sub add --ua` 覆盖。**注意：机房/风险 IP 可能被机场拒发订阅内容——真实订阅要在本机（住宅 IP）测。**
+- `internal/subscription`：抓取订阅 → 解析成节点（每个带完整 sing-box outbound JSON）。解析支持：① **sing-box JSON**（直取 outbounds，无损）② **Clash YAML**（`proxies:` → outbound，见 `convert.go` 的 `clashProxyToOutbound`）③ base64/明文 **share 链**（vless/trojan/ss/vmess/hysteria2/tuic）。协议均覆盖 reality/tls/utls + ws/grpc。
+- **抓取来源**：http(s) URL，或 **`file://本地路径`**（`sub add file:///...`，绕过网络）。
+- **WAF / 客户端指纹（实测坑）**：部分机场做 TLS/HTTP 指纹识别，只放行 mihomo/clash 内核的请求——curl 得到风控页、裸 Go `net/http` 直接被 reset(EOF)，只有 clash-verge 能抓到。**结论：不硬怼指纹**。绕过办法：让 clash-verge 抓好后，`sub add file://` 指向其本地 profile（macOS: `~/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/*.yaml`）。
+- **UA 门控**：默认 UA=`clash-verge/v2.0.0`，可 `sub add --ua` 覆盖。**部署在机房时抓订阅会被 hosting-IP 拦**（未来用 `--via <节点>` 经已有节点抓）。
 - `gateway.Manager.Apply(nodes)`：JSON 层把节点 outbound 注入配置、把 `proxy` 组重建为 `urltest`（0 节点则退回 `selector[direct]`）→ `buildBox`(fresh ctx+parse+New+AppendTracker) → **先建新 box 成功才关旧的**（配置错误则旧 box 完好、apply 报错，不中断服务）→ Start 新 box。约束：sing-box 库模式无粒度热更，reload=重建实例，重建期间监听端口有短暂 blip。
 - **apply 后**：白名单放行的流量走 `proxy` 组（即经订阅节点出网）。apply 死节点会导致放行流量断（urltest 无健康节点）；重启 serve 回到 base（proxy=selector[direct]）。
 

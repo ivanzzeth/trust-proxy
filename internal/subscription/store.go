@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -189,6 +190,16 @@ func (s *Store) Refresh(id string) (apitypes.Subscription, error) {
 }
 
 func (s *Store) fetchAndParse(url, userAgent string) ([]apitypes.Node, error) {
+	// Local import: bypass the network entirely (useful when the airport's WAF
+	// blocks non-official clients — point at a clash-verge profile instead).
+	if path, ok := strings.CutPrefix(url, "file://"); ok {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		return Parse(b), nil
+	}
+
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err

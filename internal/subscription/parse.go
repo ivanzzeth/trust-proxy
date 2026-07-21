@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
@@ -19,6 +21,9 @@ func Parse(body []byte) []apitypes.Node {
 	text := strings.TrimSpace(string(body))
 
 	if nodes, ok := parseSingBoxJSON(text); ok {
+		return nodes
+	}
+	if nodes, ok := parseClashYAML(text); ok {
 		return nodes
 	}
 	if decoded, ok := tryBase64Blob(text); ok {
@@ -69,6 +74,28 @@ func parseSingBoxJSON(text string) ([]apitypes.Node, bool) {
 		nodes = append(nodes, apitypes.Node{
 			Tag: meta.Tag, Protocol: meta.Type, Server: meta.Server, Port: meta.Port, Outbound: raw,
 		})
+	}
+	return nodes, len(nodes) > 0
+}
+
+func parseClashYAML(text string) ([]apitypes.Node, bool) {
+	if !strings.Contains(text, "proxies:") {
+		return nil, false
+	}
+	var doc struct {
+		Proxies []map[string]any `yaml:"proxies"`
+	}
+	if err := yaml.Unmarshal([]byte(text), &doc); err != nil || len(doc.Proxies) == 0 {
+		return nil, false
+	}
+	var nodes []apitypes.Node
+	for _, p := range doc.Proxies {
+		if proto, server, port, ob, ok := clashProxyToOutbound(p); ok {
+			raw, _ := json.Marshal(ob)
+			nodes = append(nodes, apitypes.Node{
+				Tag: tagOf(ob), Protocol: proto, Server: server, Port: port, Outbound: raw,
+			})
+		}
 	}
 	return nodes, len(nodes) > 0
 }
