@@ -3,6 +3,12 @@
     "level": "info",
     "timestamp": true
   },
+  "experimental": {
+    "clash_api": {
+      "external_controller": "127.0.0.1:9090",
+      "secret": "trust-proxy"
+    }
+  },
   "inbounds": [
     {
       "type": "mixed",
@@ -19,14 +25,29 @@
   ],
   "route": {
     "rules": [
-      {
-        "action": "sniff"
-      },
+      { "action": "sniff" },
       {
         "domain_suffix": [
-          "ads.doubleclick.net",
-          "blocked-demo.example.com"
+          "example.com",
+          "api.ipify.org",
+          "github.com",
+          "githubusercontent.com"
         ],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "ip_cidr": [
+          "127.0.0.0/8",
+          "10.0.0.0/8",
+          "172.16.0.0/12",
+          "192.168.0.0/16"
+        ],
+        "action": "route",
+        "outbound": "direct"
+      },
+      {
+        "network": ["tcp", "udp"],
         "action": "reject"
       }
     ],

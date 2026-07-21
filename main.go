@@ -64,15 +64,14 @@ func run(configPath string, logger log.Logger) error {
 		return err
 	}
 
+	// Attach our detection engine to the data path. AppendTracker must be
+	// called before connections start flowing, i.e. before Start().
+	instance.Router().AppendTracker(newDetector(logger))
+
 	if err = instance.Start(); err != nil {
 		return err
 	}
 	logger.Info("trust-proxy started")
-
-	// ---- future hook (milestone 1) --------------------------------------
-	// instance.Router().AppendTracker(myTracker) // feed every routed conn
-	// into our detection engine. adapter.ConnectionTracker is the interface.
-	// ---------------------------------------------------------------------
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)

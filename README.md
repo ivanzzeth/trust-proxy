@@ -4,7 +4,8 @@
 
 - **数据面**：Go 后端以库方式 `import` sing-box（`third_party/sing-box` 子模块），负责代理、路由、分流、连接跟踪。
 - **控制面 / UI**：克隆官方 [sing-box-dashboard](https://github.com/SagerNet/sing-box-dashboard)（React 19 + Vite + TS）自行维护，通过 sing-box 内置的 `service/api`（Connect/protobuf daemon）通信。
-- **检测层（后续）**：通过 `route.Router.AppendTracker` 把每条连接喂进自研检测引擎，做 C2 信誉匹配、beaconing、异常上行、数据外泄识别，并以 `reject` / 断连处置。
+- **检测层**：`detector.go` 通过 `route.Router.AppendTracker` 把每条**放行**连接喂进自研引擎（当前为遥测 stub），后续做 C2 信誉匹配、beaconing、异常上行、数据外泄识别，并以断连处置。
+- **安全模型**：出网**白名单默认拒绝**（allow-list 放行 + 末尾 `reject` 兜底）。黑名单追不完，白名单才能卡死木马向任意 C2 回传。
 
 > 自用部署，不分发二进制，故不触发 sing-box 的 GPLv3 分发义务。
 
@@ -28,14 +29,18 @@ make build           # 编译 Go 后端 -> ./trust-proxy
 make run             # 用 configs/config.json 启动
 ```
 
-验证：
+验证（白名单默认拒绝）：
 ```bash
-# 代理出网
-curl -x socks5h://127.0.0.1:17070 https://api.ipify.org
-# 域名管控：命中黑名单被拒
-curl -x socks5h://127.0.0.1:17070 https://ads.doubleclick.net   # 连接失败 (reject)
-curl -x socks5h://127.0.0.1:17070 https://example.com           # 200 (放行)
+# 白名单内 -> 放行
+curl -x socks5h://127.0.0.1:17070 https://api.ipify.org         # 200
+curl -x socks5h://127.0.0.1:17070 https://example.com           # 200
+# 非白名单 -> 默认拒绝
+curl -x socks5h://127.0.0.1:17070 https://www.google.com        # 连接失败 (reject)
+# detector 遥测（每条放行连接）在 stdout：形如 "[detector] allow tcp host=... rule=... out=..."
+# Clash API：
+curl -H "Authorization: Bearer trust-proxy" http://127.0.0.1:9090/connections
 ```
+在 `configs/config.json` 的 `route.rules` 里增删 `domain_suffix` / `ip_cidr` 白名单条目即可调整放行范围。
 
 ### 接官方 WebUI（已在本仓 webui/ 落地并验证）
 ```bash
@@ -56,7 +61,8 @@ make run             # 浏览器打开 http://127.0.0.1:9095/  (会跳 /dashboar
 | 服务 | 地址 | 说明 |
 |---|---|---|
 | 代理入站 (mixed) | `127.0.0.1:17070` | socks/http 混合，验证用 |
-| API / dashboard | `127.0.0.1:9095` | 官方 UI 对接口 |
+| API / dashboard | `127.0.0.1:9095` | 官方 UI 对接口 (Connect/protobuf) |
+| Clash API | `127.0.0.1:9090` | 我们后端消费 (REST/WS)，secret=`trust-proxy` |
 
 均绑 loopback。**别开 TUN / 别设系统代理**，以免与 Surge 等打架。
 

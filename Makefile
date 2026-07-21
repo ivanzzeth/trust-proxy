@@ -1,12 +1,12 @@
 SING_BOX_DIR := third_party/sing-box
 WEBUI_DIR    := webui
 
-# Build tags: milestone 0 needs none (the api service is compiled unconditionally).
-# Add more as features come online, e.g.:
-#   with_clash_api  -> also expose the Clash REST/WS API (for zashboard/metacubexd)
-#   with_quic       -> Hysteria2 / TUIC / QUIC sniffing
-#   with_utls       -> uTLS fingerprints
-TAGS ?=
+# Build tags. with_clash_api exposes the Clash REST/WS API our own backend
+# consumes (connections / traffic / logs / DELETE connection). Add more as
+# features come online, e.g.:
+#   with_quic   -> Hysteria2 / TUIC / QUIC sniffing
+#   with_utls   -> uTLS fingerprints
+TAGS ?= with_clash_api
 
 .PHONY: run build tidy webui webui-dev deps clean
 
