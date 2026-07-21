@@ -37,20 +37,17 @@ func init() {
 }
 
 func runServe() error {
-	instance, _, err := gateway.Bootstrap(serveConfig)
-	if err != nil {
+	mgr := gateway.NewManager(serveConfig)
+	if err := mgr.Start(); err != nil {
 		return err
 	}
-	if err = instance.Start(); err != nil {
-		return err
-	}
-	defer instance.Close()
+	defer mgr.Close()
 
 	store, err := subscription.NewStore(serveDataDir + "/subscriptions.json")
 	if err != nil {
 		return err
 	}
-	apiSrv := api.NewServer(serveAPIAddr, store)
+	apiSrv := api.NewServer(serveAPIAddr, store, mgr)
 	go func() {
 		if err := apiSrv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Println("backend api:", err)

@@ -62,10 +62,18 @@ func (c *Client) ListSubscriptions() ([]apitypes.Subscription, error) {
 	return out, err
 }
 
-// AddSubscription registers and refreshes a subscription.
-func (c *Client) AddSubscription(name, url string) (apitypes.Subscription, error) {
+// AddSubscription registers and refreshes a subscription. userAgent may be
+// empty to use the server default.
+func (c *Client) AddSubscription(name, url, userAgent string) (apitypes.Subscription, error) {
 	var out apitypes.Subscription
-	err := c.do(http.MethodPost, "/api/subscriptions", apitypes.AddSubscriptionRequest{Name: name, URL: url}, &out)
+	err := c.do(http.MethodPost, "/api/subscriptions", apitypes.AddSubscriptionRequest{Name: name, URL: url, UserAgent: userAgent}, &out)
+	return out, err
+}
+
+// ApplySubscription applies a subscription's nodes to the running gateway.
+func (c *Client) ApplySubscription(id string) (apitypes.Subscription, error) {
+	var out apitypes.Subscription
+	err := c.do(http.MethodPost, "/api/subscriptions/"+id+"/apply", nil, &out)
 	return out, err
 }
 

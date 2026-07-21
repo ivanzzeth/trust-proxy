@@ -42,14 +42,17 @@ var subLsCmd = &cobra.Command{
 	},
 }
 
-var subAddName string
+var (
+	subAddName string
+	subAddUA   string
+)
 
 var subAddCmd = &cobra.Command{
 	Use:   "add <url>",
 	Short: "Add (and fetch) a subscription",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		s, err := sdk().AddSubscription(subAddName, args[0])
+		s, err := sdk().AddSubscription(subAddName, args[0], subAddUA)
 		if err != nil {
 			return err
 		}
@@ -57,6 +60,20 @@ var subAddCmd = &cobra.Command{
 		if s.LastError != "" {
 			fmt.Printf("   ! last error: %s\n", s.LastError)
 		}
+		return nil
+	},
+}
+
+var subApplyCmd = &cobra.Command{
+	Use:   "apply <id>",
+	Short: "Apply a subscription's nodes to the running gateway (hot reload)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		s, err := sdk().ApplySubscription(args[0])
+		if err != nil {
+			return err
+		}
+		fmt.Printf("applied %s (%s): %d nodes now live in the `proxy` group\n", s.ID, s.Name, s.NodeCount)
 		return nil
 	},
 }
@@ -91,7 +108,8 @@ var subRefreshCmd = &cobra.Command{
 func init() {
 	subCmd.PersistentFlags().StringVar(&apiAddr, "api-addr", "127.0.0.1:9096", "backend API address")
 	subAddCmd.Flags().StringVar(&subAddName, "name", "", "friendly name")
-	subCmd.AddCommand(subLsCmd, subAddCmd, subRmCmd, subRefreshCmd)
+	subAddCmd.Flags().StringVar(&subAddUA, "ua", "", "User-Agent for fetching (default: clash-verge/v2.0.0)")
+	subCmd.AddCommand(subLsCmd, subAddCmd, subApplyCmd, subRmCmd, subRefreshCmd)
 }
 
 func sdk() *client.Client {

@@ -103,18 +103,42 @@ func idFor(url string) string {
 	return hex.EncodeToString(sum[:])[:12]
 }
 
+// DefaultUserAgent is what we send when fetching a subscription. Many airports
+// gate by UA (a generic curl UA gets a 403), so we default to a common client.
+const DefaultUserAgent = "clash-verge/v2.0.0"
+
 // Add registers a subscription (id derived from URL, so re-adding is
 // idempotent) and immediately refreshes it.
-func (s *Store) Add(name, url string) (apitypes.Subscription, error) {
+func (s *Store) Add(name, url, userAgent string) (apitypes.Subscription, error) {
 	id := idFor(url)
+	if userAgent == "" {
+		userAgent = DefaultUserAgent
+	}
 	s.mu.Lock()
 	if _, exists := s.data[id]; !exists {
-		s.data[id] = &apitypes.Subscription{ID: id, Name: name, URL: url}
-	} else if name != "" {
-		s.data[id].Name = name
+		s.data[id] = &apitypes.Subscription{ID: id, Name: name, URL: url, UserAgent: userAgent}
+	} else {
+		if name != "" {
+			s.data[id].Name = name
+		}
+		s.data[id].UserAgent = userAgent
 	}
 	s.mu.Unlock()
 	return s.Refresh(id)
+}
+
+// SetApplied marks id as the applied subscription (and clears the flag on the
+// others, since the data plane runs one subscription at a time).
+func (s *Store) SetApplied(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.data[id]; !ok {
+		return fmt.Errorf("subscription %q not found", id)
+	}
+	for k, sub := range s.data {
+		sub.Applied = k == id
+	}
+	return s.save()
 }
 
 // Delete removes a subscription.
@@ -133,16 +157,16 @@ func (s *Store) Delete(id string) error {
 func (s *Store) Refresh(id string) (apitypes.Subscription, error) {
 	s.mu.Lock()
 	sub, ok := s.data[id]
-	url := ""
+	url, ua := "", ""
 	if ok {
-		url = sub.URL
+		url, ua = sub.URL, sub.UserAgent
 	}
 	s.mu.Unlock()
 	if !ok {
 		return apitypes.Subscription{}, fmt.Errorf("subscription %q not found", id)
 	}
 
-	nodes, ferr := s.fetchAndParse(url)
+	nodes, ferr := s.fetchAndParse(url, ua)
 
 	s.mu.Lock()
 	sub = s.data[id]
@@ -164,12 +188,15 @@ func (s *Store) Refresh(id string) (apitypes.Subscription, error) {
 	return result, saveErr
 }
 
-func (s *Store) fetchAndParse(url string) ([]apitypes.Node, error) {
+func (s *Store) fetchAndParse(url, userAgent string) ([]apitypes.Node, error) {
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "trust-proxy")
+	if userAgent == "" {
+		userAgent = DefaultUserAgent
+	}
+	req.Header.Set("User-Agent", userAgent)
 	resp, err := s.http.Do(req)
 	if err != nil {
 		return nil, err

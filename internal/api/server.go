@@ -14,21 +14,29 @@ import (
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
-// Server exposes /api/* backed by the subscription store.
+// Applier applies subscription nodes to the running data plane (implemented by
+// gateway.Manager).
+type Applier interface {
+	Apply(nodes []apitypes.Node) error
+}
+
+// Server exposes /api/* backed by the subscription store and gateway.
 type Server struct {
 	httpSrv *http.Server
 	store   *subscription.Store
+	applier Applier
 }
 
 // NewServer builds the API server bound to addr.
-func NewServer(addr string, store *subscription.Store) *Server {
-	s := &Server{store: store}
+func NewServer(addr string, store *subscription.Store, applier Applier) *Server {
+	s := &Server{store: store, applier: applier}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/subscriptions", s.handleListSubs)
 	mux.HandleFunc("POST /api/subscriptions", s.handleAddSub)
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.handleDeleteSub)
 	mux.HandleFunc("POST /api/subscriptions/{id}/refresh", s.handleRefreshSub)
+	mux.HandleFunc("POST /api/subscriptions/{id}/apply", s.handleApplySub)
 	s.httpSrv = &http.Server{
 		Addr:              addr,
 		Handler:           mux,
@@ -61,7 +69,7 @@ func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "url is required")
 		return
 	}
-	sub, err := s.store.Add(req.Name, req.URL)
+	sub, err := s.store.Add(req.Name, req.URL, req.UserAgent)
 	if err != nil {
 		// Add still persists the subscription even if the first refresh fails;
 		// return 201 with LastError populated so the client sees the reason.
@@ -87,6 +95,27 @@ func (s *Server) handleRefreshSub(w http.ResponseWriter, r *http.Request) {
 		}
 		log.Println("subscription refresh:", err)
 	}
+	writeJSON(w, http.StatusOK, sub)
+}
+
+func (s *Server) handleApplySub(w http.ResponseWriter, r *http.Request) {
+	sub, ok := s.store.Get(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "subscription not found")
+		return
+	}
+	if s.applier == nil {
+		writeErr(w, http.StatusServiceUnavailable, "gateway applier not available")
+		return
+	}
+	if err := s.applier.Apply(sub.Nodes); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.store.SetApplied(sub.ID); err != nil {
+		log.Println("mark applied:", err)
+	}
+	sub, _ = s.store.Get(sub.ID)
 	writeJSON(w, http.StatusOK, sub)
 }
 

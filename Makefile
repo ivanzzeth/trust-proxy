@@ -1,12 +1,12 @@
 SING_BOX_DIR := third_party/sing-box
 WEBUI_DIR    := webui
 
-# Build tags. with_clash_api exposes the Clash REST/WS API our own backend
-# consumes (connections / traffic / logs / DELETE connection). Add more as
-# features come online, e.g.:
-#   with_quic   -> Hysteria2 / TUIC / QUIC sniffing
-#   with_utls   -> uTLS fingerprints
-TAGS ?= with_clash_api
+# Build tags:
+#   with_clash_api -> Clash REST/WS API our backend consumes (pkg/clash)
+#   with_quic      -> Hysteria2 / TUIC / QUIC (common in real subscriptions)
+#   with_utls      -> uTLS fingerprints (vless reality/tls fp)
+#   with_grpc      -> full gRPC transport (there is a lite fallback without it)
+TAGS ?= with_clash_api with_quic with_utls with_grpc
 
 .PHONY: run build tidy webui webui-dev deps clean
 

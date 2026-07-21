@@ -21,6 +21,11 @@
     {
       "type": "direct",
       "tag": "direct"
+    },
+    {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": ["direct"]
     }
   ],
   "route": {
@@ -34,7 +39,7 @@
           "githubusercontent.com"
         ],
         "action": "route",
-        "outbound": "direct"
+        "outbound": "proxy"
       },
       {
         "ip_cidr": [

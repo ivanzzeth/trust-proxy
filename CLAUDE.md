@@ -32,6 +32,12 @@
 | **控制面/UI** | ✅ 里程碑 0 | 官方 dashboard（`webui/`），走 sing-box 内置 `service/api`（Connect/protobuf daemon，**非 Clash REST**） |
 | **检测面** 异常/外泄识别 + 处置 | 🟡 里程碑 1（遥测 stub 已跑通） | `detector.go` 实现 `adapter.ConnectionTracker`，经 `Box.Router().AppendTracker` 挂上；当前记录每条放行连接，后续长检测算法 + 处置（wrap-close / Clash `DELETE /connections/{id}`） |
 
+### 订阅 → apply（热重载）
+- `internal/subscription`：抓取订阅 URL → 解析成节点（每个带完整 sing-box outbound JSON）。解析支持：① **sing-box JSON**（直取 outbounds，无损）② base64/明文 **share 链**（vless/trojan/ss/vmess/hysteria2/tuic，见 `convert.go`）。**Clash YAML 暂不支持**。
+- **UA 门控**：机场常按 User-Agent 放行，generic UA 会 403。默认 UA=`clash-verge/v2.0.0`，可 `sub add --ua` 覆盖。**注意：机房/风险 IP 可能被机场拒发订阅内容——真实订阅要在本机（住宅 IP）测。**
+- `gateway.Manager.Apply(nodes)`：JSON 层把节点 outbound 注入配置、把 `proxy` 组重建为 `urltest`（0 节点则退回 `selector[direct]`）→ `buildBox`(fresh ctx+parse+New+AppendTracker) → **先建新 box 成功才关旧的**（配置错误则旧 box 完好、apply 报错，不中断服务）→ Start 新 box。约束：sing-box 库模式无粒度热更，reload=重建实例，重建期间监听端口有短暂 blip。
+- **apply 后**：白名单放行的流量走 `proxy` 组（即经订阅节点出网）。apply 死节点会导致放行流量断（urltest 无健康节点）；重启 serve 回到 base（proxy=selector[direct]）。
+
 ### 安全模型：白名单默认拒绝（重要）
 出网默认**拒绝**，只放行 allow-list。黑名单追不完，白名单「未知即拒」才能卡死木马向任意 C2 回传。
 sing-box 里的写法（`configs/config.json` 的 `route.rules`，顺序敏感）：
@@ -184,7 +190,7 @@ curl -x socks5h://127.0.0.1:17070 https://example.com            # 正常 -> 200
 
 ## 路线图
 - **里程碑 0（✅）** 全栈跑通：Go 嵌入 sing-box + 代理 + 官方监控 UI。
-- **里程碑 1（🟡 进行中）** ✅白名单默认拒绝 + ✅`AppendTracker` 检测器遥测 stub + ✅Clash API + ✅单一二进制 CLI/SDK 分层 + ✅订阅管理（抓取/解析/存储 + `sub` CLI）。**待做**：订阅节点→生成 sing-box outbound→热重载（apply）；自动处置闭环（检测异常 → `conn kill`）。
+- **里程碑 1（🟡 进行中）** ✅白名单默认拒绝 + ✅`AppendTracker` 检测器遥测 stub + ✅Clash API + ✅单一二进制 CLI/SDK 分层 + ✅订阅管理（抓取/解析/存储）+ ✅**订阅 apply（转换成 sing-box outbound + 热重载进 `proxy` 组）**。**待做**：自动处置闭环（检测异常 → `conn kill`）。
 - **里程碑 2** 自建 React 应用（管理+安全）：白名单管理 + 连接/告警视图，接 `pkg/client`/`/api`。
 - **后续** 元数据检测（信誉/beaconing/异常上行/进程归属）→ DPI/JA4/DLP（镜像明文腿）。
 
