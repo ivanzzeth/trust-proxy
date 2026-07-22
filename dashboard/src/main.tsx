@@ -13,6 +13,7 @@ import Profiles from '@/pages/profiles';
 import Whitelist from '@/pages/whitelist';
 import RuleSets from '@/pages/rulesets';
 import Proxies from '@/pages/proxies';
+import Rules from '@/pages/rules';
 import Logs from '@/pages/logs';
 import DNS from '@/pages/dns';
 import History from '@/pages/history';
@@ -34,6 +35,7 @@ const router = createHashRouter([
       { path: 'whitelist', element: <Whitelist /> },
       { path: 'rulesets', element: <RuleSets /> },
       { path: 'proxies', element: <Proxies /> },
+      { path: 'rules', element: <Rules /> },
       { path: 'dns', element: <DNS /> },
       { path: 'history', element: <History /> },
       { path: 'logs', element: <Logs /> },

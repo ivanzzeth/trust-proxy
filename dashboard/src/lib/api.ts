@@ -144,6 +144,11 @@ export interface ProxyNode {
   udp?: boolean;
   history?: { delay: number }[];
 }
+export interface ClashRule {
+  type: string;
+  payload: string;
+  proxy: string;
+}
 export interface Profile {
   id: string;
   name: string;
@@ -247,6 +252,7 @@ export const api = {
   proxies: () => get<{ proxies: Record<string, ProxyNode> }>('/proxies'),
   selectProxy: (group: string, name: string) => put<void>('/proxies/select', { group, name }),
   delay: (name: string) => get<{ delay: number; error?: string }>(`/proxies/${encodeURIComponent(name)}/delay?timeout=3000`),
+  rules: () => get<{ rules: ClashRule[] }>('/rules'),
 
   profiles: () => get<Profile[]>('/profiles'),
   addProfile: (name: string) => post<Profile>('/profiles', { name }),

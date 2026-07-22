@@ -24,6 +24,20 @@ func (s *Server) handleProxies(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(b)
 }
 
+func (s *Server) handleRules(w http.ResponseWriter, r *http.Request) {
+	if s.clash == nil {
+		writeErr(w, http.StatusServiceUnavailable, "clash api not available")
+		return
+	}
+	b, err := s.clash.GetRaw("/rules")
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(b)
+}
+
 func (s *Server) handleSelectProxy(w http.ResponseWriter, r *http.Request) {
 	if s.clash == nil {
 		writeErr(w, http.StatusServiceUnavailable, "clash api not available")
