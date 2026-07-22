@@ -49,7 +49,9 @@ make build           # 编译 -> ./trust-proxy（默认 tags：clash_api quic ut
 #   协议: shadowsocks | vless-reality | vless | vmess | trojan | anytls | hysteria2 | tuic
 #   输出：服务端 config + 客户端节点(Clash dict，可粘进控制台导入)
 #   TLS 类自动内联自签证书(客户端 skip-cert-verify)；vless-reality 免证书自动生成密钥对
-./trust-proxy proxy run -c server.json          # 在服务器上运行
+./trust-proxy proxy run -c server.json              # 前台运行
+./trust-proxy proxy run -c server.json --daemon     # 后台守护（脱离终端，SSH 断开不受影响）
+./trust-proxy proxy stop                            # 停止守护进程（读 trust-proxy.pid）
 ```
 
 ## TUN 全流量网关

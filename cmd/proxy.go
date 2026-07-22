@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -29,12 +30,23 @@ var proxyCmd = &cobra.Command{
 
 // ---- proxy run ----
 
-var proxyRunConfig string
+var (
+	proxyRunConfig string
+	proxyDaemon    bool
+	proxyLog       string
+	proxyPid       string
+)
 
 var proxyRunCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run a sing-box server config (inbound protocol -> direct out)",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Built-in daemon: re-exec detached (survives SSH logout) unless we're
+		// already the daemon child.
+		if proxyDaemon && os.Getenv("TP_DAEMON") == "" {
+			return daemonize(proxyLog, proxyPid)
+		}
+
 		content, err := os.ReadFile(proxyRunConfig)
 		if err != nil {
 			return err
@@ -99,8 +111,37 @@ var proxyGenCmd = &cobra.Command{
 	},
 }
 
+var proxyStopCmd = &cobra.Command{
+	Use:   "stop",
+	Short: "Stop a daemonized proxy server (reads --pid file)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		b, err := os.ReadFile(proxyPid)
+		if err != nil {
+			return fmt.Errorf("read pid file %s: %w", proxyPid, err)
+		}
+		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
+		if err != nil {
+			return fmt.Errorf("bad pid file: %w", err)
+		}
+		p, err := os.FindProcess(pid)
+		if err != nil {
+			return err
+		}
+		if err := p.Signal(syscall.SIGTERM); err != nil {
+			return fmt.Errorf("signal pid %d: %w", pid, err)
+		}
+		_ = os.Remove(proxyPid)
+		fmt.Printf("stopped pid %d\n", pid)
+		return nil
+	},
+}
+
 func init() {
 	proxyRunCmd.Flags().StringVarP(&proxyRunConfig, "config", "c", "server.json", "server config path")
+	proxyRunCmd.Flags().BoolVarP(&proxyDaemon, "daemon", "d", false, "run in background (detached; survives SSH logout)")
+	proxyRunCmd.Flags().StringVar(&proxyLog, "log", "trust-proxy.log", "daemon log file")
+	proxyRunCmd.Flags().StringVar(&proxyPid, "pid", "trust-proxy.pid", "daemon pid file")
+	proxyStopCmd.Flags().StringVar(&proxyPid, "pid", "trust-proxy.pid", "pid file to stop")
 	f := proxyGenCmd.Flags()
 	f.StringVar(&genType, "type", "vless-reality", strings.Join(proxygen.Protocols, " | "))
 	f.IntVar(&genPort, "port", 443, "listen port")
@@ -108,5 +149,5 @@ func init() {
 	f.StringVar(&genSNI, "sni", "", "TLS/Reality SNI (default www.microsoft.com)")
 	f.StringVar(&genName, "name", "", "node name")
 	f.StringVar(&genOut, "out", "", "write server config to file (default stdout)")
-	proxyCmd.AddCommand(proxyRunCmd, proxyGenCmd)
+	proxyCmd.AddCommand(proxyRunCmd, proxyGenCmd, proxyStopCmd)
 }
