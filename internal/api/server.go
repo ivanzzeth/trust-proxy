@@ -18,6 +18,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
+	"github.com/ivanzzeth/trust-proxy/internal/endpoints"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/inbound"
@@ -77,6 +78,11 @@ type TUNApplier interface {
 	SetTUN(apitypes.TUNConfig) error
 }
 
+// EndpointsApplier hot-reloads WireGuard/Tailscale exits (gateway.Manager).
+type EndpointsApplier interface {
+	SetEndpoints([]apitypes.Endpoint) error
+}
+
 // Options configures the API server.
 type Options struct {
 	Addr        string
@@ -98,6 +104,8 @@ type Options struct {
 	InbApplier  InboundApplier
 	TUN         *tuncfg.Store
 	TUNApplier  TUNApplier
+	Endpoints   *endpoints.Store
+	EPApplier   EndpointsApplier
 	History     *history.Store
 	Nodes       *nodes.Store // brain: registry of remote gateways (reverse-proxied)
 	Token       string       // if set, /api/* requires this bearer token (probe mode)
@@ -127,6 +135,8 @@ type Server struct {
 	inbApplier  InboundApplier
 	tun         *tuncfg.Store
 	tunApplier  TUNApplier
+	eps         *endpoints.Store
+	epApplier   EndpointsApplier
 	history     *history.Store
 	nodes       *nodes.Store
 	token       string
@@ -137,7 +147,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -180,6 +190,10 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("GET /api/inbound", s.handleGetInbound)
 	mux.HandleFunc("PUT /api/inbound", s.handleSetInbound)
 	mux.HandleFunc("GET /api/tun", s.handleGetTUN)
+	mux.HandleFunc("GET /api/endpoints", s.handleListEndpoints)
+	mux.HandleFunc("POST /api/endpoints", s.handleAddEndpoint)
+	mux.HandleFunc("PATCH /api/endpoints/{tag}", s.handlePatchEndpoint)
+	mux.HandleFunc("DELETE /api/endpoints/{tag}", s.handleDeleteEndpoint)
 	mux.HandleFunc("PUT /api/tun", s.handleSetTUN)
 	mux.HandleFunc("GET /api/profiles", s.handleListProfiles)
 	mux.HandleFunc("POST /api/profiles", s.handleAddProfile)

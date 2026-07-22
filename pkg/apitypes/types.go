@@ -178,6 +178,46 @@ type TUNConfig struct {
 	ExcludeProcess []string `json:"exclude_process,omitempty"` // process names routed AROUND the tun
 }
 
+// Endpoint is a WireGuard or Tailscale exit (sing-box `endpoints[]`). Enabled
+// endpoints join the `proxy` group so whitelisted traffic can egress through
+// them. Secret fields (private_key/pre_shared_key/auth_key) are never returned
+// to the browser (see EndpointPublic).
+type Endpoint struct {
+	Tag     string `json:"tag"`
+	Type    string `json:"type"` // "wireguard" | "tailscale"
+	Enabled bool   `json:"enabled"`
+
+	// wireguard
+	Address             []string `json:"address,omitempty"` // local CIDRs
+	PrivateKey          string   `json:"private_key,omitempty"`
+	MTU                 int      `json:"mtu,omitempty"`
+	PeerPublicKey       string   `json:"peer_public_key,omitempty"`
+	PeerPreSharedKey    string   `json:"peer_pre_shared_key,omitempty"`
+	PeerEndpoint        string   `json:"peer_endpoint,omitempty"` // host:port
+	AllowedIPs          []string `json:"allowed_ips,omitempty"`
+	PersistentKeepalive int      `json:"persistent_keepalive,omitempty"`
+
+	// tailscale
+	AuthKey      string `json:"auth_key,omitempty"`
+	Hostname     string `json:"hostname,omitempty"`
+	ExitNode     string `json:"exit_node,omitempty"`
+	AcceptRoutes bool   `json:"accept_routes,omitempty"`
+}
+
+// EndpointPublic is an Endpoint with secrets stripped (browser-safe list view).
+type EndpointPublic struct {
+	Tag          string   `json:"tag"`
+	Type         string   `json:"type"`
+	Enabled      bool     `json:"enabled"`
+	Address      []string `json:"address,omitempty"`
+	MTU          int      `json:"mtu,omitempty"`
+	PeerEndpoint string   `json:"peer_endpoint,omitempty"`
+	AllowedIPs   []string `json:"allowed_ips,omitempty"`
+	Hostname     string   `json:"hostname,omitempty"`
+	ExitNode     string   `json:"exit_node,omitempty"`
+	AcceptRoutes bool     `json:"accept_routes,omitempty"`
+}
+
 // ErrorResponse is the standard error envelope.
 type ErrorResponse struct {
 	Error string `json:"error"`

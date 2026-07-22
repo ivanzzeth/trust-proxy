@@ -22,6 +22,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
+	"github.com/ivanzzeth/trust-proxy/internal/endpoints"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/inbound"
@@ -161,6 +162,10 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	epStore, err := endpoints.NewStore(serveDataDir + "/endpoints.json")
+	if err != nil {
+		return err
+	}
 
 	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
@@ -169,6 +174,7 @@ func runServe() error {
 	mgr.SetInitialDNS(dnsStore.Get())
 	mgr.SetInitialInbound(inbStore.Get())
 	mgr.SetInitialTUN(tunStore.Get())
+	mgr.SetInitialEndpoints(epStore.All())
 	if err := mgr.Start(); err != nil {
 		return err
 	}
@@ -198,6 +204,8 @@ func runServe() error {
 		InbApplier:  mgr,
 		TUN:         tunStore,
 		TUNApplier:  mgr,
+		Endpoints:   epStore,
+		EPApplier:   mgr,
 		History:     histStore,
 		Nodes:       nodesStore,
 		Token:       serveAPIToken,

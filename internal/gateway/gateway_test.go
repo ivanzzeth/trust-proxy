@@ -46,7 +46,7 @@ func TestInjectOrder_ProcessAboveAllowsAboveCatchAll(t *testing.T) {
 		{Tag: "ads", Type: "remote", Format: "binary", URL: "https://x/ads.srs", Role: apitypes.RuleRoleBlock, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 		{Tag: "cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 	}}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, blacklist.Rules{}, ModeManual, sets, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, "sekret")
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, blacklist.Rules{}, ModeManual, sets, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, "sekret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +109,7 @@ func TestInjectBlacklist_RejectsAboveWhitelistAllows(t *testing.T) {
 		Regexes:  []string{`.*\.onion$`},
 		IPs:      []string{"6.6.6.6/32"},
 	}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, bl, ModeManual, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, "s")
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, bl, ModeManual, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestApplyMode_Inbounds(t *testing.T) {
 		{ModeSystem, []string{"mixed"}},
 		{ModeTUN, []string{"tun", "mixed"}},
 	} {
-		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, "s")
+		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, "s")
 		if err != nil {
 			t.Fatalf("%s: %v", tc.mode, err)
 		}
@@ -189,7 +189,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 		StrictRoute:    false,
 		ExcludePackage: []string{"com.example.app"},
 	}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, "s")
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, nil, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 		t.Fatalf("exclude_package=%v want [com.example.app]", tunIn["exclude_package"])
 	}
 	// MTU 0 must omit the "mtu" key entirely (auto).
-	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, "s")
+	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, "s")
 	if err != nil {
 		t.Fatal(err)
 	}

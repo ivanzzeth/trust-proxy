@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import {
   Activity,
   ArrowDownUp,
+  Cable,
   Ban,
   Globe,
   History as HistoryIcon,
@@ -33,6 +34,7 @@ const NAV = [
   { to: '/', label: 'Overview', icon: Activity, end: true },
   { to: '/connections', label: 'Connections', icon: Waypoints },
   { to: '/subscriptions', label: 'Nodes', icon: Wifi },
+  { to: '/endpoints', label: 'Endpoints', icon: Cable },
   { to: '/profiles', label: 'Profiles', icon: Layers },
   { to: '/whitelist', label: 'Whitelist', icon: ShieldCheck },
   { to: '/blacklist', label: 'Blacklist', icon: Ban },

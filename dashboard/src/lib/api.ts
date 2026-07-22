@@ -42,6 +42,8 @@ const post = <T>(p: string, body?: unknown) =>
   fetch(A(p), { method: 'POST', headers: J, body: body ? JSON.stringify(body) : undefined }).then(unwrap<T>);
 const put = <T>(p: string, body?: unknown) =>
   fetch(A(p), { method: 'PUT', headers: J, body: body ? JSON.stringify(body) : undefined }).then(unwrap<T>);
+const patch = <T>(p: string, body?: unknown) =>
+  fetch(A(p), { method: 'PATCH', headers: J, body: body ? JSON.stringify(body) : undefined }).then(unwrap<T>);
 const del = <T>(p: string, body?: unknown) =>
   fetch(A(p), { method: 'DELETE', headers: J, body: body ? JSON.stringify(body) : undefined }).then(unwrap<T>);
 
@@ -223,6 +225,18 @@ export interface Gateway {
   name: string;
   url: string;
 }
+export interface Endpoint {
+  tag: string;
+  type: string; // wireguard | tailscale
+  enabled: boolean;
+  address?: string[];
+  mtu?: number;
+  peer_endpoint?: string;
+  allowed_ips?: string[];
+  hostname?: string;
+  exit_node?: string;
+  accept_routes?: boolean;
+}
 export interface InboundAuth {
   username: string;
   password: string;
@@ -277,8 +291,8 @@ export const api = {
   rulesets: () => get<{ sets: RuleSet[] }>('/rulesets'),
   ruleCatalog: () => get<CatalogEntry[]>('/rulesets/catalog'),
   addRuleSet: (body: Record<string, unknown>) => post<{ sets: RuleSet[] }>('/rulesets', body),
-  patchRuleSet: (tag: string, patch: { enabled?: boolean; role?: string }) =>
-    put<{ sets: RuleSet[] }>(`/rulesets/${encodeURIComponent(tag)}`, patch),
+  patchRuleSet: (tag: string, body: { enabled?: boolean; role?: string }) =>
+    patch<{ sets: RuleSet[] }>(`/rulesets/${encodeURIComponent(tag)}`, body),
   delRuleSet: (tag: string) => del<{ sets: RuleSet[] }>(`/rulesets/${encodeURIComponent(tag)}`),
 
   proxies: () => get<{ proxies: Record<string, ProxyNode> }>('/proxies'),
@@ -299,6 +313,11 @@ export const api = {
 
   tun: () => get<TUNConfig>('/tun'),
   setTUN: (c: TUNConfig) => put<TUNConfig>('/tun', c),
+
+  endpoints: () => get<Endpoint[]>('/endpoints'),
+  addEndpoint: (body: Record<string, unknown>) => post<{ tag: string }>('/endpoints', body),
+  patchEndpoint: (tag: string, enabled: boolean) => patch<Endpoint[]>(`/endpoints/${encodeURIComponent(tag)}`, { enabled }),
+  delEndpoint: (tag: string) => del<void>(`/endpoints/${encodeURIComponent(tag)}`),
 
   historyStats: () => get<HistoryStats>('/history/stats'),
   history: (limit = 200, host = '') => get<HistoryRecord[]>(`/history?limit=${limit}&host=${encodeURIComponent(host)}`),

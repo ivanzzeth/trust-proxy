@@ -46,7 +46,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           # embed_ui bakes dashboard/dist into the binary -> true single file.
-          TAGS: with_clash_api with_quic with_utls with_grpc with_gvisor embed_ui
+          TAGS: with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard with_tailscale embed_ui
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail

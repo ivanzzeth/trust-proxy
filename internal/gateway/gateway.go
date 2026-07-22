@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -66,9 +68,33 @@ type Manager struct {
 	bl       blacklist.Rules
 	mode     string
 	rulesets ruleset.Sets
-	dns      apitypes.DNSConfig
-	inbound  apitypes.InboundAuth
-	tun      apitypes.TUNConfig
+	dns       apitypes.DNSConfig
+	inbound   apitypes.InboundAuth
+	tun       apitypes.TUNConfig
+	endpoints []apitypes.Endpoint
+}
+
+// SetInitialEndpoints sets WireGuard/Tailscale exits used by the first Start().
+func (m *Manager) SetInitialEndpoints(eps []apitypes.Endpoint) {
+	m.mu.Lock()
+	m.endpoints = eps
+	m.mu.Unlock()
+}
+
+// SetEndpoints sets the exit endpoints and hot-reloads (reverts on failure).
+func (m *Manager) SetEndpoints(eps []apitypes.Endpoint) error {
+	m.mu.Lock()
+	prev := m.endpoints
+	m.endpoints = eps
+	m.mu.Unlock()
+	if err := m.rebuild(); err != nil {
+		m.mu.Lock()
+		m.endpoints = prev
+		m.mu.Unlock()
+		_ = m.rebuild()
+		return fmt.Errorf("apply endpoints failed (reverted): %w", err)
+	}
+	return nil
 }
 
 // NewManager returns a manager seeded with the initial whitelist, the detection
@@ -299,14 +325,14 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, bl, mode, sets, dns, inbound, tun := m.nodes, m.wl, m.bl, m.mode, m.rulesets, m.dns, m.inbound, m.tun
+	nodes, wl, bl, mode, sets, dns, inbound, tun, eps := m.nodes, m.wl, m.bl, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, bl, mode, sets, dns, inbound, tun, m.clashSecret)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, mode, sets, dns, inbound, tun, eps, m.clashSecret)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -353,12 +379,17 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // buildMergedConfig injects (a) subscription node outbounds + the `proxy` group
 // and (b) whitelist allow rules into the route, at the JSON level so sing-box's
 // own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, clashSecret string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, clashSecret string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
 	}
-	if err := injectOutbounds(cfg, nodes); err != nil {
+	// WireGuard/Tailscale exits go in endpoints[]; their tags join the proxy group.
+	epTags, err := injectEndpoints(cfg, endpoints)
+	if err != nil {
+		return nil, err
+	}
+	if err := injectOutbounds(cfg, nodes, epTags); err != nil {
 		return nil, err
 	}
 	// Before applyMode: a configured dns block wins over TUN's default resolver.
@@ -905,7 +936,72 @@ func injectClashSecret(cfg map[string]json.RawMessage, secret string) error {
 	return nil
 }
 
-func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node) error {
+// injectEndpoints appends enabled WireGuard/Tailscale exits to endpoints[] and
+// returns their tags (to be added to the proxy group). WireGuard peers keep the
+// pasted allowed_ips; Tailscale gets a per-tag state dir under data/.
+func injectEndpoints(cfg map[string]json.RawMessage, list []apitypes.Endpoint) ([]string, error) {
+	var eps []json.RawMessage
+	if raw, ok := cfg["endpoints"]; ok {
+		if err := json.Unmarshal(raw, &eps); err != nil {
+			return nil, err
+		}
+	}
+	var tags []string
+	for _, e := range list {
+		if !e.Enabled || e.Tag == "" {
+			continue
+		}
+		var m map[string]any
+		switch e.Type {
+		case "wireguard":
+			host, portStr, err := net.SplitHostPort(e.PeerEndpoint)
+			if err != nil {
+				return nil, fmt.Errorf("endpoint %q: bad peer_endpoint: %w", e.Tag, err)
+			}
+			port, _ := strconv.Atoi(portStr)
+			peer := map[string]any{"address": host, "port": port, "public_key": e.PeerPublicKey, "allowed_ips": e.AllowedIPs}
+			if e.PeerPreSharedKey != "" {
+				peer["pre_shared_key"] = e.PeerPreSharedKey
+			}
+			if e.PersistentKeepalive > 0 {
+				peer["persistent_keepalive_interval"] = e.PersistentKeepalive
+			}
+			m = map[string]any{"type": "wireguard", "tag": e.Tag, "address": e.Address, "private_key": e.PrivateKey, "peers": []any{peer}}
+			if e.MTU > 0 {
+				m["mtu"] = e.MTU
+			}
+		case "tailscale":
+			m = map[string]any{"type": "tailscale", "tag": e.Tag, "auth_key": e.AuthKey, "state_directory": "data/ts-" + e.Tag}
+			if e.Hostname != "" {
+				m["hostname"] = e.Hostname
+			}
+			if e.ExitNode != "" {
+				m["exit_node"] = e.ExitNode
+			}
+			if e.AcceptRoutes {
+				m["accept_routes"] = true
+			}
+		default:
+			continue
+		}
+		raw, err := json.Marshal(m)
+		if err != nil {
+			return nil, err
+		}
+		eps = append(eps, raw)
+		tags = append(tags, e.Tag)
+	}
+	if len(eps) > 0 {
+		nb, err := json.Marshal(eps)
+		if err != nil {
+			return nil, err
+		}
+		cfg["endpoints"] = nb
+	}
+	return tags, nil
+}
+
+func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extraTags []string) error {
 	var outs []json.RawMessage
 	if raw, ok := cfg["outbounds"]; ok {
 		if err := json.Unmarshal(raw, &outs); err != nil {
@@ -954,6 +1050,9 @@ func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node) erro
 		kept = append(kept, raw)
 		tags = append(tags, tag)
 	}
+	// WireGuard/Tailscale endpoint tags (defined in endpoints[]) are valid group
+	// members — append so whitelisted traffic can urltest across nodes + exits.
+	tags = append(tags, extraTags...)
 
 	var group map[string]any
 	if len(tags) == 0 {
