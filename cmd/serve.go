@@ -29,6 +29,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/threatfeed"
+	"github.com/ivanzzeth/trust-proxy/internal/tuncfg"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/clash"
 )
@@ -150,12 +151,17 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	tunStore, err := tuncfg.NewStore(serveDataDir + "/tun.json")
+	if err != nil {
+		return err
+	}
 
 	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
 	mgr.SetInitialRuleSets(rsStore.Get())
 	mgr.SetInitialDNS(dnsStore.Get())
 	mgr.SetInitialInbound(inbStore.Get())
+	mgr.SetInitialTUN(tunStore.Get())
 	if err := mgr.Start(); err != nil {
 		return err
 	}
@@ -181,6 +187,8 @@ func runServe() error {
 		DNSApplier:  mgr,
 		Inbound:     inbStore,
 		InbApplier:  mgr,
+		TUN:         tunStore,
+		TUNApplier:  mgr,
 		History:     histStore,
 		Nodes:       nodesStore,
 		Token:       serveAPIToken,

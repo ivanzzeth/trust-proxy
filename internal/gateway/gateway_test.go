@@ -45,7 +45,7 @@ func TestInjectOrder_ProcessAboveAllowsAboveCatchAll(t *testing.T) {
 		{Tag: "ads", Type: "remote", Format: "binary", URL: "https://x/ads.srs", Role: apitypes.RuleRoleBlock, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 		{Tag: "cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 	}}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, ModeManual, sets, apitypes.DNSConfig{}, apitypes.InboundAuth{}, "sekret")
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, ModeManual, sets, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, "sekret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestApplyMode_Inbounds(t *testing.T) {
 		{ModeSystem, []string{"mixed"}},
 		{ModeTUN, []string{"tun", "mixed"}},
 	} {
-		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, "s")
+		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, "s")
 		if err != nil {
 			t.Fatalf("%s: %v", tc.mode, err)
 		}
@@ -126,5 +126,51 @@ func TestApplyMode_Inbounds(t *testing.T) {
 		if tc.mode == ModeSystem && ins[0]["set_system_proxy"] != true {
 			t.Fatalf("system mode: set_system_proxy not set")
 		}
+	}
+}
+
+func TestApplyMode_TUNOptions(t *testing.T) {
+	tun := apitypes.TUNConfig{
+		Stack:          "system",
+		MTU:            1400,
+		StrictRoute:    false,
+		ExcludePackage: []string{"com.example.app"},
+	}
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]json.RawMessage
+	_ = json.Unmarshal(merged, &cfg)
+	var ins []map[string]any
+	_ = json.Unmarshal(cfg["inbounds"], &ins)
+	tunIn := ins[0]
+	if tunIn["type"] != "tun" {
+		t.Fatalf("inbound[0] is not tun: %v", tunIn["type"])
+	}
+	if tunIn["stack"] != "system" {
+		t.Fatalf("stack=%v want system", tunIn["stack"])
+	}
+	if tunIn["mtu"] != float64(1400) {
+		t.Fatalf("mtu=%v want 1400", tunIn["mtu"])
+	}
+	if tunIn["strict_route"] != false {
+		t.Fatalf("strict_route=%v want false", tunIn["strict_route"])
+	}
+	ep, ok := tunIn["exclude_package"].([]any)
+	if !ok || len(ep) != 1 || ep[0] != "com.example.app" {
+		t.Fatalf("exclude_package=%v want [com.example.app]", tunIn["exclude_package"])
+	}
+	// MTU 0 must omit the "mtu" key entirely (auto).
+	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg2 map[string]json.RawMessage
+	_ = json.Unmarshal(merged2, &cfg2)
+	var ins2 []map[string]any
+	_ = json.Unmarshal(cfg2["inbounds"], &ins2)
+	if _, present := ins2[0]["mtu"]; present {
+		t.Fatal("mtu should be omitted when 0 (auto)")
 	}
 }

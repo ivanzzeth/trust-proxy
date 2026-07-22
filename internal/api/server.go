@@ -24,6 +24,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
+	"github.com/ivanzzeth/trust-proxy/internal/tuncfg"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 	"github.com/ivanzzeth/trust-proxy/pkg/clash"
@@ -65,6 +66,11 @@ type InboundApplier interface {
 	SetInbound(apitypes.InboundAuth) error
 }
 
+// TUNApplier hot-reloads the tun-inbound options (gateway.Manager).
+type TUNApplier interface {
+	SetTUN(apitypes.TUNConfig) error
+}
+
 // Options configures the API server.
 type Options struct {
 	Addr        string
@@ -82,6 +88,8 @@ type Options struct {
 	DNSApplier  DNSApplier
 	Inbound     *inbound.Store
 	InbApplier  InboundApplier
+	TUN         *tuncfg.Store
+	TUNApplier  TUNApplier
 	History     *history.Store
 	Nodes       *nodes.Store // brain: registry of remote gateways (reverse-proxied)
 	Token       string       // if set, /api/* requires this bearer token (probe mode)
@@ -107,6 +115,8 @@ type Server struct {
 	dnsApplier  DNSApplier
 	inbound     *inbound.Store
 	inbApplier  InboundApplier
+	tun         *tuncfg.Store
+	tunApplier  TUNApplier
 	history     *history.Store
 	nodes       *nodes.Store
 	token       string
@@ -117,7 +127,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -156,6 +166,8 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("PUT /api/dns", s.handleSetDNS)
 	mux.HandleFunc("GET /api/inbound", s.handleGetInbound)
 	mux.HandleFunc("PUT /api/inbound", s.handleSetInbound)
+	mux.HandleFunc("GET /api/tun", s.handleGetTUN)
+	mux.HandleFunc("PUT /api/tun", s.handleSetTUN)
 	mux.HandleFunc("GET /api/profiles", s.handleListProfiles)
 	mux.HandleFunc("POST /api/profiles", s.handleAddProfile)
 	mux.HandleFunc("POST /api/profiles/{id}/activate", s.handleActivateProfile)

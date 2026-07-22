@@ -66,6 +66,7 @@ type Manager struct {
 	rulesets ruleset.Sets
 	dns      apitypes.DNSConfig
 	inbound  apitypes.InboundAuth
+	tun      apitypes.TUNConfig
 }
 
 // NewManager returns a manager seeded with the initial whitelist, the detection
@@ -218,6 +219,29 @@ func (m *Manager) SetInbound(a apitypes.InboundAuth) error {
 	return nil
 }
 
+// SetInitialTUN sets the tun-inbound options used by the first Start().
+func (m *Manager) SetInitialTUN(t apitypes.TUNConfig) {
+	m.mu.Lock()
+	m.tun = t
+	m.mu.Unlock()
+}
+
+// SetTUN sets the tun-inbound options and hot-reloads (reverts on failure).
+func (m *Manager) SetTUN(t apitypes.TUNConfig) error {
+	m.mu.Lock()
+	prev := m.tun
+	m.tun = t
+	m.mu.Unlock()
+	if err := m.rebuild(); err != nil {
+		m.mu.Lock()
+		m.tun = prev
+		m.mu.Unlock()
+		_ = m.rebuild() // best-effort restore
+		return fmt.Errorf("apply TUN options failed (reverted): %w", err)
+	}
+	return nil
+}
+
 // ApplyProfile atomically sets nodes + whitelist + rule sets + (optionally) mode
 // and rebuilds ONCE, so a one-click profile switch is a single reload rather
 // than four. mode=="" keeps the current mode.
@@ -247,14 +271,14 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, mode, sets, dns, inbound := m.nodes, m.wl, m.mode, m.rulesets, m.dns, m.inbound
+	nodes, wl, mode, sets, dns, inbound, tun := m.nodes, m.wl, m.mode, m.rulesets, m.dns, m.inbound, m.tun
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, mode, sets, dns, inbound, m.clashSecret)
+	merged, err := buildMergedConfig(base, nodes, wl, mode, sets, dns, inbound, tun, m.clashSecret)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -301,7 +325,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // buildMergedConfig injects (a) subscription node outbounds + the `proxy` group
 // and (b) whitelist allow rules into the route, at the JSON level so sing-box's
 // own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, clashSecret string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, clashSecret string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -313,7 +337,7 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, m
 	if err := injectDNS(cfg, dns); err != nil {
 		return nil, err
 	}
-	if err := applyMode(cfg, mode, inbound); err != nil {
+	if err := applyMode(cfg, mode, inbound, tun); err != nil {
 		return nil, err
 	}
 	if err := injectWhitelist(cfg, wl); err != nil {
@@ -678,7 +702,7 @@ func ensureCacheFile(cfg map[string]json.RawMessage) error {
 // applyMode rewrites the inbounds (and, for TUN, adds DNS + hijack) to match the
 // requested capture mode. The mixed inbound's listen/port is preserved from the
 // base config so 127.0.0.1:17070 stays available in every mode.
-func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.InboundAuth) error {
+func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.InboundAuth, tun apitypes.TUNConfig) error {
 	if mode == "" {
 		mode = ModeManual
 	}
@@ -713,12 +737,25 @@ func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.Inboun
 		mixed["set_system_proxy"] = true
 		ins = []map[string]any{mixed}
 	case ModeTUN:
+		stack := tun.Stack
+		if stack == "" {
+			stack = "gvisor"
+		}
 		tunIn := map[string]any{
 			"type": "tun", "tag": "tun-in",
 			"address":      []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
 			"auto_route":   true,
-			"strict_route": true,
-			"stack":        "gvisor",
+			"strict_route": tun.StrictRoute,
+			"stack":        stack,
+		}
+		if tun.MTU > 0 {
+			tunIn["mtu"] = tun.MTU
+		}
+		if len(tun.ExcludePackage) > 0 {
+			tunIn["exclude_package"] = tun.ExcludePackage
+		}
+		if len(tun.IncludePackage) > 0 {
+			tunIn["include_package"] = tun.IncludePackage
 		}
 		ins = []map[string]any{tunIn, mixed}
 		if err := ensureTunExtras(cfg); err != nil {

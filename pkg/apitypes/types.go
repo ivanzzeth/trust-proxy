@@ -155,6 +155,17 @@ type InboundAuth struct {
 	Password string `json:"password"`
 }
 
+// TUNConfig tunes the tun inbound the gateway builds in TUN mode. Only takes
+// effect when the capture mode is "tun"; otherwise the values are inert.
+type TUNConfig struct {
+	Stack          string   `json:"stack"`                     // system | gvisor | mixed (default gvisor)
+	MTU            int      `json:"mtu"`                       // 0 = auto (omit "mtu")
+	StrictRoute    bool     `json:"strict_route"`              // default true
+	ExcludePackage []string `json:"exclude_package,omitempty"` // Android: packages routed AROUND the tun
+	IncludePackage []string `json:"include_package,omitempty"` // Android: only these packages routed INTO the tun
+	ExcludeProcess []string `json:"exclude_process,omitempty"` // process names routed AROUND the tun
+}
+
 // ErrorResponse is the standard error envelope.
 type ErrorResponse struct {
 	Error string `json:"error"`

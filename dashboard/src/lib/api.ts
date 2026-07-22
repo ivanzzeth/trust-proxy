@@ -220,6 +220,14 @@ export interface InboundAuth {
   username: string;
   password: string;
 }
+export interface TUNConfig {
+  stack: string; // system | gvisor | mixed
+  mtu: number; // 0 = auto
+  strict_route: boolean;
+  exclude_package?: string[];
+  include_package?: string[];
+  exclude_process?: string[];
+}
 
 export const api = {
   status: () => get<Status>('/status'),
@@ -271,6 +279,9 @@ export const api = {
 
   inbound: () => get<InboundAuth>('/inbound'),
   setInbound: (a: InboundAuth) => put<InboundAuth>('/inbound', a),
+
+  tun: () => get<TUNConfig>('/tun'),
+  setTUN: (c: TUNConfig) => put<TUNConfig>('/tun', c),
 
   historyStats: () => get<HistoryStats>('/history/stats'),
   history: (limit = 200, host = '') => get<HistoryRecord[]>(`/history?limit=${limit}&host=${encodeURIComponent(host)}`),
