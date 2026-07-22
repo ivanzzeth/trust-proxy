@@ -6,10 +6,12 @@ package api
 
 import (
 	"encoding/json"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
@@ -70,7 +72,8 @@ type Options struct {
 	DNS         *dnscfg.Store
 	DNSApplier  DNSApplier
 	Clash       *clash.Client // low-level Clash primitives, proxied to the browser
-	ConsoleDir  string        // static dir for the React console (served at /)
+	ConsoleDir  string        // on-disk dashboard dir (dev); used when ConsoleFS is nil
+	ConsoleFS   fs.FS         // embedded dashboard build (release); wins over ConsoleDir
 }
 
 // Server exposes /api/* and serves the console.
@@ -90,11 +93,12 @@ type Server struct {
 	dnsApplier  DNSApplier
 	clash       *clash.Client
 	consoleDir  string
+	consoleFS   fs.FS
 }
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, clash: o.Clash, consoleDir: o.ConsoleDir}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -309,25 +313,30 @@ func (s *Server) handleKillAll(w http.ResponseWriter, r *http.Request) {
 
 // ---- console static host --------------------------------------------------
 
-// consoleHandler serves the React console with SPA fallback. If the build is
-// missing it returns a short hint instead of a 404.
+// consoleHandler serves the dashboard from an fs.FS — either the embedded build
+// (go:embed, release binaries) or the on-disk dir (dev). SPA fallback to
+// index.html; a short hint if the build is missing.
 func (s *Server) consoleHandler() http.Handler {
-	fileSrv := http.FileServer(http.Dir(s.consoleDir))
-	index := filepath.Join(s.consoleDir, "index.html")
+	fsys := s.consoleFS // embedded build (release) if set...
+	if fsys == nil {
+		fsys = os.DirFS(s.consoleDir) // ...else on-disk (dev)
+	}
+	fileSrv := http.FileServerFS(fsys)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, err := os.Stat(index); err != nil {
+		if _, err := fs.Stat(fsys, "index.html"); err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("trust-proxy dashboard not built.\nRun: make dashboard\n"))
+			_, _ = w.Write([]byte("trust-proxy dashboard not built.\nRun: make dashboard (or build with -tags embed_ui)\n"))
 			return
 		}
-		if p := filepath.Join(s.consoleDir, filepath.Clean(r.URL.Path)); r.URL.Path != "/" {
-			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		p := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if p != "" && p != "." {
+			if st, err := fs.Stat(fsys, p); err == nil && !st.IsDir() {
 				fileSrv.ServeHTTP(w, r)
 				return
 			}
 		}
-		http.ServeFile(w, r, index) // SPA fallback
+		http.ServeFileFS(w, r, fsys, "index.html") // SPA fallback
 	})
 }
 

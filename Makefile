@@ -8,15 +8,19 @@ WEBUI_DIR    := webui
 #   with_grpc      -> full gRPC transport (there is a lite fallback without it)
 TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor
 
-.PHONY: run build tidy webui webui-dev dashboard dashboard-dev deps clean e2e
+.PHONY: run build build-embed tidy webui webui-dev dashboard dashboard-dev deps clean e2e
 
 ## Boot the embedded sing-box with configs/config.json
 run: build
 	./trust-proxy -c configs/config.json
 
-## Compile the Go backend (with $(TAGS) if set)
+## Compile the Go backend (with $(TAGS) if set); serves dashboard from disk
 build:
 	go build $(if $(TAGS),-tags "$(TAGS)",) -o trust-proxy .
+
+## Single self-contained binary: build the dashboard then embed it (embed_ui)
+build-embed: dashboard
+	go build -tags "$(TAGS) embed_ui" -o trust-proxy .
 
 tidy:
 	go mod tidy

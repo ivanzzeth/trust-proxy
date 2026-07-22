@@ -21,9 +21,11 @@
 ```bash
 make deps            # git submodule update --init --recursive（拉 sing-box，testing 分支）
 make dashboard       # 构建控制台(shadcn/ui) -> dashboard/dist
-make build           # 编译 -> ./trust-proxy（默认 tags：clash_api quic utls grpc gvisor）
+make build           # 编译 -> ./trust-proxy（从磁盘 serve dashboard/dist，适合开发）
 ./trust-proxy serve  # 启动客户端网关
 ```
+
+单文件分发：`make build-embed`（先构建前端再用 `-tags embed_ui` 把 `dashboard/dist` 嵌进二进制），产出的 `./trust-proxy` 不依赖磁盘上的前端目录。**GitHub Release 的二进制即用此方式打包，单文件自带 UI。**
 
 启动时 Clash secret 随机生成并持久化到 `data/clash-secret`（浏览器不碰它——控制台单一 origin，Clash 数据由后端 `/api` 代理）。`serve` 日志打印控制台 URL：`http://127.0.0.1:9096/`。
 

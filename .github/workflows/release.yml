@@ -28,12 +28,25 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build dashboard (embedded into the binary)
+        run: |
+          set -euo pipefail
+          corepack enable
+          cd dashboard
+          corepack pnpm install --frozen-lockfile
+          corepack pnpm build
+
       - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
         env:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          TAGS: with_clash_api with_quic with_utls with_grpc with_gvisor
+          # embed_ui bakes dashboard/dist into the binary -> true single file.
+          TAGS: with_clash_api with_quic with_utls with_grpc with_gvisor embed_ui
           VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail

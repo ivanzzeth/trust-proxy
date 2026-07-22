@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
@@ -42,6 +43,14 @@ var (
 	serveThreatRefresh time.Duration
 	serveNoThreatFeed  bool
 )
+
+// embeddedUI holds the dashboard build baked into the binary via go:embed
+// (set by SetEmbeddedUI from the root package when built with -tags embed_ui).
+// When nil, serve falls back to the on-disk --console dir.
+var embeddedUI fs.FS
+
+// SetEmbeddedUI registers the embedded dashboard filesystem.
+func SetEmbeddedUI(f fs.FS) { embeddedUI = f }
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -150,6 +159,7 @@ func runServe() error {
 		DNSApplier:  mgr,
 		Clash:       clash.New(serveClashAddr, secret),
 		ConsoleDir:  serveConsoleDir,
+		ConsoleFS:   embeddedUI,
 	})
 	go func() {
 		if err := apiSrv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
