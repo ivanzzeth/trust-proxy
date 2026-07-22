@@ -1,0 +1,64 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive # pulls third_party/sing-box
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          TAGS: with_clash_api with_quic with_utls with_grpc with_gvisor
+          VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          bin=trust-proxy
+          [ "$GOOS" = windows ] && bin=trust-proxy.exe
+          go build -tags "$TAGS" -trimpath \
+            -ldflags "-s -w -X github.com/ivanzzeth/trust-proxy/cmd.version=${VERSION}" \
+            -o "$bin" .
+
+          pkg="trust-proxy_${VERSION}_${GOOS}_${GOARCH}"
+          mkdir "$pkg"
+          cp "$bin" "$pkg"/
+          cp README.md CLAUDE.md "$pkg"/ 2>/dev/null || true
+          mkdir -p "$pkg/configs"
+          cp configs/config.json configs/config.tun.json "$pkg/configs"/ 2>/dev/null || true
+          if [ "$GOOS" = windows ]; then
+            zip -r "${pkg}.zip" "$pkg"
+          else
+            tar czf "${pkg}.tar.gz" "$pkg"
+          fi
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            trust-proxy_*.tar.gz
+            trust-proxy_*.zip
+          generate_release_notes: true
