@@ -1,0 +1,153 @@
+@use '~/styles/utils/custom-media' as *;
+
+.topBar {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background-color: var(--color-background2);
+  backdrop-filter: blur(36px);
+
+  & > div {
+    width: 100%;
+  }
+}
+
+.topBarRight {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  flex: 1;
+  justify-content: flex-end;
+
+  @media (max-width: 768px) {
+    order: 3;
+    flex: 1 1 100%;
+    width: 100%;
+    margin-top: 8px;
+  }
+}
+
+.textFilterContainer {
+  max-width: 300px;
+  min-width: 150px;
+  flex: 1;
+  margin-right: 8px;
+
+  @media (max-width: 768px) {
+    max-width: none;
+    margin-right: 8px;
+  }
+}
+
+.group {
+  padding: 10px 0;
+  // let the browser skip layout/paint for off-screen groups — large
+  // subscriptions can put thousands of proxy nodes in the DOM. `auto` in
+  // contain-intrinsic-size keeps the last rendered size as the placeholder
+  // so scrolling doesn't jump; 200px is only the pre-first-render estimate.
+  content-visibility: auto;
+  contain-intrinsic-size: auto 200px;
+
+  @media (--breakpoint-not-small) {
+    padding: 10px 0;
+  }
+}
+
+.groupsContainer {
+  margin: 0 45px 20px;
+  padding: 2px 0 10px;
+
+  @media (max-width: 768px) {
+    margin: 10px 15px 15px;
+  }
+
+  &.doubleColumn {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+
+    @media screen and (min-width: 1200px) {
+      flex-direction: row;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .column {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+
+      @media screen and (max-width: 1199px) {
+        display: contents;
+      }
+    }
+
+    .group {
+      @media screen and (min-width: 1200px) {
+        padding: 10px 0;
+      }
+    }
+  }
+}
+
+.tabsContainer {
+  display: flex;
+  align-items: center;
+  background-color: var(--color-bg-sidebar);
+  border-radius: 12px;
+  padding: 4px;
+
+  @media (max-width: 768px) {
+    order: 1;
+    flex: 1 1 100%;
+    width: 100%;
+  }
+}
+
+.tab {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 1em;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  transition: all 0.2s ease;
+  user-select: none;
+
+  @media (max-width: 768px) {
+    padding: 6px 10px;
+    font-size: 0.85em;
+    flex: 1;
+    justify-content: center;
+    min-width: 0;
+    white-space: nowrap;
+  }
+
+  &:hover {
+    color: var(--color-focus-blue);
+    background: rgba(176, 206, 255, 0.221);
+  }
+
+  &.active {
+    background-color: var(--color-focus-blue);
+    color: #fff;
+  }
+}
+
+.tabCount {
+  font-family: var(--font-normal);
+  font-size: 0.7em;
+  margin-left: 6px;
+  padding: 2px 8px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  background-color: rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  font-weight: 600;
+  min-width: 20px;
+  flex-shrink: 0;
+}

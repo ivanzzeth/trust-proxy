@@ -35,13 +35,13 @@ webui:
 webui-dev:
 	cd $(WEBUI_DIR) && corepack pnpm run dev
 
-## Build our own React console -> console/dist (served by the backend at :9096)
+## Build the console (vendored Yacd-meta) -> console/public (served at :9096)
 console:
-	cd console && npm install && npm run build
+	cd console && corepack pnpm install --frozen-lockfile && corepack pnpm build
 
-## Run the console dev server (Vite, proxies /api to :9096)
+## Run the console dev server (Vite at :3000)
 console-dev:
-	cd console && npm run dev
+	cd console && corepack pnpm dev
 
 clean:
 	rm -f trust-proxy

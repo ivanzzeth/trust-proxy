@@ -38,7 +38,7 @@ func init() {
 	f.StringVarP(&serveConfig, "config", "c", "configs/config.json", "sing-box config path")
 	f.StringVar(&serveAPIAddr, "api-addr", "127.0.0.1:9096", "trust-proxy backend API listen address")
 	f.StringVar(&serveDataDir, "data", "data", "data directory (subscriptions, etc.)")
-	f.StringVar(&serveConsoleDir, "console", "console/dist", "React console static dir")
+	f.StringVar(&serveConsoleDir, "console", "console/public", "React console static dir (Yacd build output)")
 	f.StringVar(&serveClashAddr, "clash-addr", "127.0.0.1:9090", "Clash API address (proxied to the console)")
 	f.StringVar(&serveClashSecret, "clash-secret", "trust-proxy", "Clash API secret")
 }
