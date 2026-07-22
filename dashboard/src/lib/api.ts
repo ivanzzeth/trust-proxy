@@ -1,4 +1,27 @@
-// trust-proxy backend client. Single origin (:9096); the dev server proxies /api.
+// trust-proxy backend client. Single origin (:9096); dev server proxies /api.
+//
+// Multi-node: setNode(id) repoints every call to /api/nodes/{id}/* which the
+// brain reverse-proxies to that gateway. Node-registry calls always target the
+// local brain (fixed /api/nodes). Subscribe(cb) fires when the node changes so
+// the UI can reset queries.
+
+let nodePrefix = ''; // '' = local; '/nodes/{id}' = a remote gateway
+const listeners = new Set<() => void>();
+
+export function setNode(id: string | null) {
+  nodePrefix = id ? `/nodes/${id}` : '';
+  listeners.forEach((l) => l());
+}
+export function currentNode(): string | null {
+  return nodePrefix ? nodePrefix.slice('/nodes/'.length) : null;
+}
+export function onNodeChange(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => listeners.delete(cb);
+}
+// A builds a node-scoped /api URL; L builds a brain-local one (node registry).
+const A = (p: string) => `/api${nodePrefix}${p}`;
+export const logsURL = (level: string) => A(`/logs?level=${encodeURIComponent(level)}`);
 
 async function unwrap<T>(r: Response): Promise<T> {
   if (!r.ok) {
@@ -14,11 +37,15 @@ async function unwrap<T>(r: Response): Promise<T> {
   return (await r.json()) as T;
 }
 const J = { 'Content-Type': 'application/json' };
-const post = (u: string, body?: unknown) =>
-  fetch(u, { method: 'POST', headers: J, body: body ? JSON.stringify(body) : undefined });
-const del = (u: string, body?: unknown) =>
-  fetch(u, { method: 'DELETE', headers: J, body: body ? JSON.stringify(body) : undefined });
+const get = <T>(p: string) => fetch(A(p)).then(unwrap<T>);
+const post = <T>(p: string, body?: unknown) =>
+  fetch(A(p), { method: 'POST', headers: J, body: body ? JSON.stringify(body) : undefined }).then(unwrap<T>);
+const put = <T>(p: string, body?: unknown) =>
+  fetch(A(p), { method: 'PUT', headers: J, body: body ? JSON.stringify(body) : undefined }).then(unwrap<T>);
+const del = <T>(p: string, body?: unknown) =>
+  fetch(A(p), { method: 'DELETE', headers: J, body: body ? JSON.stringify(body) : undefined }).then(unwrap<T>);
 
+// ---- types ----
 export interface Status {
   mode: string;
   modes: string[];
@@ -33,7 +60,6 @@ export interface Whitelist {
   devices: string[];
 }
 export type WLType = 'domain' | 'ip' | 'process' | 'device';
-
 export interface TPNode {
   tag: string;
   protocol: string;
@@ -127,7 +153,6 @@ export interface Profile {
   mode?: string;
   active?: boolean;
 }
-
 export interface DNSServer {
   tag: string;
   type: string;
@@ -146,7 +171,6 @@ export interface DNSConfig {
   final?: string;
   strategy?: string;
 }
-
 export interface Talker {
   host: string;
   up: number;
@@ -179,65 +203,70 @@ export interface HistoryRecord {
   x?: boolean;
   l?: string;
 }
+export interface Gateway {
+  id: string;
+  name: string;
+  url: string;
+}
 
 export const api = {
-  status: () => fetch('/api/status').then(unwrap<Status>),
-  dns: () => fetch('/api/dns').then(unwrap<DNSConfig>),
-  historyStats: () => fetch('/api/history/stats').then(unwrap<HistoryStats>),
-  history: (limit = 200, host = '') =>
-    fetch(`/api/history?limit=${limit}&host=${encodeURIComponent(host)}`).then(unwrap<HistoryRecord[]>),
-  setDNS: (c: DNSConfig) => fetch('/api/dns', { method: 'PUT', headers: J, body: JSON.stringify(c) }).then(unwrap<DNSConfig>),
-  setMode: (mode: string) => post('/api/mode', { mode }).then(unwrap<{ mode: string }>),
-  setAutoBlock: (enabled: boolean) => post('/api/autoblock', { enabled }).then(unwrap<{ autoBlock: boolean }>),
+  status: () => get<Status>('/status'),
+  setMode: (mode: string) => post<{ mode: string }>('/mode', { mode }),
+  setAutoBlock: (enabled: boolean) => post<{ autoBlock: boolean }>('/autoblock', { enabled }),
 
-  connections: () => fetch('/api/connections').then(unwrap<ConnSnapshot>),
-  killConn: (id: string) => del(`/api/connections/${id}`).then(unwrap<void>),
-  killAll: () => del('/api/connections').then(unwrap<void>),
-  events: (alertsOnly?: boolean) =>
-    fetch('/api/events' + (alertsOnly ? '?level=alert' : '')).then(unwrap<DetectEvent[]>),
+  connections: () => get<ConnSnapshot>('/connections'),
+  killConn: (id: string) => del<void>(`/connections/${id}`),
+  killAll: () => del<void>('/connections'),
+  events: (alertsOnly?: boolean) => get<DetectEvent[]>('/events' + (alertsOnly ? '?level=alert' : '')),
 
   whitelist: () =>
-    fetch('/api/whitelist')
-      .then(unwrap<Whitelist>)
-      .then((w) => ({
-        domains: w.domains ?? [],
-        ips: w.ips ?? [],
-        processes: w.processes ?? [],
-        devices: w.devices ?? [],
-      })),
-  addWL: (type: WLType, value: string) => post('/api/whitelist', { type, value }).then(unwrap<Whitelist>),
-  delWL: (type: WLType, value: string) => del('/api/whitelist', { type, value }).then(unwrap<Whitelist>),
+    get<Whitelist>('/whitelist').then((w) => ({
+      domains: w.domains ?? [],
+      ips: w.ips ?? [],
+      processes: w.processes ?? [],
+      devices: w.devices ?? [],
+    })),
+  addWL: (type: WLType, value: string) => post<Whitelist>('/whitelist', { type, value }),
+  delWL: (type: WLType, value: string) => del<Whitelist>('/whitelist', { type, value }),
 
-  subs: () => fetch('/api/subscriptions').then(unwrap<Subscription[]>),
+  subs: () => get<Subscription[]>('/subscriptions'),
   addSub: (name: string, url: string, userAgent?: string, via?: string) =>
-    post('/api/subscriptions', { name, url, user_agent: userAgent, via }).then(unwrap<Subscription>),
-  importNodes: (name: string, content: string) =>
-    post('/api/subscriptions', { name, content }).then(unwrap<Subscription>),
-  applySub: (id: string) => post(`/api/subscriptions/${id}/apply`).then(unwrap<Subscription>),
-  refreshSub: (id: string) => post(`/api/subscriptions/${id}/refresh`).then(unwrap<Subscription>),
-  delSub: (id: string) => del(`/api/subscriptions/${id}`).then(unwrap<void>),
+    post<Subscription>('/subscriptions', { name, url, user_agent: userAgent, via }),
+  importNodes: (name: string, content: string) => post<Subscription>('/subscriptions', { name, content }),
+  applySub: (id: string) => post<Subscription>(`/subscriptions/${id}/apply`),
+  refreshSub: (id: string) => post<Subscription>(`/subscriptions/${id}/refresh`),
+  delSub: (id: string) => del<void>(`/subscriptions/${id}`),
 
-  rulesets: () => fetch('/api/rulesets').then(unwrap<{ sets: RuleSet[] }>),
-  ruleCatalog: () => fetch('/api/rulesets/catalog').then(unwrap<CatalogEntry[]>),
-  addRuleSet: (body: Record<string, unknown>) => post('/api/rulesets', body).then(unwrap<{ sets: RuleSet[] }>),
+  rulesets: () => get<{ sets: RuleSet[] }>('/rulesets'),
+  ruleCatalog: () => get<CatalogEntry[]>('/rulesets/catalog'),
+  addRuleSet: (body: Record<string, unknown>) => post<{ sets: RuleSet[] }>('/rulesets', body),
   patchRuleSet: (tag: string, patch: { enabled?: boolean; role?: string }) =>
-    fetch(`/api/rulesets/${encodeURIComponent(tag)}`, { method: 'PATCH', headers: J, body: JSON.stringify(patch) }).then(
-      unwrap<{ sets: RuleSet[] }>,
-    ),
-  delRuleSet: (tag: string) => del(`/api/rulesets/${encodeURIComponent(tag)}`).then(unwrap<{ sets: RuleSet[] }>),
+    put<{ sets: RuleSet[] }>(`/rulesets/${encodeURIComponent(tag)}`, patch),
+  delRuleSet: (tag: string) => del<{ sets: RuleSet[] }>(`/rulesets/${encodeURIComponent(tag)}`),
 
-  proxies: () => fetch('/api/proxies').then(unwrap<{ proxies: Record<string, ProxyNode> }>),
-  selectProxy: (group: string, name: string) => fetch('/api/proxies/select', { method: 'PUT', headers: J, body: JSON.stringify({ group, name }) }).then(unwrap<void>),
-  delay: (name: string) =>
-    fetch(`/api/proxies/${encodeURIComponent(name)}/delay?timeout=3000`).then(unwrap<{ delay: number; error?: string }>),
+  proxies: () => get<{ proxies: Record<string, ProxyNode> }>('/proxies'),
+  selectProxy: (group: string, name: string) => put<void>('/proxies/select', { group, name }),
+  delay: (name: string) => get<{ delay: number; error?: string }>(`/proxies/${encodeURIComponent(name)}/delay?timeout=3000`),
 
-  profiles: () => fetch('/api/profiles').then(unwrap<Profile[]>),
-  addProfile: (name: string) => post('/api/profiles', { name }).then(unwrap<Profile>),
-  activateProfile: (id: string) => post(`/api/profiles/${id}/activate`).then(unwrap<Profile>),
-  delProfile: (id: string) => del(`/api/profiles/${id}`).then(unwrap<void>),
+  profiles: () => get<Profile[]>('/profiles'),
+  addProfile: (name: string) => post<Profile>('/profiles', { name }),
+  activateProfile: (id: string) => post<Profile>(`/profiles/${id}/activate`),
+  delProfile: (id: string) => del<void>(`/profiles/${id}`),
+
+  dns: () => get<DNSConfig>('/dns'),
+  setDNS: (c: DNSConfig) => put<DNSConfig>('/dns', c),
+
+  historyStats: () => get<HistoryStats>('/history/stats'),
+  history: (limit = 200, host = '') => get<HistoryRecord[]>(`/history?limit=${limit}&host=${encodeURIComponent(host)}`),
+
+  // Node registry — always the local brain (never node-scoped).
+  gateways: () => fetch('/api/nodes').then(unwrap<Gateway[]>),
+  addGateway: (name: string, url: string, token: string) =>
+    fetch('/api/nodes', { method: 'POST', headers: J, body: JSON.stringify({ name, url, token }) }).then(unwrap<Gateway>),
+  delGateway: (id: string) => fetch(`/api/nodes/${id}`, { method: 'DELETE' }).then(unwrap<void>),
 };
 
-// ---- host/ip helpers (for one-click add-to-whitelist) ----
+// ---- host/ip helpers (one-click add-to-whitelist) ----
 export const splitHost = (hp: string) => {
   if (!hp) return '';
   if (hp.startsWith('[')) {

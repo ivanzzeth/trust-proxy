@@ -11,6 +11,7 @@ import {
   Moon,
   Radar,
   ScrollText,
+  Server,
   ShieldCheck,
   Sun,
   Terminal,
@@ -19,9 +20,10 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
-import { api } from '@/lib/api';
+import { api, currentNode, setNode } from '@/lib/api';
 import { cn, fmtBytes } from '@/lib/utils';
 import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 const NAV = [
@@ -35,6 +37,7 @@ const NAV = [
   { to: '/dns', label: 'DNS', icon: Radar },
   { to: '/history', label: 'History', icon: HistoryIcon },
   { to: '/logs', label: 'Logs', icon: Terminal },
+  { to: '/fleet', label: 'Fleet', icon: Server },
 ];
 
 const MODE_LABEL: Record<string, string> = { manual: 'Manual', system: 'System', tun: 'TUN' };
@@ -98,6 +101,34 @@ function AutoBlock() {
       <Switch checked={st.autoBlock} onCheckedChange={(v) => m.mutate(v)} />
       Auto-block
     </label>
+  );
+}
+
+function NodeSwitcher() {
+  const qc = useQueryClient();
+  const { data: gws = [] } = useQuery({ queryKey: ['gateways'], queryFn: api.gateways });
+  const sel = currentNode() ?? 'local';
+  if (gws.length === 0) return null; // no remote gateways registered -> hide
+  return (
+    <Select
+      value={sel}
+      onValueChange={(v) => {
+        setNode(v === 'local' ? null : v);
+        qc.clear(); // drop cached data so every page refetches the selected gateway
+      }}
+    >
+      <SelectTrigger className="h-8 w-44 border bg-card">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="local">This gateway</SelectItem>
+        {gws.map((g) => (
+          <SelectItem key={g.id} value={g.id}>
+            {g.name}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }
 
@@ -184,6 +215,7 @@ export function AppShell() {
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center justify-end gap-3 border-b bg-background/80 px-6 backdrop-blur">
+          <NodeSwitcher />
           <TrafficPill />
           <AutoBlock />
           <ModeSwitcher />

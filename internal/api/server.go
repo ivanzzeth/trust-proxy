@@ -5,6 +5,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"io/fs"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
+	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
@@ -73,6 +75,8 @@ type Options struct {
 	DNS         *dnscfg.Store
 	DNSApplier  DNSApplier
 	History     *history.Store
+	Nodes       *nodes.Store // brain: registry of remote gateways (reverse-proxied)
+	Token       string       // if set, /api/* requires this bearer token (probe mode)
 	Clash       *clash.Client // low-level Clash primitives, proxied to the browser
 	ConsoleDir  string        // on-disk dashboard dir (dev); used when ConsoleFS is nil
 	ConsoleFS   fs.FS         // embedded dashboard build (release); wins over ConsoleDir
@@ -94,6 +98,8 @@ type Server struct {
 	dns         *dnscfg.Store
 	dnsApplier  DNSApplier
 	history     *history.Store
+	nodes       *nodes.Store
+	token       string
 	clash       *clash.Client
 	consoleDir  string
 	consoleFS   fs.FS
@@ -101,7 +107,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, history: o.History, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -131,6 +137,10 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("DELETE /api/rulesets/{tag}", s.handleDeleteRuleSet)
 	mux.HandleFunc("GET /api/history/stats", s.handleHistoryStats)
 	mux.HandleFunc("GET /api/history", s.handleHistory)
+	mux.HandleFunc("GET /api/nodes", s.handleListNodes)
+	mux.HandleFunc("POST /api/nodes", s.handleAddNode)
+	mux.HandleFunc("DELETE /api/nodes/{id}", s.handleDeleteNode)
+	mux.HandleFunc("/api/nodes/{id}/{rest...}", s.handleNodeProxy) // reverse proxy to a probe
 	mux.HandleFunc("GET /api/dns", s.handleGetDNS)
 	mux.HandleFunc("PUT /api/dns", s.handleSetDNS)
 	mux.HandleFunc("GET /api/profiles", s.handleListProfiles)
@@ -138,8 +148,26 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("POST /api/profiles/{id}/activate", s.handleActivateProfile)
 	mux.HandleFunc("DELETE /api/profiles/{id}", s.handleDeleteProfile)
 	mux.Handle("/", s.consoleHandler())
-	s.httpSrv = &http.Server{Addr: o.Addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	s.httpSrv = &http.Server{Addr: o.Addr, Handler: s.withAuth(mux), ReadHeaderTimeout: 5 * time.Second}
 	return s
+}
+
+// withAuth requires a bearer token on /api/* when a token is configured (probe
+// mode). Static console assets stay open so the page can load.
+func (s *Server) withAuth(next http.Handler) http.Handler {
+	if s.token == "" {
+		return next
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
+				writeErr(w, http.StatusUnauthorized, "unauthorized")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Start blocks serving; returns http.ErrServerClosed on Close.

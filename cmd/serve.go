@@ -23,6 +23,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
+	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
@@ -38,6 +39,7 @@ var (
 	serveConsoleDir    string
 	serveClashAddr     string
 	serveClashSecret   string
+	serveAPIToken      string
 	serveMode          string
 	serveAutoBlock     bool
 	serveThreatFeeds   string
@@ -69,6 +71,7 @@ func init() {
 	f.StringVar(&serveConsoleDir, "console", "dashboard/dist", "dashboard static dir (shadcn build output)")
 	f.StringVar(&serveClashAddr, "clash-addr", "127.0.0.1:9090", "Clash API address (proxied to the console)")
 	f.StringVar(&serveClashSecret, "clash-secret", "", "Clash API secret (empty = load/generate a random one in the data dir)")
+	f.StringVar(&serveAPIToken, "api-token", "", "require this bearer token on /api/* (probe mode; set when exposing --api-addr on a non-loopback address)")
 	f.StringVar(&serveMode, "mode", gateway.ModeManual, "capture mode: manual | system | tun (tun needs root)")
 	f.BoolVar(&serveAutoBlock, "auto-block", true, "auto-drop connections that hit a threat-intel indicator")
 	f.StringVar(&serveThreatFeeds, "threat-feeds", "", "comma-separated threat-intel feed URLs (empty = built-in abuse.ch defaults)")
@@ -138,6 +141,10 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	nodesStore, err := nodes.NewStore(serveDataDir + "/nodes.json")
+	if err != nil {
+		return err
+	}
 
 	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
@@ -167,6 +174,8 @@ func runServe() error {
 		DNS:         dnsStore,
 		DNSApplier:  mgr,
 		History:     histStore,
+		Nodes:       nodesStore,
+		Token:       serveAPIToken,
 		Clash:       clash.New(serveClashAddr, secret),
 		ConsoleDir:  serveConsoleDir,
 		ConsoleFS:   embeddedUI,

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Pause, Play, Trash2 } from 'lucide-react';
 
+import { logsURL } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { PageHeader } from '@/components/page-header';
 import { Card } from '@/components/ui/card';
@@ -25,7 +26,7 @@ export default function Logs() {
 
   useEffect(() => {
     if (paused) return;
-    const es = new EventSource(`/api/logs?level=${level}`);
+    const es = new EventSource(logsURL(level));
     es.onmessage = (e) => {
       try {
         const d = JSON.parse(e.data);
