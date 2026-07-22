@@ -88,10 +88,18 @@ func remove(list []string, v string) []string {
 
 // AddDomain / RemoveDomain / AddIP / RemoveIP mutate and persist, returning the
 // new snapshot.
-func (s *Store) AddDomain(d string) (Rules, error)    { return s.mutate(func() { s.data.Domains = add(s.data.Domains, d) }) }
-func (s *Store) RemoveDomain(d string) (Rules, error) { return s.mutate(func() { s.data.Domains = remove(s.data.Domains, d) }) }
-func (s *Store) AddIP(ip string) (Rules, error)       { return s.mutate(func() { s.data.IPs = add(s.data.IPs, ip) }) }
-func (s *Store) RemoveIP(ip string) (Rules, error)    { return s.mutate(func() { s.data.IPs = remove(s.data.IPs, ip) }) }
+func (s *Store) AddDomain(d string) (Rules, error) {
+	return s.mutate(func() { s.data.Domains = add(s.data.Domains, d) })
+}
+func (s *Store) RemoveDomain(d string) (Rules, error) {
+	return s.mutate(func() { s.data.Domains = remove(s.data.Domains, d) })
+}
+func (s *Store) AddIP(ip string) (Rules, error) {
+	return s.mutate(func() { s.data.IPs = add(s.data.IPs, ip) })
+}
+func (s *Store) RemoveIP(ip string) (Rules, error) {
+	return s.mutate(func() { s.data.IPs = remove(s.data.IPs, ip) })
+}
 
 func (s *Store) mutate(fn func()) (Rules, error) {
 	s.mu.Lock()
