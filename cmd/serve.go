@@ -22,6 +22,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
+	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
@@ -88,6 +89,14 @@ func runServe() error {
 
 	engine := detect.New(2000)
 	engine.SetAutoBlock(serveAutoBlock)
+
+	// Durable per-connection history: fold every completed connection into an
+	// append-only log + aggregates.
+	histStore, err := history.NewStore(filepath.Join(serveDataDir, "history.jsonl"))
+	if err != nil {
+		return err
+	}
+	engine.SetOnFinalize(histStore.Record)
 	// Static demo indicators (always on, for testing); the live feed adds to these.
 	engine.LoadThreats([]string{"malware.test", "c2.example.com"}, nil)
 
@@ -157,6 +166,7 @@ func runServe() error {
 		ProfApplier: mgr,
 		DNS:         dnsStore,
 		DNSApplier:  mgr,
+		History:     histStore,
 		Clash:       clash.New(serveClashAddr, secret),
 		ConsoleDir:  serveConsoleDir,
 		ConsoleFS:   embeddedUI,

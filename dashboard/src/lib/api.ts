@@ -147,9 +147,45 @@ export interface DNSConfig {
   strategy?: string;
 }
 
+export interface Talker {
+  host: string;
+  up: number;
+  down: number;
+  count: number;
+}
+export interface HourBucket {
+  hour: number;
+  up: number;
+  down: number;
+  count: number;
+}
+export interface HistoryStats {
+  total_up: number;
+  total_down: number;
+  connections: number;
+  blocked: number;
+  alerts: number;
+  top_talkers: Talker[];
+  hourly: HourBucket[];
+}
+export interface HistoryRecord {
+  t: string;
+  h: string;
+  d?: string;
+  p?: string;
+  o?: string;
+  u: number;
+  dn: number;
+  x?: boolean;
+  l?: string;
+}
+
 export const api = {
   status: () => fetch('/api/status').then(unwrap<Status>),
   dns: () => fetch('/api/dns').then(unwrap<DNSConfig>),
+  historyStats: () => fetch('/api/history/stats').then(unwrap<HistoryStats>),
+  history: (limit = 200, host = '') =>
+    fetch(`/api/history?limit=${limit}&host=${encodeURIComponent(host)}`).then(unwrap<HistoryRecord[]>),
   setDNS: (c: DNSConfig) => fetch('/api/dns', { method: 'PUT', headers: J, body: JSON.stringify(c) }).then(unwrap<DNSConfig>),
   setMode: (mode: string) => post('/api/mode', { mode }).then(unwrap<{ mode: string }>),
   setAutoBlock: (enabled: boolean) => post('/api/autoblock', { enabled }).then(unwrap<{ autoBlock: boolean }>),

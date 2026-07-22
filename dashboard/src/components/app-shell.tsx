@@ -5,6 +5,7 @@ import {
   Activity,
   ArrowDownUp,
   Globe,
+  History as HistoryIcon,
   Layers,
   ListChecks,
   Moon,
@@ -32,6 +33,7 @@ const NAV = [
   { to: '/rulesets', label: 'Rule Sets', icon: ListChecks },
   { to: '/proxies', label: 'Proxies', icon: Globe },
   { to: '/dns', label: 'DNS', icon: Radar },
+  { to: '/history', label: 'History', icon: HistoryIcon },
   { to: '/logs', label: 'Logs', icon: Terminal },
 ];
 

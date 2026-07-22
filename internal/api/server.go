@@ -17,6 +17,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
+	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
@@ -71,6 +72,7 @@ type Options struct {
 	ProfApplier ProfileApplier
 	DNS         *dnscfg.Store
 	DNSApplier  DNSApplier
+	History     *history.Store
 	Clash       *clash.Client // low-level Clash primitives, proxied to the browser
 	ConsoleDir  string        // on-disk dashboard dir (dev); used when ConsoleFS is nil
 	ConsoleFS   fs.FS         // embedded dashboard build (release); wins over ConsoleDir
@@ -91,6 +93,7 @@ type Server struct {
 	profApplier ProfileApplier
 	dns         *dnscfg.Store
 	dnsApplier  DNSApplier
+	history     *history.Store
 	clash       *clash.Client
 	consoleDir  string
 	consoleFS   fs.FS
@@ -98,7 +101,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, history: o.History, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -126,6 +129,8 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("POST /api/rulesets", s.handleAddRuleSet)
 	mux.HandleFunc("PATCH /api/rulesets/{tag}", s.handlePatchRuleSet)
 	mux.HandleFunc("DELETE /api/rulesets/{tag}", s.handleDeleteRuleSet)
+	mux.HandleFunc("GET /api/history/stats", s.handleHistoryStats)
+	mux.HandleFunc("GET /api/history", s.handleHistory)
 	mux.HandleFunc("GET /api/dns", s.handleGetDNS)
 	mux.HandleFunc("PUT /api/dns", s.handleSetDNS)
 	mux.HandleFunc("GET /api/profiles", s.handleListProfiles)

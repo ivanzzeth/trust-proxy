@@ -15,6 +15,7 @@ import RuleSets from '@/pages/rulesets';
 import Proxies from '@/pages/proxies';
 import Logs from '@/pages/logs';
 import DNS from '@/pages/dns';
+import History from '@/pages/history';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
@@ -33,6 +34,7 @@ const router = createHashRouter([
       { path: 'rulesets', element: <RuleSets /> },
       { path: 'proxies', element: <Proxies /> },
       { path: 'dns', element: <DNS /> },
+      { path: 'history', element: <History /> },
       { path: 'logs', element: <Logs /> },
     ],
   },

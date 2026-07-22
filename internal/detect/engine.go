@@ -63,7 +63,13 @@ type Engine struct {
 	// DGA / DNS-tunnel scoring on observed domains
 	dgaEnabled bool
 	dnsParents map[string]*parentState
+
+	onFinalize func(Event) // called with the completed connection (history sink)
 }
+
+// SetOnFinalize registers a sink invoked once per connection when it closes,
+// with final byte counts. Set before traffic starts (not synchronized).
+func (e *Engine) SetOnFinalize(fn func(Event)) { e.onFinalize = fn }
 
 type beaconState struct {
 	times     []time.Time
@@ -428,6 +434,13 @@ func (e *Engine) finalize(ev *Event) {
 		ev.Reasons = append(ev.Reasons, fmt.Sprintf("large upload %s (possible exfil)", humanBytes(up)))
 	}
 	e.mu.Unlock()
+	if e.onFinalize != nil {
+		cp := *ev
+		cp.Upload = up
+		cp.Download = atomic.LoadInt64(&ev.Download)
+		cp.Reasons = append([]string(nil), ev.Reasons...)
+		e.onFinalize(cp)
+	}
 }
 
 // Events returns a snapshot of recent events, newest first.
