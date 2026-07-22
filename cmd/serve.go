@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ivanzzeth/trust-proxy/internal/api"
+	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
@@ -50,7 +51,11 @@ func runServe() error {
 		return err
 	}
 
-	mgr := gateway.NewManager(serveConfig, wlStore.Get())
+	engine := detect.New(2000)
+	// Demo threat indicators; replace/extend with a real feed (abuse.ch, etc.).
+	engine.LoadThreats([]string{"malware.test", "c2.example.com"}, nil)
+
+	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine)
 	if err := mgr.Start(); err != nil {
 		return err
 	}
@@ -66,6 +71,7 @@ func runServe() error {
 		Applier:    mgr,
 		Whitelist:  wlStore,
 		WLApplier:  mgr,
+		Detect:     engine,
 		Clash:      clash.New(serveClashAddr, serveClashSecret),
 		ConsoleDir: serveConsoleDir,
 	})

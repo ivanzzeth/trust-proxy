@@ -19,6 +19,7 @@ import (
 	singjson "github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/service"
 
+	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
@@ -31,6 +32,7 @@ const ProxyGroupTag = "proxy"
 type Manager struct {
 	configPath string
 	logger     log.Logger
+	engine     *detect.Engine
 
 	rebuildMu sync.Mutex // serializes rebuilds
 
@@ -40,9 +42,10 @@ type Manager struct {
 	wl       whitelist.Rules
 }
 
-// NewManager returns a manager seeded with the initial whitelist.
-func NewManager(configPath string, wl whitelist.Rules) *Manager {
-	return &Manager{configPath: configPath, logger: log.StdLogger(), wl: wl}
+// NewManager returns a manager seeded with the initial whitelist and the
+// detection engine to attach to the data path.
+func NewManager(configPath string, wl whitelist.Rules, engine *detect.Engine) *Manager {
+	return &Manager{configPath: configPath, logger: log.StdLogger(), wl: wl, engine: engine}
 }
 
 // Start builds and starts the box from the base config + current policy.
@@ -125,7 +128,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 	if err != nil {
 		return nil, err
 	}
-	instance.Router().AppendTracker(newDetector(m.logger))
+	instance.Router().AppendTracker(newDetector(m.engine))
 	return instance, nil
 }
 

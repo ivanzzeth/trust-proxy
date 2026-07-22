@@ -42,8 +42,26 @@ export interface Whitelist {
   ips: string[];
 }
 
+export interface DetectEvent {
+  id: number;
+  time: string;
+  network: string;
+  host: string;
+  destination: string;
+  source: string;
+  process: string;
+  rule: string;
+  outbound: string;
+  upload: number;
+  download: number;
+  level: 'info' | 'alert';
+  reasons?: string[];
+}
+
 export const tp = {
   listSubs: () => fetch('/api/subscriptions').then(unwrap<TPSubscription[]>),
+  events: (alertsOnly?: boolean) =>
+    fetch('/api/events' + (alertsOnly ? '?level=alert' : '')).then(unwrap<DetectEvent[]>),
   getWhitelist: () => fetch('/api/whitelist').then(unwrap<Whitelist>),
   addWhitelist: (type: 'domain' | 'ip', value: string) =>
     fetch('/api/whitelist', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ type, value }) }).then(

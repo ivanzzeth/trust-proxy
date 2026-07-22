@@ -5,71 +5,66 @@ import (
 	"net"
 
 	"github.com/sagernet/sing-box/adapter"
-	"github.com/sagernet/sing-box/log"
 	tun "github.com/sagernet/sing-tun"
 	N "github.com/sagernet/sing/common/network"
+
+	"github.com/ivanzzeth/trust-proxy/internal/detect"
 )
 
 // detector implements adapter.ConnectionTracker. Attached via
-// Box.Router().AppendTracker, it sits on the data path and receives every
-// connection the router *allows* (rejected connections are short-circuited
-// before this point, so under default-deny it observes exactly permitted
-// egress).
-//
-// Milestone 1: telemetry stub — logs each allowed connection and returns it
-// unchanged. This is the seam where detection (reputation, beaconing, abnormal
-// upload, exfil scoring) and enforcement (wrap-and-close, or Clash
-// DELETE /connections/{id}) will grow.
+// Box.Router().AppendTracker, it receives every connection the router allows
+// (rejected connections are short-circuited earlier). It records each into the
+// detection engine and byte-counts the TCP ones.
 type detector struct {
-	logger log.Logger
+	engine *detect.Engine
 }
 
-func newDetector(logger log.Logger) *detector {
-	return &detector{logger: logger}
+func newDetector(engine *detect.Engine) *detector {
+	return &detector{engine: engine}
 }
 
 var _ adapter.ConnectionTracker = (*detector)(nil)
 
 func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) net.Conn {
-	d.observe("tcp", m, matchedRule, matchOutbound)
-	return conn
+	ev := d.engine.Track("tcp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound))
+	return d.engine.Wrap(conn, ev)
 }
 
 func (d *detector) RoutedPacketConnection(ctx context.Context, conn N.PacketConn, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) N.PacketConn {
-	d.observe("udp", m, matchedRule, matchOutbound)
+	// UDP: record the event (no byte-count wrapper for packet conns yet).
+	d.engine.Track("udp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound))
 	return conn
 }
 
-// RoutedFlow is only invoked on the TUN gvisor flow path; nil is filtered out
-// by the router, so returning nil is safe while not running in TUN mode.
+// RoutedFlow is only invoked on the TUN gvisor flow path; nil is filtered out.
 func (d *detector) RoutedFlow(ctx context.Context, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) tun.FlowTracker {
 	return nil
 }
 
-func (d *detector) observe(network string, m adapter.InboundContext, rule adapter.Rule, out adapter.Outbound) {
-	host := m.Domain
-	if host == "" {
-		host = m.Destination.String()
+func host(m adapter.InboundContext) string {
+	if m.Domain != "" {
+		return m.Domain
 	}
-	proc := "-"
+	return m.Destination.String()
+}
+
+func procOf(m adapter.InboundContext) string {
 	if m.ProcessInfo != nil && m.ProcessInfo.ProcessPath != "" {
-		proc = m.ProcessInfo.ProcessPath
+		return m.ProcessInfo.ProcessPath
 	}
-	ruleStr := "(final)"
+	return ""
+}
+
+func ruleStr(rule adapter.Rule) string {
 	if rule != nil {
-		ruleStr = rule.String()
+		return rule.String()
 	}
-	outStr := "-"
+	return "(final)"
+}
+
+func outStr(out adapter.Outbound) string {
 	if out != nil {
-		outStr = out.Type() + "/" + out.Tag()
+		return out.Type() + "/" + out.Tag()
 	}
-	d.logger.Info("[detector] allow ", network,
-		" host=", host,
-		" dst=", m.Destination.String(),
-		" src=", m.Source.String(),
-		" proto=", m.Protocol,
-		" proc=", proc,
-		" rule=", ruleStr,
-		" out=", outStr,
-	)
+	return ""
 }

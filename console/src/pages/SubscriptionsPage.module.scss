@@ -205,3 +205,21 @@
 .wlCol .pasteRow {
   margin-bottom: 12px;
 }
+.rowBetween {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.alertBadge {
+  color: #fff;
+  background: #e5484d;
+  border-color: #e5484d;
+  margin-left: 8px;
+}
+.alertRow {
+  background: rgba(229, 72, 77, 0.08);
+}
+.alertDot {
+  color: #e5484d;
+  font-size: 10px;
+}

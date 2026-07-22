@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -35,6 +36,7 @@ type Options struct {
 	Applier    Applier
 	Whitelist  *whitelist.Store
 	WLApplier  WhitelistApplier
+	Detect     *detect.Engine
 	Clash      *clash.Client // low-level Clash primitives, proxied to the browser
 	ConsoleDir string        // static dir for the React console (served at /)
 }
@@ -46,13 +48,14 @@ type Server struct {
 	applier    Applier
 	wl         *whitelist.Store
 	wlApplier  WhitelistApplier
+	detect     *detect.Engine
 	clash      *clash.Client
 	consoleDir string
 }
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, clash: o.Clash, consoleDir: o.ConsoleDir}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, clash: o.Clash, consoleDir: o.ConsoleDir}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/subscriptions", s.handleListSubs)
@@ -63,6 +66,7 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("GET /api/connections", s.handleConnections)
 	mux.HandleFunc("DELETE /api/connections/{id}", s.handleKillConn)
 	mux.HandleFunc("DELETE /api/connections", s.handleKillAll)
+	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/whitelist", s.handleGetWhitelist)
 	mux.HandleFunc("POST /api/whitelist", s.handleAddWhitelist)
 	mux.HandleFunc("DELETE /api/whitelist", s.handleDelWhitelist)
@@ -206,6 +210,26 @@ func (s *Server) consoleHandler() http.Handler {
 		}
 		http.ServeFile(w, r, index) // SPA fallback
 	})
+}
+
+// ---- detection events ------------------------------------------------------
+
+func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if s.detect == nil {
+		writeJSON(w, http.StatusOK, []any{})
+		return
+	}
+	events := s.detect.Events()
+	if r.URL.Query().Get("level") == "alert" {
+		filtered := events[:0:0]
+		for _, e := range events {
+			if e.Level == "alert" {
+				filtered = append(filtered, e)
+			}
+		}
+		events = filtered
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 // ---- whitelist (egress allow-list) ----------------------------------------
