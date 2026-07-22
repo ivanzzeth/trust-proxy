@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"io"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -65,6 +67,35 @@ var subAddCmd = &cobra.Command{
 	},
 }
 
+var subImportName string
+
+var subImportCmd = &cobra.Command{
+	Use:   "import [file]",
+	Short: "Add nodes manually from pasted text / a file / stdin (no fetch)",
+	Long:  "Read node text (share links, base64, Clash YAML or sing-box JSON) from a file argument or stdin and add it as a manual subscription.",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var (
+			content []byte
+			err     error
+		)
+		if len(args) == 1 {
+			content, err = os.ReadFile(args[0])
+		} else {
+			content, err = io.ReadAll(os.Stdin)
+		}
+		if err != nil {
+			return err
+		}
+		s, err := sdk().ImportNodes(subImportName, string(content))
+		if err != nil {
+			return err
+		}
+		fmt.Printf("imported %s (%s): %d nodes\n", s.ID, s.Name, s.NodeCount)
+		return nil
+	},
+}
+
 var subApplyCmd = &cobra.Command{
 	Use:   "apply <id>",
 	Short: "Apply a subscription's nodes to the running gateway (hot reload)",
@@ -111,7 +142,8 @@ func init() {
 	subAddCmd.Flags().StringVar(&subAddName, "name", "", "friendly name")
 	subAddCmd.Flags().StringVar(&subAddUA, "ua", "", "User-Agent for fetching (default: clash-verge/v2.0.0)")
 	subAddCmd.Flags().StringVar(&subAddVia, "via", "", "fetch through a proxy (socks5://host:port or http://host:port)")
-	subCmd.AddCommand(subLsCmd, subAddCmd, subApplyCmd, subRmCmd, subRefreshCmd)
+	subImportCmd.Flags().StringVar(&subImportName, "name", "", "friendly name")
+	subCmd.AddCommand(subLsCmd, subAddCmd, subImportCmd, subApplyCmd, subRmCmd, subRefreshCmd)
 }
 
 func sdk() *client.Client {

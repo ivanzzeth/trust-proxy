@@ -71,6 +71,14 @@ func (c *Client) AddSubscription(name, url, userAgent, via string) (apitypes.Sub
 	return out, err
 }
 
+// ImportNodes adds a manual subscription from pasted node text (share links,
+// base64, Clash YAML or sing-box JSON) — no network fetch.
+func (c *Client) ImportNodes(name, content string) (apitypes.Subscription, error) {
+	var out apitypes.Subscription
+	err := c.do(http.MethodPost, "/api/subscriptions", apitypes.AddSubscriptionRequest{Name: name, Content: content}, &out)
+	return out, err
+}
+
 // ApplySubscription applies a subscription's nodes to the running gateway.
 func (c *Client) ApplySubscription(id string) (apitypes.Subscription, error) {
 	var out apitypes.Subscription

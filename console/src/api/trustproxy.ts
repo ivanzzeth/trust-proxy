@@ -45,6 +45,12 @@ export const tp = {
       headers: jsonHeaders,
       body: JSON.stringify({ name, url, user_agent: userAgent, via }),
     }).then(unwrap<TPSubscription>),
+  importNodes: (name: string, content: string) =>
+    fetch('/api/subscriptions', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ name, content }),
+    }).then(unwrap<TPSubscription>),
   applySub: (id: string) => fetch(`/api/subscriptions/${id}/apply`, { method: 'POST' }).then(unwrap<TPSubscription>),
   refreshSub: (id: string) =>
     fetch(`/api/subscriptions/${id}/refresh`, { method: 'POST' }).then(unwrap<TPSubscription>),

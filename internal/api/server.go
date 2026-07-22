@@ -80,11 +80,11 @@ func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	if req.URL == "" {
-		writeErr(w, http.StatusBadRequest, "url is required")
+	if req.URL == "" && req.Content == "" {
+		writeErr(w, http.StatusBadRequest, "url or content is required")
 		return
 	}
-	sub, err := s.store.Add(req.Name, req.URL, req.UserAgent, req.Via)
+	sub, err := s.store.Add(req.Name, req.URL, req.UserAgent, req.Via, req.Content)
 	if err != nil {
 		log.Println("subscription add refresh:", err)
 	}

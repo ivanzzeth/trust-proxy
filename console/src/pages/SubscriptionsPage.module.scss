@@ -27,6 +27,39 @@
   outline: none;
   border-color: var(--color-focus-blue, #4f8cff);
 }
+.paste {
+  margin-bottom: 18px;
+  background: var(--color-bg2, rgba(127, 127, 127, 0.06));
+  border: 1px solid var(--color-row-odd, #2a2f3a);
+  border-radius: 8px;
+  padding: 10px 14px;
+}
+.paste summary {
+  cursor: pointer;
+  font-size: 13px;
+  opacity: 0.8;
+  user-select: none;
+}
+.textarea {
+  width: 100%;
+  margin-top: 10px;
+  background: var(--color-input-bg, #1e222b);
+  border: 1px solid var(--color-input-border, #2a2f3a);
+  color: inherit;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  resize: vertical;
+}
+.pasteRow {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.pasteRow .input {
+  flex: 1;
+}
 .error {
   color: #e5484d;
   border: 1px solid #e5484d;

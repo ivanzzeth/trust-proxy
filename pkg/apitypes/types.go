@@ -22,6 +22,7 @@ type Subscription struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	URL       string `json:"url"`
+	Content   string `json:"content,omitempty"` // manual/pasted node text (no fetch)
 	UserAgent string `json:"user_agent,omitempty"`
 	Via       string `json:"via,omitempty"` // fetch through this proxy (socks5:// or http://)
 	Nodes     []Node `json:"nodes,omitempty"`
@@ -35,6 +36,7 @@ type Subscription struct {
 type AddSubscriptionRequest struct {
 	Name      string `json:"name"`
 	URL       string `json:"url"`
+	Content   string `json:"content,omitempty"` // paste node text directly (manual, no fetch)
 	UserAgent string `json:"user_agent,omitempty"`
 	Via       string `json:"via,omitempty"`
 }

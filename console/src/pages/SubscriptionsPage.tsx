@@ -39,10 +39,23 @@ export default function SubscriptionsPage() {
     },
     onError: onErr,
   });
+  const [pasteName, setPasteName] = useState('');
+  const [pasteContent, setPasteContent] = useState('');
+  const importM = useMutation({
+    mutationFn: () => tp.importNodes(pasteName, pasteContent),
+    onSuccess: () => {
+      setPasteName('');
+      setPasteContent('');
+      setErr('');
+      invalidate();
+    },
+    onError: onErr,
+  });
+
   const applyM = useMutation({ mutationFn: (id: string) => tp.applySub(id), onSuccess: invalidate, onError: onErr });
   const refreshM = useMutation({ mutationFn: (id: string) => tp.refreshSub(id), onSuccess: invalidate, onError: onErr });
   const delM = useMutation({ mutationFn: (id: string) => tp.delSub(id), onSuccess: invalidate, onError: onErr });
-  const busy = addM.isPending || applyM.isPending || refreshM.isPending || delM.isPending;
+  const busy = addM.isPending || importM.isPending || applyM.isPending || refreshM.isPending || delM.isPending;
 
   return (
     <div className={s.page}>
@@ -67,6 +80,28 @@ export default function SubscriptionsPage() {
         <input className={s.input} placeholder={t('sub_via_ph')} value={via} onChange={(e) => setVia(e.target.value)} />
         <Button disabled={busy || !url}>{t('sub_add')}</Button>
       </form>
+
+      <details className={s.paste}>
+        <summary>{t('sub_paste_title')}</summary>
+        <textarea
+          className={s.textarea}
+          placeholder={t('sub_paste_ph')}
+          value={pasteContent}
+          onChange={(e) => setPasteContent(e.target.value)}
+          rows={5}
+        />
+        <div className={s.pasteRow}>
+          <input
+            className={s.input}
+            placeholder={t('sub_name_ph')}
+            value={pasteName}
+            onChange={(e) => setPasteName(e.target.value)}
+          />
+          <Button disabled={busy || !pasteContent.trim()} onClick={() => importM.mutate()}>
+            {t('sub_import')}
+          </Button>
+        </div>
+      </details>
 
       {err && <div className={s.error}>⚠ {err}</div>}
 

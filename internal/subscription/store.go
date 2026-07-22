@@ -108,23 +108,30 @@ func idFor(url string) string {
 // gate by UA (a generic curl UA gets a 403), so we default to a common client.
 const DefaultUserAgent = "clash-verge/v2.4.2"
 
-// Add registers a subscription (id derived from URL, so re-adding is
-// idempotent) and immediately refreshes it. via, if set, routes the fetch
-// through a proxy (socks5:// or http://).
-func (s *Store) Add(name, url, userAgent, via string) (apitypes.Subscription, error) {
+// Add registers a subscription and immediately refreshes it. If content is set
+// it's a manual/pasted node list (no network fetch); otherwise url is fetched
+// (via, if set, routes the fetch through a socks5://|http:// proxy). The id is
+// derived from the content or URL so re-adding is idempotent.
+func (s *Store) Add(name, url, userAgent, via, content string) (apitypes.Subscription, error) {
 	id := idFor(url)
+	if content != "" {
+		id = idFor("manual:" + content)
+	}
 	if userAgent == "" {
 		userAgent = DefaultUserAgent
 	}
 	s.mu.Lock()
 	if _, exists := s.data[id]; !exists {
-		s.data[id] = &apitypes.Subscription{ID: id, Name: name, URL: url, UserAgent: userAgent, Via: via}
+		s.data[id] = &apitypes.Subscription{ID: id, Name: name, URL: url, Content: content, UserAgent: userAgent, Via: via}
 	} else {
 		if name != "" {
 			s.data[id].Name = name
 		}
 		s.data[id].UserAgent = userAgent
 		s.data[id].Via = via
+		if content != "" {
+			s.data[id].Content = content
+		}
 	}
 	s.mu.Unlock()
 	return s.Refresh(id)
@@ -160,16 +167,24 @@ func (s *Store) Delete(id string) error {
 func (s *Store) Refresh(id string) (apitypes.Subscription, error) {
 	s.mu.Lock()
 	sub, ok := s.data[id]
-	url, ua, via := "", "", ""
+	url, ua, via, content := "", "", "", ""
 	if ok {
-		url, ua, via = sub.URL, sub.UserAgent, sub.Via
+		url, ua, via, content = sub.URL, sub.UserAgent, sub.Via, sub.Content
 	}
 	s.mu.Unlock()
 	if !ok {
 		return apitypes.Subscription{}, fmt.Errorf("subscription %q not found", id)
 	}
 
-	nodes, ferr := s.fetchAndParse(url, ua, via)
+	var (
+		nodes []apitypes.Node
+		ferr  error
+	)
+	if content != "" {
+		nodes = Parse([]byte(content)) // manual: parse pasted text, no fetch
+	} else {
+		nodes, ferr = s.fetchAndParse(url, ua, via)
+	}
 
 	s.mu.Lock()
 	sub = s.data[id]
