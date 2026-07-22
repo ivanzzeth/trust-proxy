@@ -35,5 +35,13 @@ webui:
 webui-dev:
 	cd $(WEBUI_DIR) && corepack pnpm run dev
 
+## Build our own React console -> console/dist (served by the backend at :9096)
+console:
+	cd console && npm install && npm run build
+
+## Run the console dev server (Vite, proxies /api to :9096)
+console-dev:
+	cd console && npm run dev
+
 clean:
 	rm -f trust-proxy

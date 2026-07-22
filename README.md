@@ -26,7 +26,10 @@ sing-box 子模块跟踪 `testing` 分支——官方 dashboard 依赖的 `servi
 ### 跑起来（单一二进制，子命令区分）
 ```bash
 make build                 # 编译 -> ./trust-proxy（默认带 with_clash_api）
-./trust-proxy serve        # 跑网关：sing-box + detection + 后端 /api(:9096)
+make console               # 构建我们的 React 控制台 -> console/dist（首次需要）
+./trust-proxy serve        # 跑网关：sing-box + detection + 后端 /api + 控制台(:9096)
+# 浏览器打开 http://127.0.0.1:9096/  —— 我们自己的控制台（订阅/节点管理 + 实时连接）
+# 前端开发热更：make console-dev（Vite，代理 /api 到 :9096）
 
 # 另开终端，CLI 即客户端（经 Go SDK 调后端）：
 ./trust-proxy sub add https://airport.example/subscribe --name my-airport  # 订阅(抓取+解析)
@@ -76,7 +79,7 @@ make run             # 浏览器打开 http://127.0.0.1:9095/  (会跳 /dashboar
 | 代理入站 (mixed) | `127.0.0.1:17070` | socks/http 混合，验证用 |
 | API / dashboard | `127.0.0.1:9095` | 官方 UI 对接口 (Connect/protobuf) |
 | Clash API | `127.0.0.1:9090` | 底层 SDK(pkg/clash)消费 (REST/WS)，secret=`trust-proxy` |
-| 后端 /api | `127.0.0.1:9096` | 我们自己的 API，上层 SDK(pkg/client)消费（订阅等） |
+| 后端 /api + **控制台** | `127.0.0.1:9096` | 我们自己的 API + React 控制台（单一 origin，代理 Clash 连接数据） |
 
 均绑 loopback。**别开 TUN / 别设系统代理**，以免与 Surge 等打架。
 

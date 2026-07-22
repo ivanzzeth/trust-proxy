@@ -8,3 +8,7 @@
 /webui/src/gen
 /webui/vendor/iterm2-color-schemes
 data/
+
+# our React console — regenerable artifacts
+/console/dist
+/console/node_modules

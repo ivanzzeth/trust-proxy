@@ -1,35 +1,48 @@
-// Package api is the trust-proxy backend's own HTTP API (the "high-level"
-// surface, distinct from the standard Clash API). The SDK's high-level client
-// (pkg/client) talks to this; the low-level client (pkg/clash) talks straight
-// to the Clash API.
+// Package api is the trust-proxy backend's own HTTP API + console host. The
+// React console (pkg served at /) talks only to this single origin; connection
+// data is proxied from the standard Clash API so the browser never needs the
+// Clash secret. Higher-level features (subscriptions) live under /api too.
 package api
 
 import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
+	"github.com/ivanzzeth/trust-proxy/pkg/clash"
 )
 
-// Applier applies subscription nodes to the running data plane (implemented by
-// gateway.Manager).
+// Applier applies subscription nodes to the running data plane (gateway.Manager).
 type Applier interface {
 	Apply(nodes []apitypes.Node) error
 }
 
-// Server exposes /api/* backed by the subscription store and gateway.
-type Server struct {
-	httpSrv *http.Server
-	store   *subscription.Store
-	applier Applier
+// Options configures the API server.
+type Options struct {
+	Addr       string
+	Store      *subscription.Store
+	Applier    Applier
+	Clash      *clash.Client // low-level Clash primitives, proxied to the browser
+	ConsoleDir string        // static dir for the React console (served at /)
 }
 
-// NewServer builds the API server bound to addr.
-func NewServer(addr string, store *subscription.Store, applier Applier) *Server {
-	s := &Server{store: store, applier: applier}
+// Server exposes /api/* and serves the console.
+type Server struct {
+	httpSrv    *http.Server
+	store      *subscription.Store
+	applier    Applier
+	clash      *clash.Client
+	consoleDir string
+}
+
+// NewServer builds the API server.
+func NewServer(o Options) *Server {
+	s := &Server{store: o.Store, applier: o.Applier, clash: o.Clash, consoleDir: o.ConsoleDir}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/subscriptions", s.handleListSubs)
@@ -37,11 +50,11 @@ func NewServer(addr string, store *subscription.Store, applier Applier) *Server 
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.handleDeleteSub)
 	mux.HandleFunc("POST /api/subscriptions/{id}/refresh", s.handleRefreshSub)
 	mux.HandleFunc("POST /api/subscriptions/{id}/apply", s.handleApplySub)
-	s.httpSrv = &http.Server{
-		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	mux.HandleFunc("GET /api/connections", s.handleConnections)
+	mux.HandleFunc("DELETE /api/connections/{id}", s.handleKillConn)
+	mux.HandleFunc("DELETE /api/connections", s.handleKillAll)
+	mux.Handle("/", s.consoleHandler())
+	s.httpSrv = &http.Server{Addr: o.Addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	return s
 }
 
@@ -50,6 +63,8 @@ func (s *Server) Start() error { return s.httpSrv.ListenAndServe() }
 
 // Close shuts the server down.
 func (s *Server) Close() error { return s.httpSrv.Close() }
+
+// ---- subscriptions --------------------------------------------------------
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -71,8 +86,6 @@ func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {
 	}
 	sub, err := s.store.Add(req.Name, req.URL, req.UserAgent)
 	if err != nil {
-		// Add still persists the subscription even if the first refresh fails;
-		// return 201 with LastError populated so the client sees the reason.
 		log.Println("subscription add refresh:", err)
 	}
 	writeJSON(w, http.StatusCreated, sub)
@@ -117,6 +130,69 @@ func (s *Server) handleApplySub(w http.ResponseWriter, r *http.Request) {
 	}
 	sub, _ = s.store.Get(sub.ID)
 	writeJSON(w, http.StatusOK, sub)
+}
+
+// ---- connections (proxied from the Clash API) -----------------------------
+
+func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
+	if s.clash == nil {
+		writeErr(w, http.StatusServiceUnavailable, "clash api not available")
+		return
+	}
+	snap, err := s.clash.Connections()
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *Server) handleKillConn(w http.ResponseWriter, r *http.Request) {
+	if s.clash == nil {
+		writeErr(w, http.StatusServiceUnavailable, "clash api not available")
+		return
+	}
+	if err := s.clash.CloseConnection(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleKillAll(w http.ResponseWriter, r *http.Request) {
+	if s.clash == nil {
+		writeErr(w, http.StatusServiceUnavailable, "clash api not available")
+		return
+	}
+	if err := s.clash.CloseAllConnections(); err != nil {
+		writeErr(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// ---- console static host --------------------------------------------------
+
+// consoleHandler serves the React console with SPA fallback. If the build is
+// missing it returns a short hint instead of a 404.
+func (s *Server) consoleHandler() http.Handler {
+	fileSrv := http.FileServer(http.Dir(s.consoleDir))
+	index := filepath.Join(s.consoleDir, "index.html")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := os.Stat(index); err != nil {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("trust-proxy console not built.\nRun: make console\n"))
+			return
+		}
+		if p := filepath.Join(s.consoleDir, filepath.Clean(r.URL.Path)); r.URL.Path != "/" {
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				fileSrv.ServeHTTP(w, r)
+				return
+			}
+		}
+		http.ServeFile(w, r, index) // SPA fallback
+	})
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
