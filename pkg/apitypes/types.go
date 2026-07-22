@@ -117,15 +117,20 @@ type Rules struct {
 }
 
 // DNSServer is one resolver. Type: local (system) | udp | tcp | tls | https |
-// quic. Non-local servers take Server(+Port) and an optional Detour outbound
-// ("direct" or "proxy") — Detour="proxy" resolves through the exit node so DNS
-// isn't leaked to the local network.
+// quic | fakeip | hosts. Non-local network servers take Server(+Port) and an
+// optional Detour outbound ("direct" or "proxy") — Detour="proxy" resolves
+// through the exit node so DNS isn't leaked to the local network. fakeip takes
+// Inet4Range/Inet6Range (no address/detour); hosts takes a Records map
+// (host -> [ips], no address/detour).
 type DNSServer struct {
-	Tag    string `json:"tag"`
-	Type   string `json:"type"`
-	Server string `json:"server,omitempty"`
-	Port   int    `json:"port,omitempty"`
-	Detour string `json:"detour,omitempty"`
+	Tag        string              `json:"tag"`
+	Type       string              `json:"type"`
+	Server     string              `json:"server,omitempty"`
+	Port       int                 `json:"port,omitempty"`
+	Detour     string              `json:"detour,omitempty"`
+	Inet4Range string              `json:"inet4_range,omitempty"` // fakeip: default 198.18.0.0/15
+	Inet6Range string              `json:"inet6_range,omitempty"` // fakeip: default fc00::/18
+	Records    map[string][]string `json:"records,omitempty"`     // hosts: host -> [ips]
 }
 
 // DNSRule routes matching queries to a server tag (split-DNS).

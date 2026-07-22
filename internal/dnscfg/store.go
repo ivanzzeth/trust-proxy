@@ -14,7 +14,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
-var validTypes = map[string]bool{"local": true, "udp": true, "tcp": true, "tls": true, "https": true, "quic": true}
+var validTypes = map[string]bool{"local": true, "udp": true, "tcp": true, "tls": true, "https": true, "quic": true, "fakeip": true, "hosts": true}
 var validStrategy = map[string]bool{"": true, "prefer_ipv4": true, "prefer_ipv6": true, "ipv4_only": true, "ipv6_only": true}
 
 // Default = system resolver only (non-disruptive; the user opts into
@@ -97,9 +97,10 @@ func validate(c apitypes.DNSConfig) error {
 		}
 		tags[sv.Tag] = true
 		if !validTypes[sv.Type] {
-			return fmt.Errorf("invalid server type %q (want local|udp|tcp|tls|https|quic)", sv.Type)
+			return fmt.Errorf("invalid server type %q (want local|udp|tcp|tls|https|quic|fakeip|hosts)", sv.Type)
 		}
-		if sv.Type != "local" && sv.Server == "" {
+		// fakeip/hosts synthesize answers locally — no server address or detour.
+		if sv.Type != "local" && sv.Type != "fakeip" && sv.Type != "hosts" && sv.Server == "" {
 			return fmt.Errorf("server %q: address required for type %s", sv.Tag, sv.Type)
 		}
 		if sv.Detour != "" && sv.Detour != "direct" && sv.Detour != "proxy" {
@@ -122,7 +123,17 @@ func validate(c apitypes.DNSConfig) error {
 
 func clone(c apitypes.DNSConfig) apitypes.DNSConfig {
 	out := apitypes.DNSConfig{Final: c.Final, Strategy: c.Strategy}
-	out.Servers = append([]apitypes.DNSServer(nil), c.Servers...)
+	out.Servers = make([]apitypes.DNSServer, 0, len(c.Servers))
+	for _, sv := range c.Servers {
+		if sv.Records != nil {
+			rec := make(map[string][]string, len(sv.Records))
+			for h, ips := range sv.Records {
+				rec[h] = append([]string(nil), ips...)
+			}
+			sv.Records = rec
+		}
+		out.Servers = append(out.Servers, sv)
+	}
 	out.Rules = make([]apitypes.DNSRule, 0, len(c.Rules))
 	for _, r := range c.Rules {
 		out.Rules = append(out.Rules, apitypes.DNSRule{

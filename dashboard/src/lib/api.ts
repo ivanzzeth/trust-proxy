@@ -164,6 +164,9 @@ export interface DNSServer {
   server?: string;
   port?: number;
   detour?: string;
+  inet4_range?: string;
+  inet6_range?: string;
+  records?: Record<string, string[]>;
 }
 export interface DNSRule {
   domain_suffix?: string[];

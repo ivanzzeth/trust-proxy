@@ -10,7 +10,25 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-const TYPES = ['local', 'udp', 'tcp', 'tls', 'https', 'quic'];
+const TYPES = ['local', 'udp', 'tcp', 'tls', 'https', 'quic', 'fakeip', 'hosts'];
+// fakeip/hosts synthesize answers locally — no server address / detour.
+const SYNTH = new Set(['local', 'fakeip', 'hosts']);
+
+// hosts records <-> textarea text ("host=ip1,ip2" per line).
+const recordsToText = (r?: Record<string, string[]>) =>
+  Object.entries(r ?? {})
+    .map(([h, ips]) => `${h}=${ips.join(',')}`)
+    .join('\n');
+const textToRecords = (t: string): Record<string, string[]> => {
+  const out: Record<string, string[]> = {};
+  for (const line of t.split('\n')) {
+    const [h, rest] = line.split('=');
+    const host = (h ?? '').trim();
+    if (!host) continue;
+    out[host] = (rest ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+  }
+  return out;
+};
 // Radix SelectItem values must be non-empty, so "auto" is the sentinel for "".
 const DETOURS = ['auto', 'direct', 'proxy'];
 const STRATEGIES = ['auto', 'prefer_ipv4', 'prefer_ipv6', 'ipv4_only', 'ipv6_only'];
@@ -92,23 +110,39 @@ export default function DNS() {
           </CardHeader>
           <CardContent className="space-y-2">
             {cfg.servers.map((s, i) => (
-              <div key={i} className="grid grid-cols-[1fr_5rem_1.2fr_5.5rem_auto] items-center gap-1.5">
-                <Input className="h-8" placeholder="tag" value={s.tag} onChange={(e) => setServer(i, { tag: e.target.value })} />
-                <Select value={s.type} onValueChange={(v) => setServer(i, { type: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>{TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
-                </Select>
-                <Input className="h-8 disabled:opacity-40" placeholder={s.type === 'local' ? '(system)' : 'server'} disabled={s.type === 'local'} value={s.server ?? ''} onChange={(e) => setServer(i, { server: e.target.value })} />
-                <Select value={s.detour ? s.detour : 'auto'} onValueChange={(v) => setServer(i, { detour: v === 'auto' ? '' : v })} disabled={s.type === 'local'}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>{DETOURS.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
-                </Select>
-                <Button size="icon" variant="ghost" className="size-7 text-destructive" onClick={() => patch({ servers: cfg.servers.filter((_, j) => j !== i) })}>
-                  <Trash2 className="size-3.5" />
-                </Button>
+              <div key={i} className="space-y-1.5">
+                <div className="grid grid-cols-[1fr_5rem_1.2fr_5.5rem_auto] items-center gap-1.5">
+                  <Input className="h-8" placeholder="tag" value={s.tag} onChange={(e) => setServer(i, { tag: e.target.value })} />
+                  <Select value={s.type} onValueChange={(v) => setServer(i, { type: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>{TYPES.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <Input className="h-8 disabled:opacity-40" placeholder={SYNTH.has(s.type) ? (s.type === 'local' ? '(system)' : `(${s.type})`) : 'server'} disabled={SYNTH.has(s.type)} value={s.server ?? ''} onChange={(e) => setServer(i, { server: e.target.value })} />
+                  <Select value={s.detour ? s.detour : 'auto'} onValueChange={(v) => setServer(i, { detour: v === 'auto' ? '' : v })} disabled={SYNTH.has(s.type)}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>{DETOURS.map((d) => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
+                  </Select>
+                  <Button size="icon" variant="ghost" className="size-7 text-destructive" onClick={() => patch({ servers: cfg.servers.filter((_, j) => j !== i) })}>
+                    <Trash2 className="size-3.5" />
+                  </Button>
+                </div>
+                {s.type === 'fakeip' && (
+                  <div className="grid grid-cols-2 gap-1.5 pl-1">
+                    <Input className="h-8" placeholder="inet4_range (198.18.0.0/15)" value={s.inet4_range ?? ''} onChange={(e) => setServer(i, { inet4_range: e.target.value })} />
+                    <Input className="h-8" placeholder="inet6_range (fc00::/18)" value={s.inet6_range ?? ''} onChange={(e) => setServer(i, { inet6_range: e.target.value })} />
+                  </div>
+                )}
+                {s.type === 'hosts' && (
+                  <textarea
+                    className="min-h-16 w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-xs font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                    placeholder="one per line: host=1.2.3.4,5.6.7.8"
+                    value={recordsToText(s.records)}
+                    onChange={(e) => setServer(i, { records: textToRecords(e.target.value) })}
+                  />
+                )}
               </div>
             ))}
-            <p className="pt-1 text-xs text-muted-foreground">detour <code>proxy</code> = resolve via the exit node (no leak); <code>direct</code> = local network.</p>
+            <p className="pt-1 text-xs text-muted-foreground">detour <code>proxy</code> = resolve via the exit node (no leak); <code>direct</code> = local network. <code>fakeip</code>/<code>hosts</code> answer locally (no address).</p>
           </CardContent>
         </Card>
 
