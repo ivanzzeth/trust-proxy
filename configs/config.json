@@ -23,6 +23,10 @@
       "tag": "direct"
     },
     {
+      "type": "block",
+      "tag": "blocked"
+    },
+    {
       "type": "selector",
       "tag": "proxy",
       "outbounds": ["direct"]
@@ -33,10 +37,11 @@
       { "action": "sniff" },
       {
         "network": ["tcp", "udp"],
-        "action": "reject"
+        "action": "route",
+        "outbound": "blocked"
       }
     ],
-    "final": "direct"
+    "final": "blocked"
   },
   "services": [
     {

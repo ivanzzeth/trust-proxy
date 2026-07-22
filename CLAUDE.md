@@ -46,8 +46,12 @@
 sing-box 里的写法（`configs/config.json` 的 `route.rules`，顺序敏感）：
 1. `{ "action": "sniff" }` — 先嗅探拿到 SNI/域名（非终结）。
 2. allow-list：`domain_suffix` / `ip_cidr` 命中 → `{ "action": "route", "outbound": "direct" }`（终结、放行）。
-3. 兜底：`{ "network": ["tcp","udp"], "action": "reject" }` — 其余全拒。
-   （注意：**空 matcher 的 rule 非法**=`missing conditions`，所以兜底必须带 `network` 匹配器；`reject` 在 tracker 之前短路，故 detector 只看到「放行」的连接。）
+3. 兜底：`{ "network": ["tcp","udp"], "action": "route", "outbound": "blocked" }` — 其余全拒（路由到 `block` 出站，EPERM 丢弃）。
+   （注意：**空 matcher 的 rule 非法**=`missing conditions`，所以兜底必须带 `network` 匹配器——这也是各注入函数定位兜底的锚点。**为什么用 route→block 而不是 `action:reject`**：`reject` 在 tracker 之前短路，detector 看不到被拦连接；改成路由到 `block` 出站后，被拦连接**照样过 tracker**（sniff 已在前面跑，能拿到 SNI 域名），于是被拦连接可见于事件/连接页，支持「一键加白」。安全等价：`block` 出站 DialContext 返回 EPERM，不出网。）
+
+**运行时注入后的完整顺序**（`buildMergedConfig`，顺序敏感、load-bearing）：
+`sniff` → (`hijack-dns`，仅 TUN) → **规则集 block**（`{rule_set:[…], action:reject}`）→ **进程 invert 拒绝**（`{process_name/process_path:[allow-list], invert:true, action:reject}`，进程白名单非空时）→ **设备 invert 拒绝**（`{source_ip_cidr:[allow-list], invert:true, action:reject}`，设备白名单非空时；未知来源设备先被拒）→ **域名/IP 白名单放行**（domain→proxy 组，ip→direct）→ **规则集 allow**（allow-direct→direct / allow-proxy→proxy）→ **兜底 route→`blocked`**（带 network matcher；被拦连接经 tracker 记录后由 block 出站丢弃）。
+`injectWhitelist` 必须在 `injectRuleSets` 之前跑（后者靠「带 network matcher 的兜底 reject」定位插入点，白名单时刻唯一的 reject 就是兜底）。进程维度是**可选反外泄闸**：木马即便伪装目标域名，只要其二进制不在放行进程名单里就出不了网。
 
 ### UI 分工（已决策 + 已落地）
 官方 dashboard 是**运行时监控面板**，**不含**节点/订阅/多租户管理——那些是 s-ui/3x-ui 类功能。决策与现状：
@@ -75,8 +79,12 @@ CLI：`conn ls|kill`（底层原语，走 pkg/clash→:9090）；`sub add|ls|rm|
 ```
 main.go                    thin: cmd.Execute()
 cmd/{root,serve,sub,conn}.go  cobra 命令
-internal/gateway/          box 引导(Bootstrap) + detector(AppendTracker 检测器)
-internal/api/              我们自己的后端 /api（stdlib mux；订阅 CRUD + 代理 Clash 连接 + serve console）
+internal/gateway/          box 引导 + detector + 热重载注入(outbounds/mode/whitelist/rule_set) + ApplyProfile
+internal/detect/           检测引擎（事件环形缓冲 + 字节计数 + 威胁情报匹配 + 持久化恢复）
+internal/threatfeed/       威胁情报 feed 加载器（abuse.ch，定时刷新 → engine.SetFeedThreats）
+internal/ruleset/          规则集存储 + 公开规则库 catalog（JSON 存 data/rulesets.json）
+internal/profile/          配置档存储（快照订阅/白名单/规则集/模式，data/profiles.json）
+internal/api/              我们自己的后端 /api（stdlib mux；订阅/白名单/规则集/配置档 CRUD + 模式/状态/自动阻断 + 代理 Clash + serve console）
 console/                   我们自建的 React 控制台（React19+Vite+TS，管理+安全）
 internal/subscription/     订阅 抓取/解析(base64+share链)/JSON 存储（借鉴 s-ui）
 pkg/clash/                 底层 SDK：标准 Clash API 客户端
@@ -119,6 +127,7 @@ git commit -m "chore: bump sing-box submodule to <ref>"
 注意：
 - **内部 Go API 无兼容承诺**（`adapter`/`trafficcontrol`/`route`）。升级后若 `main.go` 或未来的 tracker 编译失败，
   按新签名修。**能走 config(JSON) 表达的就别写死 Go 结构体**，减少受伤面。
+- **remote rule_set 的 `download_detour` 在 sing-box 1.14 已 deprecated（1.16 移除）**：目前 `injectRuleSets`（`internal/gateway/gateway.go`）仍用 `download_detour: "direct"`，运行会打 deprecation 警告但功能正常。升级到 ≥1.16 时改用新的 route 级 default rule-set http client / `default_domain_resolver` 机制（届时按新 schema 调整 `injectRuleSets` 生成的 descriptor）。选 `direct` 是刻意的：默认拒绝下若经 `proxy` 组拉规则会死锁（拉不到能放行的规则）。
 - **build tags**：里程碑 0 无需 tag（`service/api` 无条件编译）。要 Clash API 加 `with_clash_api`，
   QUIC 加 `with_quic`，uTLS 加 `with_utls`（见 `Makefile` 的 `TAGS`）。
 - 别盲目跟 `testing` HEAD，建议 pin 到具体 commit，升级当独立动作 + 回归。
@@ -199,10 +208,12 @@ curl -x socks5h://127.0.0.1:17070 https://example.com            # 正常 -> 200
 - **代理服务端（出口节点）**：`trust-proxy proxy run -c server.json`；一键生成：`trust-proxy proxy gen --type <ss|vless-reality|vless|vmess|trojan|anytls|hysteria2|tuic> --server <ip> --port <p>` → 输出服务端配置 + 客户端节点（Clash dict，可直接粘进 console）。TLS 协议自动内联自签证书（客户端 skip-cert-verify），vless-reality 免证书自动生成密钥对。
 - **TUN 全流量网关**：`sudo trust-proxy serve -c configs/config.tun.json`（`tun` 入站 + `auto_route` 网络层接管**所有**出入网流量——木马的裸 socket 也逃不掉）。需 **root**，且与其他 TUN 工具（Surge 增强模式等）互斥，用于**专用网关机/软路由**。检测与白名单逻辑不变（同一 route）。构建需 `with_gvisor`（已在默认 TAGS）。
 - **里程碑 0（✅）** 全栈跑通：Go 嵌入 sing-box + 代理 + 官方监控 UI。
-- **里程碑 1（🟡 进行中）** ✅白名单默认拒绝 + ✅`AppendTracker` 检测器遥测 stub + ✅Clash API + ✅单一二进制 CLI/SDK 分层 + ✅订阅管理（抓取/解析/存储）+ ✅**订阅 apply（转换成 sing-box outbound + 热重载进 `proxy` 组）**。**待做**：自动处置闭环（检测异常 → `conn kill`）。
-- **里程碑 2（🟡 进行中）** ✅自建 React 控制台骨架 + 单一 origin + 订阅/节点管理 + 实时连接（代理 Clash）。**待做**：白名单管理 UI、检测/告警视图（需先补后端 events/whitelist API）、go:embed 单二进制。
-- **里程碑 3（🟡）** ✅检测引擎（审计事件 + 字节计数 + 威胁情报命中 + 大上传外泄告警）+ 告警页；✅代理服务端一键部署（8 协议）；✅TUN 全流量网关（配置就绪，需 root 部署）。
-- **后续** 威胁情报 feed 自动加载（abuse.ch）、beaconing 检测、自动处置闭环（告警→断连）、事件持久化(SQLite)、go:embed 单二进制、多节点管理。
+- **里程碑 1（✅）** 白名单默认拒绝 + `AppendTracker` 检测器 + Clash API + 单一二进制 CLI/SDK 分层 + 订阅管理 + 订阅 apply + ✅**自动处置闭环**（`--auto-block`：威胁命中 → detector 直接断连，`internal/gateway/detector.go`）。
+- **里程碑 2（✅ 主体）** 自建 React 控制台 + 单一 origin + 订阅/节点管理 + 实时连接 + ✅白名单 UI + ✅检测/告警页 + ✅规则集/配置档页 + ✅侧边栏模式切换。**待做**：go:embed 单二进制。
+- **里程碑 3（✅ 主体）** 检测引擎（审计 + 字节计数 + 威胁情报命中 + 大上传外泄告警）+ 告警页；代理服务端一键部署（8 协议）；TUN 全流量网关；✅**威胁情报 feed 自动加载**（abuse.ch Feodo，`internal/threatfeed`，定时替换）；✅**事件持久化**（`data/events.json` 快照，重启恢复）；✅**运行时模式切换**（manual/system/tun，`gateway.applyMode`，失败回滚）。
+- **里程碑 4（✅ 主体）** ✅**规则集一键导入**（公开 `rule_set` catalog + 按 URL；block/allow-direct/allow-proxy 角色注入，`gateway.injectRuleSets` + `internal/ruleset`）；✅**配置档（Profiles）一键切换**（`internal/profile` + `gateway.ApplyProfile` 单次原子重建）；✅**按进程放行**（白名单加 `Processes` 维度 → `injectWhitelist` 生成 `process_name/process_path` + `invert:true` 拒绝规则，未知进程连接直接拒；已实测 macOS loopback 能解析进程）；✅**按设备放行**（`Devices` 维度 → `source_ip_cidr` + `invert:true`，网关模式只放行已知来源设备）；✅白名单**输入校验 + 自愈**（非法 ip_cidr 拒绝不落盘、`SetWhitelist` 失败回滚保活、加载时 `sanitize()` 丢弃非法条目——防止一条坏数据 brick 网关）。
+- **里程碑 5（🟡）** ✅**beaconing 检测**（同目标周期性回连、区间变异系数低 → 疑似 C2 心跳，`detect.recordBeacon`；启发式=仅告警不自动断，用 `Event.Block` 区分高置信威胁情报命中）；✅**连接页与事件页合并**（控制台单页三标签 全部/活动/已关闭，`console/src/pages/EventsPage.tsx` 路由到 `/connections`）；✅**被拦连接可见 + 一键加白**（兜底改 route→`block` 出站，detector 记录被拦连接 + SNI 域名；每行 `+域名/+IP/+进程` 直接 POST `/api/whitelist` 热重载放行）。**说明**：Clash API 只有活动连接（无 closed 端点），历史来自我们的检测事件——这是「看不见连接」的真因，非 bug。
+- **后续** DNS 服务器/规则配置（DNS 隧道检测）、go:embed 单二进制、多节点管理、per-connection 流量历史持久化。
 
 ## 许可证
 - sing-box / 官方 dashboard 均 **GPLv3（+ 命名附加条款）**。

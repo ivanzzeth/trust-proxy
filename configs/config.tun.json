@@ -32,6 +32,7 @@
   ],
   "outbounds": [
     { "type": "direct", "tag": "direct" },
+    { "type": "block", "tag": "blocked" },
     { "type": "selector", "tag": "proxy", "outbounds": ["direct"] }
   ],
   "route": {
@@ -41,10 +42,11 @@
       { "protocol": "dns", "action": "hijack-dns" },
       {
         "network": ["tcp", "udp"],
-        "action": "reject"
+        "action": "route",
+        "outbound": "blocked"
       }
     ],
-    "final": "direct"
+    "final": "blocked"
   },
   "services": [
     {

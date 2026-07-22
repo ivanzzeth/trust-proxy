@@ -9,13 +9,14 @@ import styles from '../App.module.scss';
 import AboutPage from '../pages/AboutPage';
 import BackendPage from '../pages/BackendPage';
 import ConfigPage from '../pages/ConfigPage';
-import ConnectionsPage from '../pages/ConnectionsPage';
 import HomePage from '../pages/HomePage';
 import LogsPage from '../pages/LogsPage';
 import ProxiesPage from '../pages/ProxiesPage';
 import RulesPage from '../pages/RulesPage';
 import StyleGuidePage from '../pages/StyleGuidePage';
 import EventsPage from '../pages/EventsPage';
+import ProfilesPage from '../pages/ProfilesPage';
+import RuleSetsPage from '../pages/RuleSetsPage';
 import SubscriptionsPage from '../pages/SubscriptionsPage';
 import WhitelistPage from '../pages/WhitelistPage';
 
@@ -24,13 +25,15 @@ import APIDiscovery from './APIDiscovery';
 const routes = [
   { path: '/', element: <Navigate to="/proxies" replace /> },
   { path: '/home', element: <HomePage /> },
-  { path: '/connections', element: <ConnectionsPage /> },
+  { path: '/connections', element: <EventsPage /> },
   { path: '/configs', element: <ConfigPage /> },
   { path: '/logs', element: <LogsPage /> },
   { path: '/proxies', element: <ProxiesPage /> },
   { path: '/subscriptions', element: <SubscriptionsPage /> },
+  { path: '/profiles', element: <ProfilesPage /> },
   { path: '/whitelist', element: <WhitelistPage /> },
-  { path: '/alerts', element: <EventsPage /> },
+  { path: '/rulesets', element: <RuleSetsPage /> },
+  { path: '/alerts', element: <Navigate to="/connections" replace /> },
   { path: '/rules', element: <RulesPage /> },
   { path: '/about', element: <AboutPage /> },
   import.meta.env.DEV ? { path: '/style', element: <StyleGuidePage /> } : false,

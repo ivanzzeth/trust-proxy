@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { tp } from '~/api/trustproxy';
+import { tp, WLType } from '~/api/trustproxy';
 import Button from '~/components/Button';
 
 import s from './SubscriptionsPage.module.scss';
@@ -20,26 +20,39 @@ export default function WhitelistPage() {
 
   const [domain, setDomain] = useState('');
   const [ip, setIp] = useState('');
+  const [proc, setProc] = useState('');
+  const [dev, setDev] = useState('');
   const addM = useMutation({
-    mutationFn: (v: { type: 'domain' | 'ip'; value: string }) => tp.addWhitelist(v.type, v.value),
+    mutationFn: (v: { type: WLType; value: string }) => tp.addWhitelist(v.type, v.value),
     onSuccess: () => {
       setDomain('');
       setIp('');
+      setProc('');
+      setDev('');
       setErr('');
       invalidate();
     },
     onError: onErr,
   });
   const delM = useMutation({
-    mutationFn: (v: { type: 'domain' | 'ip'; value: string }) => tp.delWhitelist(v.type, v.value),
+    mutationFn: (v: { type: WLType; value: string }) => tp.delWhitelist(v.type, v.value),
     onSuccess: invalidate,
     onError: onErr,
   });
   const busy = addM.isPending || delM.isPending;
 
-  const list = (type: 'domain' | 'ip', items: string[], value: string, setValue: (s: string) => void, ph: string) => (
+  const heading = (type: WLType) =>
+    type === 'domain'
+      ? t('wl_domains')
+      : type === 'ip'
+        ? t('wl_ips')
+        : type === 'process'
+          ? t('wl_processes')
+          : t('wl_devices');
+
+  const list = (type: WLType, items: string[], value: string, setValue: (s: string) => void, ph: string) => (
     <div className={s.wlCol}>
-      <h2>{type === 'domain' ? t('wl_domains') : t('wl_ips')}</h2>
+      <h2>{heading(type)}</h2>
       <form
         className={s.pasteRow}
         onSubmit={(e) => {
@@ -84,7 +97,15 @@ export default function WhitelistPage() {
       <div className={s.wlGrid}>
         {list('domain', wl?.domains ?? [], domain, setDomain, 'example.com')}
         {list('ip', wl?.ips ?? [], ip, setIp, '1.2.3.4/32')}
+        {list('process', wl?.processes ?? [], proc, setProc, 'curl / /usr/bin/ssh')}
+        {list('device', wl?.devices ?? [], dev, setDev, '192.168.1.20 / 192.168.1.0/24')}
       </div>
+      <p className={s.muted} style={{ marginTop: 12 }}>
+        {t('wl_process_hint')}
+      </p>
+      <p className={s.muted} style={{ marginTop: 8 }}>
+        {t('wl_device_hint')}
+      </p>
     </div>
   );
 }

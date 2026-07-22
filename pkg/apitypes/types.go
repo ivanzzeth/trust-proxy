@@ -41,6 +41,81 @@ type AddSubscriptionRequest struct {
 	Via       string `json:"via,omitempty"`
 }
 
+// RuleSet is an imported sing-box rule_set (remote .srs/.json or local file)
+// plus the role it plays in our default-deny route (block / allow-direct /
+// allow-proxy). Tag is the primary key referenced by route rules.
+type RuleSet struct {
+	Tag            string `json:"tag"`
+	Name           string `json:"name"`
+	Type           string `json:"type"`   // "remote" | "local"
+	Format         string `json:"format"` // "binary" (.srs) | "source" (.json)
+	URL            string `json:"url,omitempty"`
+	Path           string `json:"path,omitempty"`
+	DownloadDetour string `json:"download_detour"` // default "direct"
+	UpdateInterval string `json:"update_interval"` // e.g. "1d"
+	Role           string `json:"role"`            // "block" | "allow-direct" | "allow-proxy"
+	Enabled        bool   `json:"enabled"`
+}
+
+// Rule-set roles.
+const (
+	RuleRoleBlock       = "block"
+	RuleRoleAllowDirect = "allow-direct"
+	RuleRoleAllowProxy  = "allow-proxy"
+)
+
+// RuleSetCatalogEntry is a one-click importable public rule set.
+type RuleSetCatalogEntry struct {
+	Tag           string `json:"tag"`
+	Name          string `json:"name"`
+	URL           string `json:"url"`             // raw.githubusercontent primary
+	Mirror        string `json:"mirror"`          // jsdelivr CDN alternative
+	Format        string `json:"format"`          // "binary" | "source"
+	SuggestedRole string `json:"suggested_role"`  // default role on import
+}
+
+// AddRuleSetRequest is the POST /api/rulesets body. Either provide a full
+// descriptor (tag/type/format/url|path) or a catalog_tag to import from the
+// curated catalog.
+type AddRuleSetRequest struct {
+	CatalogTag string `json:"catalog_tag,omitempty"`
+	Mirror     bool   `json:"mirror,omitempty"` // use the CDN mirror URL for a catalog import
+	Tag        string `json:"tag,omitempty"`
+	Name       string `json:"name,omitempty"`
+	Type       string `json:"type,omitempty"`
+	Format     string `json:"format,omitempty"`
+	URL        string `json:"url,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Role       string `json:"role,omitempty"`
+}
+
+// PatchRuleSetRequest is the PATCH /api/rulesets/{tag} body.
+type PatchRuleSetRequest struct {
+	Enabled *bool   `json:"enabled,omitempty"`
+	Role    *string `json:"role,omitempty"`
+}
+
+// Profile bundles a named policy set (applied subscription + whitelist snapshot
+// + enabled rule-set tags + optional capture mode) for one-click switching.
+type Profile struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	SubID       string   `json:"subscription_id,omitempty"`
+	Whitelist   Rules    `json:"whitelist"`
+	RuleSetTags []string `json:"ruleset_tags,omitempty"`
+	Mode        string   `json:"mode,omitempty"`
+	Active      bool     `json:"active,omitempty"`
+}
+
+// Rules is the egress allow-list snapshot (mirrors whitelist.Rules) embedded in
+// a Profile; kept here so apitypes stays dependency-free.
+type Rules struct {
+	Domains   []string `json:"domains"`
+	IPs       []string `json:"ips"`
+	Processes []string `json:"processes"`
+	Devices   []string `json:"devices"`
+}
+
 // ErrorResponse is the standard error envelope.
 type ErrorResponse struct {
 	Error string `json:"error"`

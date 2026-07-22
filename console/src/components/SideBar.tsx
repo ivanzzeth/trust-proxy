@@ -12,11 +12,14 @@ import {
   FcRuler,
   FcServices,
   FcSettings,
+  FcTemplate,
+  FcTodoList,
 } from 'react-icons/fc';
 import { Link, useLocation } from 'react-router-dom';
 
 import { fetchVersion } from '~/api/version';
 import { Info } from '~/components/shared/FeatherIcons';
+import ModeSwitch from '~/components/trustproxy/ModeSwitch';
 import { ThemeSwitcher } from '~/components/shared/ThemeSwitcher';
 import { Tooltip } from '~/components/shared/Tooltip';
 import { connect } from '~/components/StateProvider';
@@ -37,6 +40,8 @@ const icons = {
   subs: FcServices,
   wl: FcApproval,
   alerts: FcHighPriority,
+  profiles: FcTemplate,
+  rulesets: FcTodoList,
 };
 
 const SideBarRow = React.memo(function SideBarRow({
@@ -79,14 +84,19 @@ const pages = [
     labelText: 'Subscriptions',
   },
   {
+    to: '/profiles',
+    iconId: 'profiles',
+    labelText: 'Profiles',
+  },
+  {
     to: '/whitelist',
     iconId: 'wl',
     labelText: 'Whitelist',
   },
   {
-    to: '/alerts',
-    iconId: 'alerts',
-    labelText: 'Alerts',
+    to: '/rulesets',
+    iconId: 'rulesets',
+    labelText: 'Rule Sets',
   },
   {
     to: '/rules',
@@ -95,8 +105,8 @@ const pages = [
   },
   {
     to: '/connections',
-    iconId: 'link',
-    labelText: 'Conns',
+    iconId: 'alerts',
+    labelText: 'Connections',
   },
   {
     to: '/logs',
@@ -138,6 +148,7 @@ function SideBar(props: Props) {
           />
         ))}
       </div>
+      <ModeSwitch />
       <div className={s.footer}>
         <ThemeSwitcher />
         <Tooltip label={t('about')}>

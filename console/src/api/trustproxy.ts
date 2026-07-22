@@ -40,7 +40,10 @@ const jsonHeaders = { 'Content-Type': 'application/json' };
 export interface Whitelist {
   domains: string[];
   ips: string[];
+  processes: string[];
+  devices: string[];
 }
+export type WLType = 'domain' | 'ip' | 'process' | 'device';
 
 export interface DetectEvent {
   id: number;
@@ -55,19 +58,119 @@ export interface DetectEvent {
   upload: number;
   download: number;
   level: 'info' | 'alert';
+  denied?: boolean;
   reasons?: string[];
 }
 
+export interface TPStatus {
+  mode: string;
+  modes: string[];
+  autoBlock: boolean;
+  root: boolean;
+  threats: { domains: number; ips: number };
+}
+
+export interface TPRuleSet {
+  tag: string;
+  name: string;
+  type: string;
+  format: string;
+  url?: string;
+  path?: string;
+  download_detour: string;
+  update_interval: string;
+  role: 'block' | 'allow-direct' | 'allow-proxy';
+  enabled: boolean;
+}
+export interface TPRuleSets {
+  sets: TPRuleSet[];
+}
+export interface TPRuleSetCatalogEntry {
+  tag: string;
+  name: string;
+  url: string;
+  mirror: string;
+  format: string;
+  suggested_role: string;
+}
+export interface TPProfile {
+  id: string;
+  name: string;
+  subscription_id?: string;
+  whitelist: { domains: string[]; ips: string[] };
+  ruleset_tags?: string[];
+  mode?: string;
+  active?: boolean;
+}
+
+export interface TPLiveConn {
+  id: string;
+  upload: number;
+  download: number;
+  start: string;
+  chains: string[];
+  rule: string;
+  metadata: {
+    network: string;
+    type: string;
+    host: string;
+    destinationIP: string;
+    destinationPort: string;
+    sourceIP: string;
+    sourcePort: string;
+    process?: string;
+  };
+}
+export interface TPConnSnapshot {
+  downloadTotal: number;
+  uploadTotal: number;
+  connections: TPLiveConn[] | null;
+}
+
 export const tp = {
+  status: () => fetch('/api/status').then(unwrap<TPStatus>),
+  connections: () => fetch('/api/connections').then(unwrap<TPConnSnapshot>),
+
+  listRuleSets: () => fetch('/api/rulesets').then(unwrap<TPRuleSets>),
+  ruleSetCatalog: () => fetch('/api/rulesets/catalog').then(unwrap<TPRuleSetCatalogEntry[]>),
+  addRuleSet: (body: Record<string, unknown>) =>
+    fetch('/api/rulesets', { method: 'POST', headers: jsonHeaders, body: JSON.stringify(body) }).then(
+      unwrap<TPRuleSets>,
+    ),
+  patchRuleSet: (tag: string, patch: { enabled?: boolean; role?: string }) =>
+    fetch(`/api/rulesets/${encodeURIComponent(tag)}`, {
+      method: 'PATCH',
+      headers: jsonHeaders,
+      body: JSON.stringify(patch),
+    }).then(unwrap<TPRuleSets>),
+  delRuleSet: (tag: string) =>
+    fetch(`/api/rulesets/${encodeURIComponent(tag)}`, { method: 'DELETE' }).then(unwrap<TPRuleSets>),
+
+  listProfiles: () => fetch('/api/profiles').then(unwrap<TPProfile[]>),
+  addProfile: (name: string) =>
+    fetch('/api/profiles', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ name }) }).then(
+      unwrap<TPProfile>,
+    ),
+  activateProfile: (id: string) =>
+    fetch(`/api/profiles/${id}/activate`, { method: 'POST' }).then(unwrap<TPProfile>),
+  delProfile: (id: string) => fetch(`/api/profiles/${id}`, { method: 'DELETE' }).then(unwrap<void>),
+  setMode: (mode: string) =>
+    fetch('/api/mode', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ mode }) }).then(
+      unwrap<{ mode: string }>,
+    ),
+  setAutoBlock: (enabled: boolean) =>
+    fetch('/api/autoblock', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ enabled }) }).then(
+      unwrap<{ autoBlock: boolean }>,
+    ),
   listSubs: () => fetch('/api/subscriptions').then(unwrap<TPSubscription[]>),
   events: (alertsOnly?: boolean) =>
     fetch('/api/events' + (alertsOnly ? '?level=alert' : '')).then(unwrap<DetectEvent[]>),
   getWhitelist: () => fetch('/api/whitelist').then(unwrap<Whitelist>),
-  addWhitelist: (type: 'domain' | 'ip', value: string) =>
+  addWhitelist: (type: WLType, value: string) =>
     fetch('/api/whitelist', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ type, value }) }).then(
       unwrap<Whitelist>,
     ),
-  delWhitelist: (type: 'domain' | 'ip', value: string) =>
+  delWhitelist: (type: WLType, value: string) =>
     fetch('/api/whitelist', { method: 'DELETE', headers: jsonHeaders, body: JSON.stringify({ type, value }) }).then(
       unwrap<Whitelist>,
     ),

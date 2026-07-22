@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
+	"github.com/ivanzzeth/trust-proxy/internal/gateway"
+	"github.com/ivanzzeth/trust-proxy/internal/profile"
+	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -29,35 +32,65 @@ type WhitelistApplier interface {
 	SetWhitelist(whitelist.Rules) error
 }
 
+// ModeController switches the gateway capture mode (gateway.Manager).
+type ModeController interface {
+	Mode() string
+	SetMode(string) error
+}
+
+// RuleSetApplier hot-reloads the imported rule sets (gateway.Manager).
+type RuleSetApplier interface {
+	SetRuleSets(ruleset.Sets) error
+}
+
+// ProfileApplier atomically applies a whole profile in one rebuild (gateway.Manager).
+type ProfileApplier interface {
+	ApplyProfile(nodes []apitypes.Node, wl whitelist.Rules, sets ruleset.Sets, mode string) error
+}
+
 // Options configures the API server.
 type Options struct {
-	Addr       string
-	Store      *subscription.Store
-	Applier    Applier
-	Whitelist  *whitelist.Store
-	WLApplier  WhitelistApplier
-	Detect     *detect.Engine
-	Clash      *clash.Client // low-level Clash primitives, proxied to the browser
-	ConsoleDir string        // static dir for the React console (served at /)
+	Addr        string
+	Store       *subscription.Store
+	Applier     Applier
+	Whitelist   *whitelist.Store
+	WLApplier   WhitelistApplier
+	Detect      *detect.Engine
+	Mode        ModeController
+	RuleSets    *ruleset.Store
+	RSApplier   RuleSetApplier
+	Profiles    *profile.Store
+	ProfApplier ProfileApplier
+	Clash       *clash.Client // low-level Clash primitives, proxied to the browser
+	ConsoleDir  string        // static dir for the React console (served at /)
 }
 
 // Server exposes /api/* and serves the console.
 type Server struct {
-	httpSrv    *http.Server
-	store      *subscription.Store
-	applier    Applier
-	wl         *whitelist.Store
-	wlApplier  WhitelistApplier
-	detect     *detect.Engine
-	clash      *clash.Client
-	consoleDir string
+	httpSrv     *http.Server
+	store       *subscription.Store
+	applier     Applier
+	wl          *whitelist.Store
+	wlApplier   WhitelistApplier
+	detect      *detect.Engine
+	mode        ModeController
+	rs          *ruleset.Store
+	rsApplier   RuleSetApplier
+	profStore   *profile.Store
+	profApplier ProfileApplier
+	clash       *clash.Client
+	consoleDir  string
 }
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, clash: o.Clash, consoleDir: o.ConsoleDir}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, clash: o.Clash, consoleDir: o.ConsoleDir}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
+	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/mode", s.handleGetMode)
+	mux.HandleFunc("POST /api/mode", s.handleSetMode)
+	mux.HandleFunc("POST /api/autoblock", s.handleAutoBlock)
 	mux.HandleFunc("GET /api/subscriptions", s.handleListSubs)
 	mux.HandleFunc("POST /api/subscriptions", s.handleAddSub)
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.handleDeleteSub)
@@ -70,6 +103,15 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("GET /api/whitelist", s.handleGetWhitelist)
 	mux.HandleFunc("POST /api/whitelist", s.handleAddWhitelist)
 	mux.HandleFunc("DELETE /api/whitelist", s.handleDelWhitelist)
+	mux.HandleFunc("GET /api/rulesets", s.handleListRuleSets)
+	mux.HandleFunc("GET /api/rulesets/catalog", s.handleRuleSetCatalog)
+	mux.HandleFunc("POST /api/rulesets", s.handleAddRuleSet)
+	mux.HandleFunc("PATCH /api/rulesets/{tag}", s.handlePatchRuleSet)
+	mux.HandleFunc("DELETE /api/rulesets/{tag}", s.handleDeleteRuleSet)
+	mux.HandleFunc("GET /api/profiles", s.handleListProfiles)
+	mux.HandleFunc("POST /api/profiles", s.handleAddProfile)
+	mux.HandleFunc("POST /api/profiles/{id}/activate", s.handleActivateProfile)
+	mux.HandleFunc("DELETE /api/profiles/{id}", s.handleDeleteProfile)
 	mux.Handle("/", s.consoleHandler())
 	s.httpSrv = &http.Server{Addr: o.Addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	return s
@@ -85,6 +127,67 @@ func (s *Server) Close() error { return s.httpSrv.Close() }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// ---- status / mode / auto-block -------------------------------------------
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	st := map[string]any{
+		"modes": gateway.Modes,
+		"root":  os.Geteuid() == 0,
+	}
+	if s.mode != nil {
+		st["mode"] = s.mode.Mode()
+	}
+	if s.detect != nil {
+		d, ip := s.detect.ThreatCounts()
+		st["autoBlock"] = s.detect.AutoBlock()
+		st["threats"] = map[string]int{"domains": d, "ips": ip}
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *Server) handleGetMode(w http.ResponseWriter, r *http.Request) {
+	if s.mode == nil {
+		writeErr(w, http.StatusServiceUnavailable, "mode controller not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"mode": s.mode.Mode(), "modes": gateway.Modes})
+}
+
+func (s *Server) handleSetMode(w http.ResponseWriter, r *http.Request) {
+	if s.mode == nil {
+		writeErr(w, http.StatusServiceUnavailable, "mode controller not available")
+		return
+	}
+	var req struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Mode == "" {
+		writeErr(w, http.StatusBadRequest, "mode is required")
+		return
+	}
+	if err := s.mode.SetMode(req.Mode); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"mode": s.mode.Mode()})
+}
+
+func (s *Server) handleAutoBlock(w http.ResponseWriter, r *http.Request) {
+	if s.detect == nil {
+		writeErr(w, http.StatusServiceUnavailable, "detection not available")
+		return
+	}
+	var req struct {
+		Enabled bool `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "enabled is required")
+		return
+	}
+	s.detect.SetAutoBlock(req.Enabled)
+	writeJSON(w, http.StatusOK, map[string]any{"autoBlock": req.Enabled})
 }
 
 func (s *Server) handleListSubs(w http.ResponseWriter, r *http.Request) {
@@ -265,6 +368,7 @@ func (s *Server) mutateWhitelist(w http.ResponseWriter, r *http.Request, add boo
 		writeErr(w, http.StatusBadRequest, "type and value are required")
 		return
 	}
+	prev := s.wl.Get() // for rollback if the apply fails
 	var (
 		rules whitelist.Rules
 		err   error
@@ -282,17 +386,30 @@ func (s *Server) mutateWhitelist(w http.ResponseWriter, r *http.Request, add boo
 		} else {
 			rules, err = s.wl.RemoveIP(req.Value)
 		}
+	case "process":
+		if add {
+			rules, err = s.wl.AddProcess(req.Value)
+		} else {
+			rules, err = s.wl.RemoveProcess(req.Value)
+		}
+	case "device":
+		if add {
+			rules, err = s.wl.AddDevice(req.Value)
+		} else {
+			rules, err = s.wl.RemoveDevice(req.Value)
+		}
 	default:
-		writeErr(w, http.StatusBadRequest, "type must be domain or ip")
+		writeErr(w, http.StatusBadRequest, "type must be domain, ip, process or device")
 		return
 	}
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusBadRequest, err.Error()) // validation error (bad IP/domain)
 		return
 	}
 	if s.wlApplier != nil {
 		if err := s.wlApplier.SetWhitelist(rules); err != nil {
-			writeErr(w, http.StatusInternalServerError, "apply whitelist: "+err.Error())
+			_, _ = s.wl.Set(prev) // un-poison the store so it matches the running plane
+			writeErr(w, http.StatusBadGateway, "apply whitelist: "+err.Error())
 			return
 		}
 	}

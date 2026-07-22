@@ -8,7 +8,7 @@ WEBUI_DIR    := webui
 #   with_grpc      -> full gRPC transport (there is a lite fallback without it)
 TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor
 
-.PHONY: run build tidy webui webui-dev deps clean
+.PHONY: run build tidy webui webui-dev console console-dev deps clean e2e
 
 ## Boot the embedded sing-box with configs/config.json
 run: build

@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -11,24 +13,33 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ivanzzeth/trust-proxy/internal/api"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
+	"github.com/ivanzzeth/trust-proxy/internal/profile"
+	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
+	"github.com/ivanzzeth/trust-proxy/internal/threatfeed"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/clash"
 )
 
 var (
-	serveConfig      string
-	serveAPIAddr     string
-	serveDataDir     string
-	serveConsoleDir  string
-	serveClashAddr   string
-	serveClashSecret string
+	serveConfig        string
+	serveAPIAddr       string
+	serveDataDir       string
+	serveConsoleDir    string
+	serveClashAddr     string
+	serveClashSecret   string
+	serveMode          string
+	serveAutoBlock     bool
+	serveThreatFeeds   string
+	serveThreatRefresh time.Duration
+	serveNoThreatFeed  bool
 )
 
 var serveCmd = &cobra.Command{
@@ -47,6 +58,11 @@ func init() {
 	f.StringVar(&serveConsoleDir, "console", "console/public", "React console static dir (Yacd build output)")
 	f.StringVar(&serveClashAddr, "clash-addr", "127.0.0.1:9090", "Clash API address (proxied to the console)")
 	f.StringVar(&serveClashSecret, "clash-secret", "", "Clash API secret (empty = load/generate a random one in the data dir)")
+	f.StringVar(&serveMode, "mode", gateway.ModeManual, "capture mode: manual | system | tun (tun needs root)")
+	f.BoolVar(&serveAutoBlock, "auto-block", true, "auto-drop connections that hit a threat-intel indicator")
+	f.StringVar(&serveThreatFeeds, "threat-feeds", "", "comma-separated threat-intel feed URLs (empty = built-in abuse.ch defaults)")
+	f.DurationVar(&serveThreatRefresh, "threat-refresh", 12*time.Hour, "threat-intel feed refresh interval")
+	f.BoolVar(&serveNoThreatFeed, "no-threat-feed", false, "disable automatic threat-intel feed loading")
 }
 
 func runServe() error {
@@ -61,10 +77,48 @@ func runServe() error {
 	}
 
 	engine := detect.New(2000)
-	// Demo threat indicators; replace/extend with a real feed (abuse.ch, etc.).
+	engine.SetAutoBlock(serveAutoBlock)
+	// Static demo indicators (always on, for testing); the live feed adds to these.
 	engine.LoadThreats([]string{"malware.test", "c2.example.com"}, nil)
 
+	// Restore the persisted audit log so events survive a restart.
+	eventsPath := filepath.Join(serveDataDir, "events.json")
+	if b, err := os.ReadFile(eventsPath); err == nil {
+		var saved []detect.Event
+		if json.Unmarshal(b, &saved) == nil {
+			engine.RestoreEvents(saved)
+			log.Printf("restored %d event(s) from %s", len(saved), eventsPath)
+		}
+	}
+
+	// Auto-load public threat-intel feeds (abuse.ch etc.) in the background.
+	feedCtx, feedCancel := context.WithCancel(context.Background())
+	defer feedCancel()
+	if !serveNoThreatFeed {
+		var feeds []string
+		if serveThreatFeeds != "" {
+			for _, u := range strings.Split(serveThreatFeeds, ",") {
+				if u = strings.TrimSpace(u); u != "" {
+					feeds = append(feeds, u)
+				}
+			}
+		}
+		loader := threatfeed.New(engine, feeds, serveThreatRefresh, log.Printf)
+		go loader.Run(feedCtx)
+	}
+
+	rsStore, err := ruleset.NewStore(serveDataDir + "/rulesets.json")
+	if err != nil {
+		return err
+	}
+	profStore, err := profile.NewStore(serveDataDir + "/profiles.json")
+	if err != nil {
+		return err
+	}
+
 	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine, secret)
+	mgr.SetInitialMode(serveMode)
+	mgr.SetInitialRuleSets(rsStore.Get())
 	if err := mgr.Start(); err != nil {
 		return err
 	}
@@ -75,14 +129,19 @@ func runServe() error {
 		return err
 	}
 	apiSrv := api.NewServer(api.Options{
-		Addr:       serveAPIAddr,
-		Store:      store,
-		Applier:    mgr,
-		Whitelist:  wlStore,
-		WLApplier:  mgr,
-		Detect:     engine,
-		Clash:      clash.New(serveClashAddr, secret),
-		ConsoleDir: serveConsoleDir,
+		Addr:        serveAPIAddr,
+		Store:       store,
+		Applier:     mgr,
+		Whitelist:   wlStore,
+		WLApplier:   mgr,
+		Detect:      engine,
+		Mode:        mgr,
+		RuleSets:    rsStore,
+		RSApplier:   mgr,
+		Profiles:    profStore,
+		ProfApplier: mgr,
+		Clash:       clash.New(serveClashAddr, secret),
+		ConsoleDir:  serveConsoleDir,
 	})
 	go func() {
 		if err := apiSrv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -97,11 +156,34 @@ func runServe() error {
 		host = "127.0.0.1"
 	}
 	log.Printf("console: http://%s/?hostname=%s&port=%s&secret=%s", serveAPIAddr, host, port, secret)
+	log.Printf("mode: %s | auto-block: %v", mgr.Mode(), serveAutoBlock)
+
+	// Persist the audit log periodically so a crash loses at most one interval.
+	saveEvents := func() {
+		if b, err := json.Marshal(engine.Events()); err == nil {
+			_ = os.WriteFile(eventsPath, b, 0o600)
+		}
+	}
+	stopSave := make(chan struct{})
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stopSave:
+				return
+			case <-t.C:
+				saveEvents()
+			}
+		}
+	}()
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	<-signals
 	log.Println("shutting down")
+	close(stopSave)
+	saveEvents()
 	return nil
 }
 

@@ -4,16 +4,36 @@ package whitelist
 
 import (
 	"encoding/json"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 )
 
+// validCIDR reports whether s is a usable ip_cidr entry (a CIDR or a bare IP).
+func validCIDR(s string) bool {
+	if _, _, err := net.ParseCIDR(s); err == nil {
+		return true
+	}
+	return net.ParseIP(s) != nil
+}
+
 // Rules is the allow-list snapshot.
+//   - Domains / IPs: allowed egress destinations (default-deny for the rest).
+//   - Processes: OPT-IN process allow-list — when non-empty, any process NOT
+//     listed is rejected (unknown binaries can't egress). Path-separator entries
+//     match process_path, others process_name.
+//   - Devices: OPT-IN source (device) allow-list — when non-empty, any source
+//     IP/CIDR NOT listed is rejected (only known devices may egress; for
+//     gateway/router deployments). Entries are IPs or CIDRs (source_ip_cidr).
 type Rules struct {
-	Domains []string `json:"domains"`
-	IPs     []string `json:"ips"`
+	Domains   []string `json:"domains"`
+	IPs       []string `json:"ips"`
+	Processes []string `json:"processes"`
+	Devices   []string `json:"devices"`
 }
 
 // Store is a file-backed allow-list, safe for concurrent use.
@@ -44,7 +64,33 @@ func NewStore(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &s.data); err != nil {
 		return nil, err
 	}
+	// Drop entries that would make the box fail to build (e.g. a domain wrongly
+	// stored under IPs), so a poisoned store self-heals instead of bricking the
+	// gateway on start.
+	if n := s.data.sanitize(); n > 0 {
+		_ = s.save()
+	}
 	return s, nil
+}
+
+// sanitize drops invalid ip_cidr entries from IPs and Devices; returns the count
+// removed.
+func (r *Rules) sanitize() int {
+	removed := 0
+	keep := func(list []string) []string {
+		out := list[:0:0]
+		for _, x := range list {
+			if validCIDR(x) {
+				out = append(out, x)
+			} else {
+				removed++
+			}
+		}
+		return out
+	}
+	r.IPs = keep(r.IPs)
+	r.Devices = keep(r.Devices)
+	return removed
 }
 
 func (s *Store) save() error {
@@ -62,7 +108,22 @@ func (s *Store) save() error {
 func (s *Store) Get() Rules {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return Rules{Domains: append([]string(nil), s.data.Domains...), IPs: append([]string(nil), s.data.IPs...)}
+	return snapshot(s.data)
+}
+
+func snapshot(r Rules) Rules {
+	return Rules{
+		Domains:   append([]string(nil), r.Domains...),
+		IPs:       append([]string(nil), r.IPs...),
+		Processes: append([]string(nil), r.Processes...),
+		Devices:   append([]string(nil), r.Devices...),
+	}
+}
+
+// Set replaces the whole allow-list (used when activating a profile) and
+// persists.
+func (s *Store) Set(r Rules) (Rules, error) {
+	return s.mutate(func() { s.data = snapshot(r) })
 }
 
 func add(list []string, v string) []string {
@@ -89,22 +150,49 @@ func remove(list []string, v string) []string {
 // AddDomain / RemoveDomain / AddIP / RemoveIP mutate and persist, returning the
 // new snapshot.
 func (s *Store) AddDomain(d string) (Rules, error) {
+	d = strings.ToLower(strings.TrimSpace(d))
+	if d == "" || strings.ContainsAny(d, "/ \t") {
+		return s.Get(), fmt.Errorf("invalid domain: %q", d)
+	}
 	return s.mutate(func() { s.data.Domains = add(s.data.Domains, d) })
 }
 func (s *Store) RemoveDomain(d string) (Rules, error) {
 	return s.mutate(func() { s.data.Domains = remove(s.data.Domains, d) })
 }
 func (s *Store) AddIP(ip string) (Rules, error) {
+	ip = strings.TrimSpace(ip)
+	if !validCIDR(ip) {
+		return s.Get(), fmt.Errorf("invalid ip/cidr: %q (use an IP or CIDR, not a domain)", ip)
+	}
 	return s.mutate(func() { s.data.IPs = add(s.data.IPs, ip) })
 }
 func (s *Store) RemoveIP(ip string) (Rules, error) {
 	return s.mutate(func() { s.data.IPs = remove(s.data.IPs, ip) })
 }
+func (s *Store) AddProcess(p string) (Rules, error) {
+	if p = strings.TrimSpace(p); p == "" {
+		return s.Get(), fmt.Errorf("empty process")
+	}
+	return s.mutate(func() { s.data.Processes = add(s.data.Processes, p) })
+}
+func (s *Store) RemoveProcess(p string) (Rules, error) {
+	return s.mutate(func() { s.data.Processes = remove(s.data.Processes, p) })
+}
+func (s *Store) AddDevice(ip string) (Rules, error) {
+	ip = strings.TrimSpace(ip)
+	if !validCIDR(ip) {
+		return s.Get(), fmt.Errorf("invalid device ip/cidr: %q", ip)
+	}
+	return s.mutate(func() { s.data.Devices = add(s.data.Devices, ip) })
+}
+func (s *Store) RemoveDevice(ip string) (Rules, error) {
+	return s.mutate(func() { s.data.Devices = remove(s.data.Devices, ip) })
+}
 
 func (s *Store) mutate(fn func()) (Rules, error) {
 	s.mu.Lock()
 	fn()
-	snap := Rules{Domains: append([]string(nil), s.data.Domains...), IPs: append([]string(nil), s.data.IPs...)}
+	snap := snapshot(s.data)
 	err := s.save()
 	s.mu.Unlock()
 	return snap, err
