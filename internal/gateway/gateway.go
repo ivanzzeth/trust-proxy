@@ -65,6 +65,7 @@ type Manager struct {
 	mode     string
 	rulesets ruleset.Sets
 	dns      apitypes.DNSConfig
+	inbound  apitypes.InboundAuth
 }
 
 // NewManager returns a manager seeded with the initial whitelist, the detection
@@ -194,6 +195,29 @@ func (m *Manager) SetDNS(d apitypes.DNSConfig) error {
 	return nil
 }
 
+// SetInitialInbound sets the mixed-inbound auth used by the first Start().
+func (m *Manager) SetInitialInbound(a apitypes.InboundAuth) {
+	m.mu.Lock()
+	m.inbound = a
+	m.mu.Unlock()
+}
+
+// SetInbound sets the mixed-inbound auth and hot-reloads (reverts on failure).
+func (m *Manager) SetInbound(a apitypes.InboundAuth) error {
+	m.mu.Lock()
+	prev := m.inbound
+	m.inbound = a
+	m.mu.Unlock()
+	if err := m.rebuild(); err != nil {
+		m.mu.Lock()
+		m.inbound = prev
+		m.mu.Unlock()
+		_ = m.rebuild() // best-effort restore
+		return fmt.Errorf("apply inbound auth failed (reverted): %w", err)
+	}
+	return nil
+}
+
 // ApplyProfile atomically sets nodes + whitelist + rule sets + (optionally) mode
 // and rebuilds ONCE, so a one-click profile switch is a single reload rather
 // than four. mode=="" keeps the current mode.
@@ -223,14 +247,14 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, mode, sets, dns := m.nodes, m.wl, m.mode, m.rulesets, m.dns
+	nodes, wl, mode, sets, dns, inbound := m.nodes, m.wl, m.mode, m.rulesets, m.dns, m.inbound
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, mode, sets, dns, m.clashSecret)
+	merged, err := buildMergedConfig(base, nodes, wl, mode, sets, dns, inbound, m.clashSecret)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -277,7 +301,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // buildMergedConfig injects (a) subscription node outbounds + the `proxy` group
 // and (b) whitelist allow rules into the route, at the JSON level so sing-box's
 // own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, clashSecret string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, clashSecret string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -289,7 +313,7 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, m
 	if err := injectDNS(cfg, dns); err != nil {
 		return nil, err
 	}
-	if err := applyMode(cfg, mode); err != nil {
+	if err := applyMode(cfg, mode, inbound); err != nil {
 		return nil, err
 	}
 	if err := injectWhitelist(cfg, wl); err != nil {
@@ -564,7 +588,7 @@ func ensureCacheFile(cfg map[string]json.RawMessage) error {
 // applyMode rewrites the inbounds (and, for TUN, adds DNS + hijack) to match the
 // requested capture mode. The mixed inbound's listen/port is preserved from the
 // base config so 127.0.0.1:17070 stays available in every mode.
-func applyMode(cfg map[string]json.RawMessage, mode string) error {
+func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.InboundAuth) error {
 	if mode == "" {
 		mode = ModeManual
 	}
@@ -586,6 +610,12 @@ func applyMode(cfg map[string]json.RawMessage, mode string) error {
 		}
 	}
 	mixed := map[string]any{"type": "mixed", "tag": "mixed-in", "listen": listen, "listen_port": port}
+	// Optional auth: require a username/password on the mixed inbound. Both empty
+	// leaves it open (no "users" field). sing-box rejects a lone half of the pair,
+	// which the store's validation already guards against.
+	if auth.Username != "" && auth.Password != "" {
+		mixed["users"] = []map[string]any{{"username": auth.Username, "password": auth.Password}}
+	}
 
 	var ins []map[string]any
 	switch mode {

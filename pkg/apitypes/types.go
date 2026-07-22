@@ -143,6 +143,13 @@ type DNSConfig struct {
 	Strategy string      `json:"strategy,omitempty"` // "" | prefer_ipv4 | prefer_ipv6 | ipv4_only | ipv6_only
 }
 
+// InboundAuth is the optional username/password required on the mixed proxy
+// inbound (:17070). Both empty = auth disabled = the inbound is open.
+type InboundAuth struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
 // ErrorResponse is the standard error envelope.
 type ErrorResponse struct {
 	Error string `json:"error"`

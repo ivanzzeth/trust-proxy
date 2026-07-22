@@ -213,6 +213,10 @@ export interface Gateway {
   name: string;
   url: string;
 }
+export interface InboundAuth {
+  username: string;
+  password: string;
+}
 
 export const api = {
   status: () => get<Status>('/status'),
@@ -261,6 +265,9 @@ export const api = {
 
   dns: () => get<DNSConfig>('/dns'),
   setDNS: (c: DNSConfig) => put<DNSConfig>('/dns', c),
+
+  inbound: () => get<InboundAuth>('/inbound'),
+  setInbound: (a: InboundAuth) => put<InboundAuth>('/inbound', a),
 
   historyStats: () => get<HistoryStats>('/history/stats'),
   history: (limit = 200, host = '') => get<HistoryRecord[]>(`/history?limit=${limit}&host=${encodeURIComponent(host)}`),

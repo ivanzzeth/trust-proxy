@@ -23,6 +23,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
+	"github.com/ivanzzeth/trust-proxy/internal/inbound"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
@@ -145,11 +146,16 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	inbStore, err := inbound.NewStore(serveDataDir + "/inbound.json")
+	if err != nil {
+		return err
+	}
 
 	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
 	mgr.SetInitialRuleSets(rsStore.Get())
 	mgr.SetInitialDNS(dnsStore.Get())
+	mgr.SetInitialInbound(inbStore.Get())
 	if err := mgr.Start(); err != nil {
 		return err
 	}
@@ -173,6 +179,8 @@ func runServe() error {
 		ProfApplier: mgr,
 		DNS:         dnsStore,
 		DNSApplier:  mgr,
+		Inbound:     inbStore,
+		InbApplier:  mgr,
 		History:     histStore,
 		Nodes:       nodesStore,
 		Token:       serveAPIToken,

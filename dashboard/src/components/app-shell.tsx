@@ -13,6 +13,7 @@ import {
   Radar,
   ScrollText,
   Server,
+  Settings as SettingsIcon,
   ShieldCheck,
   Sun,
   Terminal,
@@ -40,6 +41,7 @@ const NAV = [
   { to: '/history', label: 'History', icon: HistoryIcon },
   { to: '/logs', label: 'Logs', icon: Terminal },
   { to: '/fleet', label: 'Fleet', icon: Server },
+  { to: '/settings', label: 'Settings', icon: SettingsIcon },
 ];
 
 const MODE_LABEL: Record<string, string> = { manual: 'Manual', system: 'System', tun: 'TUN' };
