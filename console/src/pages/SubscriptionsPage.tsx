@@ -25,13 +25,15 @@ export default function SubscriptionsPage() {
   const [url, setUrl] = useState('');
   const [name, setName] = useState('');
   const [ua, setUa] = useState('');
+  const [via, setVia] = useState('');
 
   const addM = useMutation({
-    mutationFn: () => tp.addSub(name, url, ua || undefined),
+    mutationFn: () => tp.addSub(name, url, ua || undefined, via || undefined),
     onSuccess: () => {
       setUrl('');
       setName('');
       setUa('');
+      setVia('');
       setErr('');
       invalidate();
     },
@@ -62,6 +64,7 @@ export default function SubscriptionsPage() {
         />
         <input className={s.input} placeholder={t('sub_name_ph')} value={name} onChange={(e) => setName(e.target.value)} />
         <input className={s.input} placeholder={t('sub_ua_ph')} value={ua} onChange={(e) => setUa(e.target.value)} />
+        <input className={s.input} placeholder={t('sub_via_ph')} value={via} onChange={(e) => setVia(e.target.value)} />
         <Button disabled={busy || !url}>{t('sub_add')}</Button>
       </form>
 

@@ -33,7 +33,7 @@ func NewStore(path string) (*Store, error) {
 	s := &Store{
 		path: path,
 		data: map[string]*apitypes.Subscription{},
-		http: newUTLSClient(),
+		http: newUTLSClient(""),
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -109,20 +109,22 @@ func idFor(url string) string {
 const DefaultUserAgent = "clash-verge/v2.0.0"
 
 // Add registers a subscription (id derived from URL, so re-adding is
-// idempotent) and immediately refreshes it.
-func (s *Store) Add(name, url, userAgent string) (apitypes.Subscription, error) {
+// idempotent) and immediately refreshes it. via, if set, routes the fetch
+// through a proxy (socks5:// or http://).
+func (s *Store) Add(name, url, userAgent, via string) (apitypes.Subscription, error) {
 	id := idFor(url)
 	if userAgent == "" {
 		userAgent = DefaultUserAgent
 	}
 	s.mu.Lock()
 	if _, exists := s.data[id]; !exists {
-		s.data[id] = &apitypes.Subscription{ID: id, Name: name, URL: url, UserAgent: userAgent}
+		s.data[id] = &apitypes.Subscription{ID: id, Name: name, URL: url, UserAgent: userAgent, Via: via}
 	} else {
 		if name != "" {
 			s.data[id].Name = name
 		}
 		s.data[id].UserAgent = userAgent
+		s.data[id].Via = via
 	}
 	s.mu.Unlock()
 	return s.Refresh(id)
@@ -158,16 +160,16 @@ func (s *Store) Delete(id string) error {
 func (s *Store) Refresh(id string) (apitypes.Subscription, error) {
 	s.mu.Lock()
 	sub, ok := s.data[id]
-	url, ua := "", ""
+	url, ua, via := "", "", ""
 	if ok {
-		url, ua = sub.URL, sub.UserAgent
+		url, ua, via = sub.URL, sub.UserAgent, sub.Via
 	}
 	s.mu.Unlock()
 	if !ok {
 		return apitypes.Subscription{}, fmt.Errorf("subscription %q not found", id)
 	}
 
-	nodes, ferr := s.fetchAndParse(url, ua)
+	nodes, ferr := s.fetchAndParse(url, ua, via)
 
 	s.mu.Lock()
 	sub = s.data[id]
@@ -189,7 +191,7 @@ func (s *Store) Refresh(id string) (apitypes.Subscription, error) {
 	return result, saveErr
 }
 
-func (s *Store) fetchAndParse(url, userAgent string) ([]apitypes.Node, error) {
+func (s *Store) fetchAndParse(url, userAgent, via string) ([]apitypes.Node, error) {
 	// Local import: bypass the network entirely (useful when the airport's WAF
 	// blocks non-official clients — point at a clash-verge profile instead).
 	if path, ok := strings.CutPrefix(url, "file://"); ok {
@@ -200,6 +202,11 @@ func (s *Store) fetchAndParse(url, userAgent string) ([]apitypes.Node, error) {
 		return Parse(b), nil
 	}
 
+	client := s.http
+	if via != "" {
+		client = newUTLSClient(via) // per-subscription egress proxy
+	}
+
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -208,7 +215,10 @@ func (s *Store) fetchAndParse(url, userAgent string) ([]apitypes.Node, error) {
 		userAgent = DefaultUserAgent
 	}
 	req.Header.Set("User-Agent", userAgent)
-	resp, err := s.http.Do(req)
+	req.Header.Set("Accept", "*/*")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	req.Header.Set("Accept-Encoding", "identity")
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

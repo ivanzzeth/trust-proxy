@@ -13,6 +13,7 @@ export interface TPSubscription {
   name: string;
   url: string;
   user_agent?: string;
+  via?: string;
   node_count: number;
   nodes?: TPNode[];
   updated_at?: string;
@@ -38,11 +39,11 @@ const jsonHeaders = { 'Content-Type': 'application/json' };
 
 export const tp = {
   listSubs: () => fetch('/api/subscriptions').then(unwrap<TPSubscription[]>),
-  addSub: (name: string, url: string, userAgent?: string) =>
+  addSub: (name: string, url: string, userAgent?: string, via?: string) =>
     fetch('/api/subscriptions', {
       method: 'POST',
       headers: jsonHeaders,
-      body: JSON.stringify({ name, url, user_agent: userAgent }),
+      body: JSON.stringify({ name, url, user_agent: userAgent, via }),
     }).then(unwrap<TPSubscription>),
   applySub: (id: string) => fetch(`/api/subscriptions/${id}/apply`, { method: 'POST' }).then(unwrap<TPSubscription>),
   refreshSub: (id: string) =>

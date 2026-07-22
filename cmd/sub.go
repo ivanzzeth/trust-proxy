@@ -45,6 +45,7 @@ var subLsCmd = &cobra.Command{
 var (
 	subAddName string
 	subAddUA   string
+	subAddVia  string
 )
 
 var subAddCmd = &cobra.Command{
@@ -52,7 +53,7 @@ var subAddCmd = &cobra.Command{
 	Short: "Add (and fetch) a subscription",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		s, err := sdk().AddSubscription(subAddName, args[0], subAddUA)
+		s, err := sdk().AddSubscription(subAddName, args[0], subAddUA, subAddVia)
 		if err != nil {
 			return err
 		}
@@ -109,6 +110,7 @@ func init() {
 	subCmd.PersistentFlags().StringVar(&apiAddr, "api-addr", "127.0.0.1:9096", "backend API address")
 	subAddCmd.Flags().StringVar(&subAddName, "name", "", "friendly name")
 	subAddCmd.Flags().StringVar(&subAddUA, "ua", "", "User-Agent for fetching (default: clash-verge/v2.0.0)")
+	subAddCmd.Flags().StringVar(&subAddVia, "via", "", "fetch through a proxy (socks5://host:port or http://host:port)")
 	subCmd.AddCommand(subLsCmd, subAddCmd, subApplyCmd, subRmCmd, subRefreshCmd)
 }
 

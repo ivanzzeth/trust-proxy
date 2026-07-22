@@ -4,6 +4,7 @@ export const data = {
   sub_url_ph: '订阅链接 (https:// 或 file://)',
   sub_name_ph: '名称 (可选)',
   sub_ua_ph: 'UA (可选)',
+  sub_via_ph: '经代理抓取 (socks5:// 或 http://，可选)',
   sub_add: '添加',
   sub_name: '名称',
   sub_nodes: '节点',

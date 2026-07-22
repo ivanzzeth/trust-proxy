@@ -63,10 +63,11 @@ func (c *Client) ListSubscriptions() ([]apitypes.Subscription, error) {
 }
 
 // AddSubscription registers and refreshes a subscription. userAgent may be
-// empty to use the server default.
-func (c *Client) AddSubscription(name, url, userAgent string) (apitypes.Subscription, error) {
+// empty to use the server default; via (socks5:// or http://) routes the fetch
+// through a proxy.
+func (c *Client) AddSubscription(name, url, userAgent, via string) (apitypes.Subscription, error) {
 	var out apitypes.Subscription
-	err := c.do(http.MethodPost, "/api/subscriptions", apitypes.AddSubscriptionRequest{Name: name, URL: url, UserAgent: userAgent}, &out)
+	err := c.do(http.MethodPost, "/api/subscriptions", apitypes.AddSubscriptionRequest{Name: name, URL: url, UserAgent: userAgent, Via: via}, &out)
 	return out, err
 }
 

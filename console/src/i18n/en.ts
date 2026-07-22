@@ -4,6 +4,7 @@ export const data = {
   sub_url_ph: 'Subscription URL (https:// or file://)',
   sub_name_ph: 'Name (optional)',
   sub_ua_ph: 'UA (optional)',
+  sub_via_ph: 'Fetch via proxy (socks5:// or http://, optional)',
   sub_add: 'Add',
   sub_name: 'Name',
   sub_nodes: 'Nodes',

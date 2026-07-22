@@ -23,6 +23,7 @@ type Subscription struct {
 	Name      string `json:"name"`
 	URL       string `json:"url"`
 	UserAgent string `json:"user_agent,omitempty"`
+	Via       string `json:"via,omitempty"` // fetch through this proxy (socks5:// or http://)
 	Nodes     []Node `json:"nodes,omitempty"`
 	NodeCount int    `json:"node_count"`
 	UpdatedAt string `json:"updated_at,omitempty"`
@@ -35,6 +36,7 @@ type AddSubscriptionRequest struct {
 	Name      string `json:"name"`
 	URL       string `json:"url"`
 	UserAgent string `json:"user_agent,omitempty"`
+	Via       string `json:"via,omitempty"`
 }
 
 // ErrorResponse is the standard error envelope.
