@@ -37,6 +37,7 @@ make build           # 编译 -> ./trust-proxy（默认 tags：clash_api quic ut
 - **连接**（一个页面三标签 **全部 / 活动 / 已关闭**）：活动连接来自 Clash API（可断开单条/全部）；已关闭来自我们持久化的连接历史。每行带**状态**（活动/已放行/**已拦截**）；**被拦截的连接也可见**（兜底路由到 `block` 出站而非 reject，detector 记录并拿到 sniff 到的 SNI 域名）。每行**一键加白**：`+域名` / `+IP` / `+进程` / `+设备`（来源 IP）—— 第一次被拦，直接点一下就放行（热重载）；`+IP` 仅在目标确为 IP 时出现（域名请用 `+域名`）。检测项：威胁情报域名/IP 命中、≥10MiB 大上传=疑似外泄、**beaconing（周期性回连=疑似 C2 心跳）**，命中高亮、可只看告警。
 - **顶栏常驻**：抓取模式切换（手动 / 系统代理 / TUN）+ 威胁自动阻断开关 + 实时流量 + 威胁情报计数 + 明暗主题。
 - **Proxies / Logs**：出站组（节点选择 + 延迟测速）与实时日志流，均由后端代理 Clash API（浏览器不碰 secret）。
+- **DNS**：解析策略——服务器（local/udp/tcp/tls/https/quic）+ 分流规则（domain_suffix / rule_set → server）+ strategy/final，含预设。`detour: proxy` 让 DNS 走出口节点**防泄漏**（DNS 隧道/DGA 检测的前提）。
 
 ## 抓取模式 / 检测处置（运行时可切换）
 
@@ -96,7 +97,8 @@ cmd/                     cobra 命令：serve / proxy / sub / conn
 internal/gateway/        box 引导 + 热重载(节点/白名单注入) + detector 挂载
 internal/detect/         检测引擎（事件环形缓冲 + 字节计数 + 规则）
 internal/subscription/   订阅 抓取/解析/存储 + 转换(share链/clash → sing-box outbound)
-internal/whitelist/      出网白名单存储
+internal/whitelist/      出网白名单存储（域名/IP/进程/设备）
+internal/dnscfg/         DNS 解析策略存储（注入 sing-box dns 块）
 internal/api/            后端 /api（订阅/白名单/规则集/配置档/事件 + 代理 Clash proxies/logs）+ serve 控制台
 pkg/clash, pkg/client, pkg/apitypes   SDK
 dashboard/               控制台（shadcn/ui + Tailwind + React 19，自研，走 /api 单一 origin）

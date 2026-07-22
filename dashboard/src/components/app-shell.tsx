@@ -8,6 +8,7 @@ import {
   Layers,
   ListChecks,
   Moon,
+  Radar,
   ScrollText,
   ShieldCheck,
   Sun,
@@ -30,6 +31,7 @@ const NAV = [
   { to: '/whitelist', label: 'Whitelist', icon: ShieldCheck },
   { to: '/rulesets', label: 'Rule Sets', icon: ListChecks },
   { to: '/proxies', label: 'Proxies', icon: Globe },
+  { to: '/dns', label: 'DNS', icon: Radar },
   { to: '/logs', label: 'Logs', icon: Terminal },
 ];
 

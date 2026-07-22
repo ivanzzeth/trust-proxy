@@ -116,6 +116,33 @@ type Rules struct {
 	Devices   []string `json:"devices"`
 }
 
+// DNSServer is one resolver. Type: local (system) | udp | tcp | tls | https |
+// quic. Non-local servers take Server(+Port) and an optional Detour outbound
+// ("direct" or "proxy") — Detour="proxy" resolves through the exit node so DNS
+// isn't leaked to the local network.
+type DNSServer struct {
+	Tag    string `json:"tag"`
+	Type   string `json:"type"`
+	Server string `json:"server,omitempty"`
+	Port   int    `json:"port,omitempty"`
+	Detour string `json:"detour,omitempty"`
+}
+
+// DNSRule routes matching queries to a server tag (split-DNS).
+type DNSRule struct {
+	DomainSuffix []string `json:"domain_suffix,omitempty"`
+	RuleSet      []string `json:"rule_set,omitempty"`
+	Server       string   `json:"server"`
+}
+
+// DNSConfig is the whole resolver policy (injected into sing-box's dns block).
+type DNSConfig struct {
+	Servers  []DNSServer `json:"servers"`
+	Rules    []DNSRule   `json:"rules"`
+	Final    string      `json:"final,omitempty"`
+	Strategy string      `json:"strategy,omitempty"` // "" | prefer_ipv4 | prefer_ipv6 | ipv4_only | ipv6_only
+}
+
 // ErrorResponse is the standard error envelope.
 type ErrorResponse struct {
 	Error string `json:"error"`

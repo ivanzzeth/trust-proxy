@@ -128,8 +128,29 @@ export interface Profile {
   active?: boolean;
 }
 
+export interface DNSServer {
+  tag: string;
+  type: string;
+  server?: string;
+  port?: number;
+  detour?: string;
+}
+export interface DNSRule {
+  domain_suffix?: string[];
+  rule_set?: string[];
+  server: string;
+}
+export interface DNSConfig {
+  servers: DNSServer[];
+  rules: DNSRule[];
+  final?: string;
+  strategy?: string;
+}
+
 export const api = {
   status: () => fetch('/api/status').then(unwrap<Status>),
+  dns: () => fetch('/api/dns').then(unwrap<DNSConfig>),
+  setDNS: (c: DNSConfig) => fetch('/api/dns', { method: 'PUT', headers: J, body: JSON.stringify(c) }).then(unwrap<DNSConfig>),
   setMode: (mode: string) => post('/api/mode', { mode }).then(unwrap<{ mode: string }>),
   setAutoBlock: (enabled: boolean) => post('/api/autoblock', { enabled }).then(unwrap<{ autoBlock: boolean }>),
 

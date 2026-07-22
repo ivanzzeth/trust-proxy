@@ -14,6 +14,7 @@ import Whitelist from '@/pages/whitelist';
 import RuleSets from '@/pages/rulesets';
 import Proxies from '@/pages/proxies';
 import Logs from '@/pages/logs';
+import DNS from '@/pages/dns';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
@@ -31,6 +32,7 @@ const router = createHashRouter([
       { path: 'whitelist', element: <Whitelist /> },
       { path: 'rulesets', element: <RuleSets /> },
       { path: 'proxies', element: <Proxies /> },
+      { path: 'dns', element: <DNS /> },
       { path: 'logs', element: <Logs /> },
     ],
   },

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
+	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
@@ -48,6 +49,11 @@ type ProfileApplier interface {
 	ApplyProfile(nodes []apitypes.Node, wl whitelist.Rules, sets ruleset.Sets, mode string) error
 }
 
+// DNSApplier hot-reloads the resolver policy (gateway.Manager).
+type DNSApplier interface {
+	SetDNS(apitypes.DNSConfig) error
+}
+
 // Options configures the API server.
 type Options struct {
 	Addr        string
@@ -61,6 +67,8 @@ type Options struct {
 	RSApplier   RuleSetApplier
 	Profiles    *profile.Store
 	ProfApplier ProfileApplier
+	DNS         *dnscfg.Store
+	DNSApplier  DNSApplier
 	Clash       *clash.Client // low-level Clash primitives, proxied to the browser
 	ConsoleDir  string        // static dir for the React console (served at /)
 }
@@ -78,13 +86,15 @@ type Server struct {
 	rsApplier   RuleSetApplier
 	profStore   *profile.Store
 	profApplier ProfileApplier
+	dns         *dnscfg.Store
+	dnsApplier  DNSApplier
 	clash       *clash.Client
 	consoleDir  string
 }
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, clash: o.Clash, consoleDir: o.ConsoleDir}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, clash: o.Clash, consoleDir: o.ConsoleDir}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -112,6 +122,8 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("POST /api/rulesets", s.handleAddRuleSet)
 	mux.HandleFunc("PATCH /api/rulesets/{tag}", s.handlePatchRuleSet)
 	mux.HandleFunc("DELETE /api/rulesets/{tag}", s.handleDeleteRuleSet)
+	mux.HandleFunc("GET /api/dns", s.handleGetDNS)
+	mux.HandleFunc("PUT /api/dns", s.handleSetDNS)
 	mux.HandleFunc("GET /api/profiles", s.handleListProfiles)
 	mux.HandleFunc("POST /api/profiles", s.handleAddProfile)
 	mux.HandleFunc("POST /api/profiles/{id}/activate", s.handleActivateProfile)

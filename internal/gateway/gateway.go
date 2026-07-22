@@ -64,6 +64,7 @@ type Manager struct {
 	wl       whitelist.Rules
 	mode     string
 	rulesets ruleset.Sets
+	dns      apitypes.DNSConfig
 }
 
 // NewManager returns a manager seeded with the initial whitelist, the detection
@@ -170,6 +171,29 @@ func (m *Manager) SetRuleSets(sets ruleset.Sets) error {
 	return m.rebuild()
 }
 
+// SetInitialDNS sets the DNS config used by the first Start().
+func (m *Manager) SetInitialDNS(d apitypes.DNSConfig) {
+	m.mu.Lock()
+	m.dns = d
+	m.mu.Unlock()
+}
+
+// SetDNS sets the resolver policy and hot-reloads (reverts on failure).
+func (m *Manager) SetDNS(d apitypes.DNSConfig) error {
+	m.mu.Lock()
+	prev := m.dns
+	m.dns = d
+	m.mu.Unlock()
+	if err := m.rebuild(); err != nil {
+		m.mu.Lock()
+		m.dns = prev
+		m.mu.Unlock()
+		_ = m.rebuild()
+		return fmt.Errorf("apply DNS failed (reverted): %w", err)
+	}
+	return nil
+}
+
 // ApplyProfile atomically sets nodes + whitelist + rule sets + (optionally) mode
 // and rebuilds ONCE, so a one-click profile switch is a single reload rather
 // than four. mode=="" keeps the current mode.
@@ -199,14 +223,14 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, mode, sets := m.nodes, m.wl, m.mode, m.rulesets
+	nodes, wl, mode, sets, dns := m.nodes, m.wl, m.mode, m.rulesets, m.dns
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, mode, sets, m.clashSecret)
+	merged, err := buildMergedConfig(base, nodes, wl, mode, sets, dns, m.clashSecret)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -253,12 +277,16 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // buildMergedConfig injects (a) subscription node outbounds + the `proxy` group
 // and (b) whitelist allow rules into the route, at the JSON level so sing-box's
 // own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, mode string, sets ruleset.Sets, clashSecret string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, clashSecret string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
 	}
 	if err := injectOutbounds(cfg, nodes); err != nil {
+		return nil, err
+	}
+	// Before applyMode: a configured dns block wins over TUN's default resolver.
+	if err := injectDNS(cfg, dns); err != nil {
 		return nil, err
 	}
 	if err := applyMode(cfg, mode); err != nil {
@@ -276,6 +304,59 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, m
 		return nil, err
 	}
 	return json.Marshal(cfg)
+}
+
+// injectDNS builds the sing-box dns block from our config. Empty servers => no
+// dns block (keep sing-box defaults / TUN's injected resolver). Server types map
+// straight to sing-box 1.12+ typed DNS servers; local needs no address.
+func injectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig) error {
+	if len(d.Servers) == 0 {
+		return nil
+	}
+	servers := make([]map[string]any, 0, len(d.Servers))
+	for _, s := range d.Servers {
+		m := map[string]any{"type": s.Type, "tag": s.Tag}
+		if s.Type != "local" {
+			m["server"] = s.Server
+			if s.Port > 0 {
+				m["server_port"] = s.Port
+			}
+			if s.Detour != "" {
+				m["detour"] = s.Detour
+			}
+		}
+		servers = append(servers, m)
+	}
+	rules := make([]map[string]any, 0, len(d.Rules))
+	for _, r := range d.Rules {
+		if r.Server == "" || (len(r.DomainSuffix) == 0 && len(r.RuleSet) == 0) {
+			continue // never emit an empty-matcher rule
+		}
+		m := map[string]any{"server": r.Server}
+		if len(r.DomainSuffix) > 0 {
+			m["domain_suffix"] = r.DomainSuffix
+		}
+		if len(r.RuleSet) > 0 {
+			m["rule_set"] = r.RuleSet
+		}
+		rules = append(rules, m)
+	}
+	dns := map[string]any{"servers": servers}
+	if len(rules) > 0 {
+		dns["rules"] = rules
+	}
+	if d.Final != "" {
+		dns["final"] = d.Final
+	}
+	if d.Strategy != "" {
+		dns["strategy"] = d.Strategy
+	}
+	raw, err := json.Marshal(dns)
+	if err != nil {
+		return err
+	}
+	cfg["dns"] = raw
+	return nil
 }
 
 // injectRuleSets appends enabled rule_set descriptors to route.rule_set and

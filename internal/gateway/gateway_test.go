@@ -45,7 +45,7 @@ func TestInjectOrder_ProcessAboveAllowsAboveCatchAll(t *testing.T) {
 		{Tag: "ads", Type: "remote", Format: "binary", URL: "https://x/ads.srs", Role: apitypes.RuleRoleBlock, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 		{Tag: "cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 	}}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, ModeManual, sets, "sekret")
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, ModeManual, sets, apitypes.DNSConfig{}, "sekret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +107,7 @@ func TestApplyMode_Inbounds(t *testing.T) {
 		{ModeSystem, []string{"mixed"}},
 		{ModeTUN, []string{"tun", "mixed"}},
 	} {
-		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, tc.mode, ruleset.Sets{}, "s")
+		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, "s")
 		if err != nil {
 			t.Fatalf("%s: %v", tc.mode, err)
 		}

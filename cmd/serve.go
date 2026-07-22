@@ -19,6 +19,7 @@ import (
 
 	"github.com/ivanzzeth/trust-proxy/internal/api"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
+	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
@@ -115,10 +116,15 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	dnsStore, err := dnscfg.NewStore(serveDataDir + "/dns.json")
+	if err != nil {
+		return err
+	}
 
 	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
 	mgr.SetInitialRuleSets(rsStore.Get())
+	mgr.SetInitialDNS(dnsStore.Get())
 	if err := mgr.Start(); err != nil {
 		return err
 	}
@@ -140,6 +146,8 @@ func runServe() error {
 		RSApplier:   mgr,
 		Profiles:    profStore,
 		ProfApplier: mgr,
+		DNS:         dnsStore,
+		DNSApplier:  mgr,
 		Clash:       clash.New(serveClashAddr, secret),
 		ConsoleDir:  serveConsoleDir,
 	})
