@@ -216,7 +216,8 @@ curl -x socks5h://127.0.0.1:17070 https://example.com            # 正常 -> 200
 - **里程碑 5（🟡）** ✅**beaconing 检测**（同目标周期性回连、区间变异系数低 → 疑似 C2 心跳，`detect.recordBeacon`；启发式=仅告警不自动断，用 `Event.Block` 区分高置信威胁情报命中）；✅**连接页与事件页合并**（控制台单页三标签 全部/活动/已关闭 → `/connections`）；✅**被拦连接可见 + 一键加白**（兜底改 route→`block` 出站，detector 记录被拦连接 + SNI 域名；每行 `+域名/+IP/+进程/+设备` 直接 POST `/api/whitelist` 热重载放行）。**说明**：Clash API 只有活动连接（无 closed 端点），历史来自我们的检测事件——这是「看不见连接」的真因，非 bug。
 - **里程碑 6（✅ 主体）** ✅**控制台整体换 shadcn/ui**（`dashboard/`：精致 SaaS 仪表盘，Overview/Connections/Nodes/Profiles/Whitelist/Rule Sets/Proxies/Logs，全部走 `/api` 单一 origin）；✅**Clash API 重做**（`pkg/clash` + `internal/api` 后端代理 `/proxies`、select、delay、`/logs`(WS→SSE)）；✅**删除 vendored Yacd（`console/`）**。**待做**：go:embed 单二进制。
 - **里程碑 7（✅ 主体）** ✅**DNS 服务器/规则配置**（`internal/dnscfg` + `gateway.injectDNS`：typed servers local/udp/tcp/tls/https/quic + 分流 rules + strategy/final；`detour:proxy` 让 DNS 走出口节点防泄漏；校验 + `SetDNS` 失败回滚；DNS 页含预设）。这是 **DNS 隧道/DGA 检测**的前提（后续接观测：高熵子域名/异常 TXT/查询速率）。
-- **后续** DNS 隧道/DGA 检测（观测 DNS 查询）、go:embed 单二进制、多节点管理、per-connection 流量历史持久化。
+- **里程碑 8（✅ 主体）** ✅**DGA / DNS 隧道检测**（`detect.analyzeDomain`：SLD 香农熵+数字/元音比→DGA C2；长高熵子域名标签→隧道；单父域 distinct 子域名计数→隧道/fast-flux。启发式=仅告警不自动断）。**坑**：proxy/socks 模式下 sing-box 直接按域名拨号（`outbound connection to <domain>`），**不经 DNS 路由**，故无 `lookup succeed` 日志——检测跑在 tracker 拿到的**连接域名**上（全模式可用）；基于日志观测 DNS 查询仅 TUN/hijack-dns 模式可行（后续再上）。
+- **后续** DNS 查询级观测（TUN 下高熵子域名/异常 TXT/查询速率）、go:embed 单二进制、多节点管理、per-connection 流量历史持久化。
 
 ## 许可证
 - sing-box / 官方 dashboard 均 **GPLv3（+ 命名附加条款）**。

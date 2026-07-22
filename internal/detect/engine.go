@@ -59,10 +59,19 @@ type Engine struct {
 	beaconMaxIntvl  time.Duration // ignore cadences slower than this
 	beaconReAlert   time.Duration // don't re-alert the same dest within this
 	beacons         map[string]*beaconState
+
+	// DGA / DNS-tunnel scoring on observed domains
+	dgaEnabled bool
+	dnsParents map[string]*parentState
 }
 
 type beaconState struct {
 	times     []time.Time
+	lastAlert time.Time
+}
+
+type parentState struct {
+	subs      map[string]struct{}
 	lastAlert time.Time
 }
 
@@ -88,6 +97,8 @@ func New(capacity int) *Engine {
 		beaconMaxIntvl:   2 * time.Hour,
 		beaconReAlert:    10 * time.Minute,
 		beacons:          map[string]*beaconState{},
+		dgaEnabled:       true,
+		dnsParents:       map[string]*parentState{},
 	}
 }
 
@@ -95,6 +106,13 @@ func New(capacity int) *Engine {
 func (e *Engine) SetBeaconing(v bool) {
 	e.mu.Lock()
 	e.beaconEnabled = v
+	e.mu.Unlock()
+}
+
+// SetDGA toggles DGA / DNS-tunnel domain scoring.
+func (e *Engine) SetDGA(v bool) {
+	e.mu.Lock()
+	e.dgaEnabled = v
 	e.mu.Unlock()
 }
 
@@ -210,6 +228,13 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 			ev.Reasons = append(ev.Reasons, r)
 		}
 	}
+	// DGA / DNS-tunnel scoring on the domain (heuristic => alert only).
+	if e.dgaEnabled && host != "" {
+		if rs := e.analyzeDomain(host, now); len(rs) > 0 {
+			ev.Level = "alert"
+			ev.Reasons = append(ev.Reasons, rs...)
+		}
+	}
 	e.events = append(e.events, ev)
 	if len(e.events) > e.cap {
 		e.events = e.events[len(e.events)-e.cap:]
@@ -275,6 +300,102 @@ func (e *Engine) recordBeacon(key string, now time.Time) string {
 	}
 	bs.lastAlert = now
 	return fmt.Sprintf("beaconing to %s: %d conns, ~%.0fs interval (cv %.2f) — possible C2", key, len(bs.times), mean, cv)
+}
+
+// analyzeDomain flags DGA-like registrable labels, long high-entropy subdomain
+// labels (data-encoding = DNS tunnel), and a high count of distinct subdomains
+// under one parent (tunneling / fast-flux). Heuristic; caller holds e.mu.
+func (e *Engine) analyzeDomain(host string, now time.Time) []string {
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	if h == "" || net.ParseIP(h) != nil {
+		return nil
+	}
+	labels := strings.Split(h, ".")
+	if len(labels) < 2 {
+		return nil
+	}
+	var reasons []string
+	sld := labels[len(labels)-2]
+	// DGA: long, high-entropy second-level label that is digit-heavy or
+	// vowel-starved (kq3v9z7x1p2m.com), unlike real brands.
+	if len(sld) >= 12 && shannon(sld) >= 3.8 && (digitRatio(sld) >= 0.25 || vowelRatio(sld) <= 0.2) {
+		reasons = append(reasons, fmt.Sprintf("DGA-like domain %q (entropy %.1f) — possible malware C2", sld, shannon(sld)))
+	}
+	// Tunnel: a single long, high-entropy subdomain label encodes data.
+	for _, lab := range labels[:len(labels)-2] {
+		if len(lab) >= 25 && shannon(lab) >= 4.0 {
+			reasons = append(reasons, fmt.Sprintf("long high-entropy subdomain label (%d chars) — possible DNS tunnel", len(lab)))
+			break
+		}
+	}
+	// Volume: many distinct subdomains under one parent within the window.
+	if len(labels) >= 3 {
+		parent := labels[len(labels)-2] + "." + labels[len(labels)-1]
+		if len(e.dnsParents) > 8192 {
+			e.dnsParents = map[string]*parentState{} // coarse bound
+		}
+		ps := e.dnsParents[parent]
+		if ps == nil {
+			ps = &parentState{subs: map[string]struct{}{}}
+			e.dnsParents[parent] = ps
+		}
+		if len(ps.subs) < 4096 {
+			ps.subs[h] = struct{}{}
+		}
+		if len(ps.subs) >= 40 && (ps.lastAlert.IsZero() || now.Sub(ps.lastAlert) > 10*time.Minute) {
+			ps.lastAlert = now
+			reasons = append(reasons, fmt.Sprintf("%d distinct subdomains under %s — possible DNS tunneling / fast-flux", len(ps.subs), parent))
+		}
+	}
+	return reasons
+}
+
+func shannon(s string) float64 {
+	if s == "" {
+		return 0
+	}
+	var freq [256]float64
+	n := 0
+	for i := 0; i < len(s); i++ {
+		freq[s[i]]++
+		n++
+	}
+	var h float64
+	for _, c := range freq {
+		if c == 0 {
+			continue
+		}
+		p := c / float64(n)
+		h -= p * math.Log2(p)
+	}
+	return h
+}
+
+func digitRatio(s string) float64 {
+	if s == "" {
+		return 0
+	}
+	d := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			d++
+		}
+	}
+	return float64(d) / float64(len(s))
+}
+
+func vowelRatio(s string) float64 {
+	if s == "" {
+		return 0
+	}
+	v := 0
+	for _, r := range s {
+		switch r {
+		case 'a', 'e', 'i', 'o', 'u':
+			v++
+		}
+	}
+	return float64(v) / float64(len(s))
 }
 
 func meanCV(xs []float64) (mean, cv float64) {

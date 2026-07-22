@@ -321,8 +321,10 @@ func injectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig) error {
 			if s.Port > 0 {
 				m["server_port"] = s.Port
 			}
-			if s.Detour != "" {
-				m["detour"] = s.Detour
+			// Only "proxy" is a meaningful detour; "direct"/"" dial directly
+			// (sing-box rejects a detour to the empty `direct` outbound).
+			if s.Detour == "proxy" {
+				m["detour"] = "proxy"
 			}
 		}
 		servers = append(servers, m)
@@ -356,6 +358,35 @@ func injectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig) error {
 		return err
 	}
 	cfg["dns"] = raw
+
+	// Route outbound domain resolution through the dns router (required since
+	// sing-box 1.12), which also makes every lookup observable in the logs — the
+	// hook our DNS-tunnel / DGA detection consumes.
+	resolver := d.Final
+	if resolver == "" {
+		resolver = d.Servers[0].Tag
+	}
+	return setDefaultDomainResolver(cfg, resolver)
+}
+
+func setDefaultDomainResolver(cfg map[string]json.RawMessage, server string) error {
+	if server == "" {
+		return nil
+	}
+	var route map[string]json.RawMessage
+	if raw, ok := cfg["route"]; ok {
+		if err := json.Unmarshal(raw, &route); err != nil {
+			return err
+		}
+	} else {
+		route = map[string]json.RawMessage{}
+	}
+	route["default_domain_resolver"], _ = json.Marshal(server)
+	nr, err := json.Marshal(route)
+	if err != nil {
+		return err
+	}
+	cfg["route"] = nr
 	return nil
 }
 

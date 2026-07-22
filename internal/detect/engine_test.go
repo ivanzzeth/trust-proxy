@@ -1,10 +1,55 @@
 package detect
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestDGAandTunnel(t *testing.T) {
+	e := New(4000)
+	clk := time.Unix(1_700_000_000, 0)
+	e.now = func() time.Time { return clk }
+	has := func(ev *Event, sub string) bool {
+		for _, r := range ev.Reasons {
+			if strings.Contains(r, sub) {
+				return true
+			}
+		}
+		return false
+	}
+	track := func(host string) *Event { return e.Track("tcp", host, "1.2.3.4:443", "s", "", "", "direct") }
+
+	// Legitimate domains must NOT be flagged.
+	for _, d := range []string{"wikipedia.org", "google.com", "api.ipify.org", "example.com", "d1a2b3c4.cloudfront.net"} {
+		ev := track(d)
+		if has(ev, "DGA") || has(ev, "DNS tunnel") || has(ev, "tunneling") {
+			t.Fatalf("false positive on %s: %v", d, ev.Reasons)
+		}
+	}
+	// DGA-like registrable label.
+	if ev := track("kq3v9z7x1p2m4r8t.com"); !has(ev, "DGA-like") {
+		t.Fatalf("DGA not flagged: %v", ev.Reasons)
+	}
+	// Long high-entropy subdomain label (data encoding).
+	if ev := track("mz2k9qw7rt4xy1bv6nc3ld8pf0ah5.tun.evil.io"); !has(ev, "DNS tunnel") {
+		t.Fatalf("tunnel label not flagged: %v", ev.Reasons)
+	}
+	// Volume: many distinct subdomains under one parent.
+	for i := 0; i < 45; i++ {
+		track(fmt.Sprintf("h%d.flux.example", i))
+	}
+	found := false
+	for _, ev := range e.Events() {
+		if has(&ev, "distinct subdomains") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("volume tunneling/fast-flux not flagged")
+	}
+}
 
 func TestBeaconing(t *testing.T) {
 	e := New(100)
