@@ -32,26 +32,6 @@
     "rules": [
       { "action": "sniff" },
       {
-        "domain_suffix": [
-          "example.com",
-          "api.ipify.org",
-          "github.com",
-          "githubusercontent.com"
-        ],
-        "action": "route",
-        "outbound": "proxy"
-      },
-      {
-        "ip_cidr": [
-          "127.0.0.0/8",
-          "10.0.0.0/8",
-          "172.16.0.0/12",
-          "192.168.0.0/16"
-        ],
-        "action": "route",
-        "outbound": "direct"
-      },
-      {
         "network": ["tcp", "udp"],
         "action": "reject"
       }

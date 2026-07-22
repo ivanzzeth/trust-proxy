@@ -16,6 +16,7 @@ import ProxiesPage from '../pages/ProxiesPage';
 import RulesPage from '../pages/RulesPage';
 import StyleGuidePage from '../pages/StyleGuidePage';
 import SubscriptionsPage from '../pages/SubscriptionsPage';
+import WhitelistPage from '../pages/WhitelistPage';
 
 import APIDiscovery from './APIDiscovery';
 
@@ -27,6 +28,7 @@ const routes = [
   { path: '/logs', element: <LogsPage /> },
   { path: '/proxies', element: <ProxiesPage /> },
   { path: '/subscriptions', element: <SubscriptionsPage /> },
+  { path: '/whitelist', element: <WhitelistPage /> },
   { path: '/rules', element: <RulesPage /> },
   { path: '/about', element: <AboutPage /> },
   import.meta.env.DEV ? { path: '/style', element: <StyleGuidePage /> } : false,

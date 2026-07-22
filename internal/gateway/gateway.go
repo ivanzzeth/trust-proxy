@@ -1,6 +1,6 @@
 // Package gateway boots and owns the embedded sing-box instance (the data
-// plane), attaches our detection tracker, and supports hot-reloading a new
-// config (used to apply subscription nodes into the `proxy` group).
+// plane), attaches our detection tracker, and hot-reloads a rebuilt config when
+// the applied subscription nodes or the egress whitelist change.
 package gateway
 
 import (
@@ -19,42 +19,34 @@ import (
 	singjson "github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/service"
 
+	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
 // ProxyGroupTag is the outbound group whose members we swap when applying a
-// subscription. The base config routes allow-listed egress to this tag.
+// subscription. Whitelisted domains egress through it.
 const ProxyGroupTag = "proxy"
 
-// Manager owns the running box and can rebuild it in place.
+// Manager owns the running box and rebuilds it in place when policy changes.
 type Manager struct {
 	configPath string
 	logger     log.Logger
 
+	rebuildMu sync.Mutex // serializes rebuilds
+
 	mu       sync.Mutex
 	instance *box.Box
+	nodes    []apitypes.Node
+	wl       whitelist.Rules
 }
 
-// NewManager returns a manager for the given base config path.
-func NewManager(configPath string) *Manager {
-	return &Manager{configPath: configPath, logger: log.StdLogger()}
+// NewManager returns a manager seeded with the initial whitelist.
+func NewManager(configPath string, wl whitelist.Rules) *Manager {
+	return &Manager{configPath: configPath, logger: log.StdLogger(), wl: wl}
 }
 
-// Start builds and starts the box from the base config.
-func (m *Manager) Start() error {
-	base, err := os.ReadFile(m.configPath)
-	if err != nil {
-		return err
-	}
-	inst, err := m.buildBox(base)
-	if err != nil {
-		return err
-	}
-	m.mu.Lock()
-	m.instance = inst
-	m.mu.Unlock()
-	return inst.Start()
-}
+// Start builds and starts the box from the base config + current policy.
+func (m *Manager) Start() error { return m.rebuild() }
 
 // Close stops the running box.
 func (m *Manager) Close() error {
@@ -66,25 +58,45 @@ func (m *Manager) Close() error {
 	return m.instance.Close()
 }
 
-// Apply rebuilds the box from the base config with the given subscription nodes
-// injected as outbounds and wired into the `proxy` group, then swaps it in.
-// Passing no nodes resets the group to direct-only.
+// Apply sets the subscription nodes and hot-reloads (empty resets the proxy
+// group to direct-only).
 func (m *Manager) Apply(nodes []apitypes.Node) error {
+	m.mu.Lock()
+	m.nodes = nodes
+	m.mu.Unlock()
+	return m.rebuild()
+}
+
+// SetWhitelist sets the egress allow-list and hot-reloads.
+func (m *Manager) SetWhitelist(wl whitelist.Rules) error {
+	m.mu.Lock()
+	m.wl = wl
+	m.mu.Unlock()
+	return m.rebuild()
+}
+
+func (m *Manager) rebuild() error {
+	m.rebuildMu.Lock()
+	defer m.rebuildMu.Unlock()
+
+	m.mu.Lock()
+	nodes, wl := m.nodes, m.wl
+	m.mu.Unlock()
+
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := mergeNodes(base, nodes)
+	merged, err := buildMergedConfig(base, nodes, wl)
 	if err != nil {
-		return err
+		return fmt.Errorf("build config: %w", err)
 	}
 	newInst, err := m.buildBox(merged)
 	if err != nil {
-		return fmt.Errorf("build merged config: %w", err)
+		return fmt.Errorf("build box: %w", err)
 	}
 
-	// Free the listeners before starting the new instance (they bind the same
-	// ports), so there is a brief blip during reload.
+	// Free listeners before starting the new instance (same ports): brief blip.
 	m.mu.Lock()
 	old := m.instance
 	m.mu.Unlock()
@@ -92,12 +104,12 @@ func (m *Manager) Apply(nodes []apitypes.Node) error {
 		old.Close()
 	}
 	if err := newInst.Start(); err != nil {
-		return fmt.Errorf("start merged config: %w", err)
+		return fmt.Errorf("start box: %w", err)
 	}
 	m.mu.Lock()
 	m.instance = newInst
 	m.mu.Unlock()
-	m.logger.Info("gateway reloaded with ", len(nodes), " subscription node(s)")
+	m.logger.Info("gateway reloaded (", len(nodes), " node(s), ", len(wl.Domains), " domain(s), ", len(wl.IPs), " ip(s))")
 	return nil
 }
 
@@ -117,22 +129,30 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 	return instance, nil
 }
 
-// mergeNodes injects node outbounds into the config's outbounds array and sets
-// the `proxy` group's members. Works at the JSON level so we don't hand-build
-// typed option structs; sing-box's own parser validates the result.
-func mergeNodes(base []byte, nodes []apitypes.Node) ([]byte, error) {
+// buildMergedConfig injects (a) subscription node outbounds + the `proxy` group
+// and (b) whitelist allow rules into the route, at the JSON level so sing-box's
+// own parser validates the result.
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
 	}
+	if err := injectOutbounds(cfg, nodes); err != nil {
+		return nil, err
+	}
+	if err := injectWhitelist(cfg, wl); err != nil {
+		return nil, err
+	}
+	return json.Marshal(cfg)
+}
+
+func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node) error {
 	var outs []json.RawMessage
 	if raw, ok := cfg["outbounds"]; ok {
 		if err := json.Unmarshal(raw, &outs); err != nil {
-			return nil, err
+			return err
 		}
 	}
-
-	// Keep base outbounds except the placeholder proxy group (we rebuild it).
 	kept := outs[:0:0]
 	for _, raw := range outs {
 		var meta struct {
@@ -145,7 +165,6 @@ func mergeNodes(base []byte, nodes []apitypes.Node) ([]byte, error) {
 		kept = append(kept, raw)
 	}
 
-	// Append node outbounds with de-duplicated tags.
 	used := map[string]bool{}
 	uniq := func(t string) string {
 		if t == "" {
@@ -177,8 +196,6 @@ func mergeNodes(base []byte, nodes []apitypes.Node) ([]byte, error) {
 		tags = append(tags, tag)
 	}
 
-	// Rebuild the proxy group: urltest over the nodes (auto-select fastest),
-	// or a selector pointing at direct when there are no nodes.
 	var group map[string]any
 	if len(tags) == 0 {
 		group = map[string]any{"type": "selector", "tag": ProxyGroupTag, "outbounds": []string{"direct"}}
@@ -190,16 +207,74 @@ func mergeNodes(base []byte, nodes []apitypes.Node) ([]byte, error) {
 	}
 	groupRaw, err := json.Marshal(group)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	kept = append(kept, groupRaw)
 
 	newOuts, err := json.Marshal(kept)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	cfg["outbounds"] = newOuts
-	return json.Marshal(cfg)
+	return nil
+}
+
+// injectWhitelist inserts allow rules (domains -> proxy, ips -> direct) right
+// before the catch-all reject rule in route.rules.
+func injectWhitelist(cfg map[string]json.RawMessage, wl whitelist.Rules) error {
+	routeRaw, ok := cfg["route"]
+	if !ok {
+		return nil
+	}
+	var route map[string]json.RawMessage
+	if err := json.Unmarshal(routeRaw, &route); err != nil {
+		return err
+	}
+	var rules []json.RawMessage
+	if raw, ok := route["rules"]; ok {
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return err
+		}
+	}
+
+	var allow []json.RawMessage
+	if len(wl.Domains) > 0 {
+		r, _ := json.Marshal(map[string]any{"domain_suffix": wl.Domains, "action": "route", "outbound": ProxyGroupTag})
+		allow = append(allow, r)
+	}
+	if len(wl.IPs) > 0 {
+		r, _ := json.Marshal(map[string]any{"ip_cidr": wl.IPs, "action": "route", "outbound": "direct"})
+		allow = append(allow, r)
+	}
+
+	// insert before the first reject rule (default-deny catch-all)
+	rejectIdx := len(rules)
+	for i, raw := range rules {
+		var meta struct {
+			Action string `json:"action"`
+		}
+		_ = json.Unmarshal(raw, &meta)
+		if meta.Action == "reject" {
+			rejectIdx = i
+			break
+		}
+	}
+	merged := make([]json.RawMessage, 0, len(rules)+len(allow))
+	merged = append(merged, rules[:rejectIdx]...)
+	merged = append(merged, allow...)
+	merged = append(merged, rules[rejectIdx:]...)
+
+	newRules, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	route["rules"] = newRules
+	newRoute, err := json.Marshal(route)
+	if err != nil {
+		return err
+	}
+	cfg["route"] = newRoute
+	return nil
 }
 
 func stringOr(v any, fallback string) string {

@@ -37,8 +37,22 @@ async function unwrap<T>(r: Response): Promise<T> {
 
 const jsonHeaders = { 'Content-Type': 'application/json' };
 
+export interface Whitelist {
+  domains: string[];
+  ips: string[];
+}
+
 export const tp = {
   listSubs: () => fetch('/api/subscriptions').then(unwrap<TPSubscription[]>),
+  getWhitelist: () => fetch('/api/whitelist').then(unwrap<Whitelist>),
+  addWhitelist: (type: 'domain' | 'ip', value: string) =>
+    fetch('/api/whitelist', { method: 'POST', headers: jsonHeaders, body: JSON.stringify({ type, value }) }).then(
+      unwrap<Whitelist>,
+    ),
+  delWhitelist: (type: 'domain' | 'ip', value: string) =>
+    fetch('/api/whitelist', { method: 'DELETE', headers: jsonHeaders, body: JSON.stringify({ type, value }) }).then(
+      unwrap<Whitelist>,
+    ),
   addSub: (name: string, url: string, userAgent?: string, via?: string) =>
     fetch('/api/subscriptions', {
       method: 'POST',

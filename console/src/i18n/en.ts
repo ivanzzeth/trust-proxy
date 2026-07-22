@@ -1,4 +1,10 @@
 export const data = {
+  Whitelist: 'Whitelist',
+  wl_domains: 'Allowed domains',
+  wl_ips: 'Allowed IP CIDRs',
+  wl_add: 'Add',
+  wl_empty: '(empty)',
+  wl_hint: 'Default-deny egress: only these domains/IPs may leave the network. Domains egress via the proxy group; IPs go direct.',
   add_mode_manual: 'Manual',
   add_mode_paste: 'Paste',
   add_mode_url: 'Subscription URL',

@@ -1,4 +1,10 @@
 export const data = {
+  Whitelist: '白名单',
+  wl_domains: '放行域名',
+  wl_ips: '放行 IP 段',
+  wl_add: '添加',
+  wl_empty: '(空)',
+  wl_hint: '出网默认拒绝：只有这些域名/IP 能出网。域名经代理组出，IP 走直连。',
   add_mode_manual: '手动填写',
   add_mode_paste: '粘贴',
   add_mode_url: '订阅链接',

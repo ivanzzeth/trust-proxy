@@ -1,4 +1,10 @@
 export const data = {
+  Whitelist: '白名單',
+  wl_domains: '放行網域',
+  wl_ips: '放行 IP 段',
+  wl_add: '新增',
+  wl_empty: '(空)',
+  wl_hint: '出網預設拒絕：只有這些網域/IP 能出網。網域經代理組出，IP 走直連。',
   add_mode_manual: '手動填寫',
   add_mode_paste: '貼上',
   add_mode_url: '訂閱連結',

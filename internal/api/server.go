@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
+	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 	"github.com/ivanzzeth/trust-proxy/pkg/clash"
 )
@@ -22,11 +23,18 @@ type Applier interface {
 	Apply(nodes []apitypes.Node) error
 }
 
+// WhitelistApplier hot-reloads the egress whitelist (gateway.Manager).
+type WhitelistApplier interface {
+	SetWhitelist(whitelist.Rules) error
+}
+
 // Options configures the API server.
 type Options struct {
 	Addr       string
 	Store      *subscription.Store
 	Applier    Applier
+	Whitelist  *whitelist.Store
+	WLApplier  WhitelistApplier
 	Clash      *clash.Client // low-level Clash primitives, proxied to the browser
 	ConsoleDir string        // static dir for the React console (served at /)
 }
@@ -36,13 +44,15 @@ type Server struct {
 	httpSrv    *http.Server
 	store      *subscription.Store
 	applier    Applier
+	wl         *whitelist.Store
+	wlApplier  WhitelistApplier
 	clash      *clash.Client
 	consoleDir string
 }
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, clash: o.Clash, consoleDir: o.ConsoleDir}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, clash: o.Clash, consoleDir: o.ConsoleDir}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/subscriptions", s.handleListSubs)
@@ -53,6 +63,9 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("GET /api/connections", s.handleConnections)
 	mux.HandleFunc("DELETE /api/connections/{id}", s.handleKillConn)
 	mux.HandleFunc("DELETE /api/connections", s.handleKillAll)
+	mux.HandleFunc("GET /api/whitelist", s.handleGetWhitelist)
+	mux.HandleFunc("POST /api/whitelist", s.handleAddWhitelist)
+	mux.HandleFunc("DELETE /api/whitelist", s.handleDelWhitelist)
 	mux.Handle("/", s.consoleHandler())
 	s.httpSrv = &http.Server{Addr: o.Addr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	return s
@@ -193,6 +206,73 @@ func (s *Server) consoleHandler() http.Handler {
 		}
 		http.ServeFile(w, r, index) // SPA fallback
 	})
+}
+
+// ---- whitelist (egress allow-list) ----------------------------------------
+
+type whitelistReq struct {
+	Type  string `json:"type"` // "domain" | "ip"
+	Value string `json:"value"`
+}
+
+func (s *Server) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {
+	if s.wl == nil {
+		writeErr(w, http.StatusServiceUnavailable, "whitelist not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.wl.Get())
+}
+
+func (s *Server) handleAddWhitelist(w http.ResponseWriter, r *http.Request) {
+	s.mutateWhitelist(w, r, true)
+}
+
+func (s *Server) handleDelWhitelist(w http.ResponseWriter, r *http.Request) {
+	s.mutateWhitelist(w, r, false)
+}
+
+func (s *Server) mutateWhitelist(w http.ResponseWriter, r *http.Request, add bool) {
+	if s.wl == nil {
+		writeErr(w, http.StatusServiceUnavailable, "whitelist not available")
+		return
+	}
+	var req whitelistReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Value == "" {
+		writeErr(w, http.StatusBadRequest, "type and value are required")
+		return
+	}
+	var (
+		rules whitelist.Rules
+		err   error
+	)
+	switch req.Type {
+	case "domain":
+		if add {
+			rules, err = s.wl.AddDomain(req.Value)
+		} else {
+			rules, err = s.wl.RemoveDomain(req.Value)
+		}
+	case "ip":
+		if add {
+			rules, err = s.wl.AddIP(req.Value)
+		} else {
+			rules, err = s.wl.RemoveIP(req.Value)
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "type must be domain or ip")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if s.wlApplier != nil {
+		if err := s.wlApplier.SetWhitelist(rules); err != nil {
+			writeErr(w, http.StatusInternalServerError, "apply whitelist: "+err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, rules)
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

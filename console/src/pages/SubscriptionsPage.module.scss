@@ -193,3 +193,15 @@
   color: #30a46c;
   opacity: 1;
 }
+.wlGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 24px;
+}
+.wlCol h2 {
+  font-size: 15px;
+  margin: 0 0 10px;
+}
+.wlCol .pasteRow {
+  margin-bottom: 12px;
+}

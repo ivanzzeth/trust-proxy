@@ -13,6 +13,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/api"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
+	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/clash"
 )
 
@@ -44,7 +45,12 @@ func init() {
 }
 
 func runServe() error {
-	mgr := gateway.NewManager(serveConfig)
+	wlStore, err := whitelist.NewStore(serveDataDir + "/whitelist.json")
+	if err != nil {
+		return err
+	}
+
+	mgr := gateway.NewManager(serveConfig, wlStore.Get())
 	if err := mgr.Start(); err != nil {
 		return err
 	}
@@ -58,6 +64,8 @@ func runServe() error {
 		Addr:       serveAPIAddr,
 		Store:      store,
 		Applier:    mgr,
+		Whitelist:  wlStore,
+		WLApplier:  mgr,
 		Clash:      clash.New(serveClashAddr, serveClashSecret),
 		ConsoleDir: serveConsoleDir,
 	})
