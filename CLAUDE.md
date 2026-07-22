@@ -193,11 +193,16 @@ curl -x socks5h://127.0.0.1:17070 https://example.com            # 正常 -> 200
 - dashboard：pnpm、必须先 generate、有 vendor 子模块、UI 路径 `/dashboard/`。
 - 可再生目录已 gitignore：`webui/{dist,node_modules,src/gen,vendor/iterm2-color-schemes}`。
 
-## 路线图
+## 作为代理服务器 / TUN 网关运行
+同一个二进制三种角色：
+- **客户端网关**：`trust-proxy serve`（mixed 入站 :17070 + 检测 + 白名单 + console/api）。
+- **代理服务端（出口节点）**：`trust-proxy proxy run -c server.json`；一键生成：`trust-proxy proxy gen --type <ss|vless-reality|vless|vmess|trojan|anytls|hysteria2|tuic> --server <ip> --port <p>` → 输出服务端配置 + 客户端节点（Clash dict，可直接粘进 console）。TLS 协议自动内联自签证书（客户端 skip-cert-verify），vless-reality 免证书自动生成密钥对。
+- **TUN 全流量网关**：`sudo trust-proxy serve -c configs/config.tun.json`（`tun` 入站 + `auto_route` 网络层接管**所有**出入网流量——木马的裸 socket 也逃不掉）。需 **root**，且与其他 TUN 工具（Surge 增强模式等）互斥，用于**专用网关机/软路由**。检测与白名单逻辑不变（同一 route）。构建需 `with_gvisor`（已在默认 TAGS）。
 - **里程碑 0（✅）** 全栈跑通：Go 嵌入 sing-box + 代理 + 官方监控 UI。
 - **里程碑 1（🟡 进行中）** ✅白名单默认拒绝 + ✅`AppendTracker` 检测器遥测 stub + ✅Clash API + ✅单一二进制 CLI/SDK 分层 + ✅订阅管理（抓取/解析/存储）+ ✅**订阅 apply（转换成 sing-box outbound + 热重载进 `proxy` 组）**。**待做**：自动处置闭环（检测异常 → `conn kill`）。
 - **里程碑 2（🟡 进行中）** ✅自建 React 控制台骨架 + 单一 origin + 订阅/节点管理 + 实时连接（代理 Clash）。**待做**：白名单管理 UI、检测/告警视图（需先补后端 events/whitelist API）、go:embed 单二进制。
-- **后续** 元数据检测（信誉/beaconing/异常上行/进程归属）→ DPI/JA4/DLP（镜像明文腿）。
+- **里程碑 3（🟡）** ✅检测引擎（审计事件 + 字节计数 + 威胁情报命中 + 大上传外泄告警）+ 告警页；✅代理服务端一键部署（8 协议）；✅TUN 全流量网关（配置就绪，需 root 部署）。
+- **后续** 威胁情报 feed 自动加载（abuse.ch）、beaconing 检测、自动处置闭环（告警→断连）、事件持久化(SQLite)、go:embed 单二进制、多节点管理。
 
 ## 许可证
 - sing-box / 官方 dashboard 均 **GPLv3（+ 命名附加条款）**。

@@ -6,7 +6,7 @@ WEBUI_DIR    := webui
 #   with_quic      -> Hysteria2 / TUIC / QUIC (common in real subscriptions)
 #   with_utls      -> uTLS fingerprints (vless reality/tls fp)
 #   with_grpc      -> full gRPC transport (there is a lite fallback without it)
-TAGS ?= with_clash_api with_quic with_utls with_grpc
+TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor
 
 .PHONY: run build tidy webui webui-dev deps clean
 
