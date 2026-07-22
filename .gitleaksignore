@@ -1,0 +1,4 @@
+# Placeholder Clash-API secret ("trust-proxy") in an old README curl example.
+# Not a real credential — it was the documented default, now randomized per
+# deployment (data/clash-secret). Kept in history only.
+bd0d0c95fe3e82f09adcaaf89f16f3dfd82e93d2:README.md:curl-auth-header:36
