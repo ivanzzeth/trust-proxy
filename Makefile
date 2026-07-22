@@ -21,6 +21,10 @@ build:
 tidy:
 	go mod tidy
 
+## Run the end-to-end proxy protocol test (self-hosted server <-> client tunnel)
+e2e:
+	go test $(if $(TAGS),-tags "$(TAGS)",) -run TestProxyE2E -v ./internal/proxygen/
+
 ## First-time setup: fetch the sing-box submodule
 deps:
 	git submodule update --init --recursive
