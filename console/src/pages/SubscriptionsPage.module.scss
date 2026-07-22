@@ -27,6 +27,61 @@
   outline: none;
   border-color: var(--color-focus-blue, #4f8cff);
 }
+.addCard {
+  border: 1px solid var(--color-row-odd, #2a2f3a);
+  border-radius: 8px;
+  margin-bottom: 20px;
+  overflow: hidden;
+}
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--color-row-odd, #2a2f3a);
+}
+.tab,
+.tabOn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 10px 16px;
+  cursor: pointer;
+  color: inherit;
+  opacity: 0.6;
+  font-size: 13px;
+}
+.tabOn {
+  opacity: 1;
+  font-weight: 600;
+  border-bottom-color: var(--color-focus-blue, #4f8cff);
+}
+.form {
+  padding: 16px;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px 12px;
+  margin-bottom: 14px;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+.field > span {
+  opacity: 0.6;
+}
+.field.check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  align-self: end;
+  padding-bottom: 8px;
+}
+.field.check > span {
+  opacity: 1;
+  font-size: 13px;
+}
 .paste {
   margin-bottom: 18px;
   background: var(--color-bg2, rgba(127, 127, 127, 0.06));
