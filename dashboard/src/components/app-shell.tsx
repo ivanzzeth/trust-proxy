@@ -4,12 +4,14 @@ import { toast } from 'sonner';
 import {
   Activity,
   ArrowDownUp,
+  Globe,
   Layers,
   ListChecks,
   Moon,
   ScrollText,
   ShieldCheck,
   Sun,
+  Terminal,
   Waypoints,
   Wifi,
 } from 'lucide-react';
@@ -27,6 +29,8 @@ const NAV = [
   { to: '/profiles', label: 'Profiles', icon: Layers },
   { to: '/whitelist', label: 'Whitelist', icon: ShieldCheck },
   { to: '/rulesets', label: 'Rule Sets', icon: ListChecks },
+  { to: '/proxies', label: 'Proxies', icon: Globe },
+  { to: '/logs', label: 'Logs', icon: Terminal },
 ];
 
 const MODE_LABEL: Record<string, string> = { manual: 'Manual', system: 'System', tun: 'TUN' };

@@ -5,6 +5,8 @@
 package clash
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -12,6 +14,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/coder/websocket"
 )
 
 // Client talks to a Clash external controller (e.g. 127.0.0.1:9090).
@@ -94,6 +98,94 @@ func (c *Client) CloseConnection(id string) error {
 // CloseAllConnections closes every connection (DELETE /connections).
 func (c *Client) CloseAllConnections() error {
 	return c.do(http.MethodDelete, "/connections", nil)
+}
+
+// GetRaw returns the raw JSON body of a GET (for endpoints we proxy verbatim to
+// the browser, e.g. /proxies).
+func (c *Client) GetRaw(path string) ([]byte, error) {
+	return c.raw(http.MethodGet, path, nil)
+}
+
+// Proxies returns the raw GET /proxies body.
+func (c *Client) Proxies() ([]byte, error) { return c.GetRaw("/proxies") }
+
+// SelectProxy sets the selected member of a selector group (PUT /proxies/{group}).
+func (c *Client) SelectProxy(group, name string) error {
+	body, _ := json.Marshal(map[string]string{"name": name})
+	_, err := c.raw(http.MethodPut, "/proxies/"+url.PathEscape(group), body)
+	return err
+}
+
+// Delay runs a latency test against a proxy (GET /proxies/{name}/delay).
+func (c *Client) Delay(name, testURL string, timeoutMs int) ([]byte, error) {
+	if testURL == "" {
+		testURL = "https://www.gstatic.com/generate_204"
+	}
+	if timeoutMs <= 0 {
+		timeoutMs = 3000
+	}
+	q := url.Values{"url": {testURL}, "timeout": {fmt.Sprint(timeoutMs)}}
+	return c.GetRaw("/proxies/" + url.PathEscape(name) + "/delay?" + q.Encode())
+}
+
+// StreamLogs dials the Clash /logs WebSocket and invokes fn for each raw log
+// message until ctx is cancelled or the stream errors.
+func (c *Client) StreamLogs(ctx context.Context, level string, fn func([]byte) error) error {
+	if level == "" {
+		level = "info"
+	}
+	u := strings.Replace(c.base, "http", "ws", 1) + "/logs?level=" + url.QueryEscape(level)
+	if c.secret != "" {
+		u += "&token=" + url.QueryEscape(c.secret)
+	}
+	opts := &websocket.DialOptions{}
+	if c.secret != "" {
+		opts.HTTPHeader = http.Header{"Authorization": {"Bearer " + c.secret}}
+	}
+	conn, _, err := websocket.Dial(ctx, u, opts)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	conn.SetReadLimit(1 << 20)
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return err
+		}
+		if err := fn(data); err != nil {
+			return err
+		}
+	}
+}
+
+// raw performs a request and returns the raw body (auth applied). Non-2xx is an
+// error carrying the body.
+func (c *Client) raw(method, path string, body []byte) ([]byte, error) {
+	var rdr io.Reader
+	if body != nil {
+		rdr = bytes.NewReader(body)
+	}
+	req, err := http.NewRequest(method, c.base+path, rdr)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.secret != "" {
+		req.Header.Set("Authorization", "Bearer "+c.secret)
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("clash api %s %s: HTTP %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return b, nil
 }
 
 func (c *Client) do(method, path string, out any) error {

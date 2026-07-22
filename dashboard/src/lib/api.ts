@@ -111,6 +111,13 @@ export interface CatalogEntry {
   format: string;
   suggested_role: string;
 }
+export interface ProxyNode {
+  type: string;
+  now?: string;
+  all?: string[];
+  udp?: boolean;
+  history?: { delay: number }[];
+}
 export interface Profile {
   id: string;
   name: string;
@@ -161,6 +168,11 @@ export const api = {
       unwrap<{ sets: RuleSet[] }>,
     ),
   delRuleSet: (tag: string) => del(`/api/rulesets/${encodeURIComponent(tag)}`).then(unwrap<{ sets: RuleSet[] }>),
+
+  proxies: () => fetch('/api/proxies').then(unwrap<{ proxies: Record<string, ProxyNode> }>),
+  selectProxy: (group: string, name: string) => fetch('/api/proxies/select', { method: 'PUT', headers: J, body: JSON.stringify({ group, name }) }).then(unwrap<void>),
+  delay: (name: string) =>
+    fetch(`/api/proxies/${encodeURIComponent(name)}/delay?timeout=3000`).then(unwrap<{ delay: number; error?: string }>),
 
   profiles: () => fetch('/api/profiles').then(unwrap<Profile[]>),
   addProfile: (name: string) => post('/api/profiles', { name }).then(unwrap<Profile>),

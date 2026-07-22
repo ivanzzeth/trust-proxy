@@ -3,6 +3,7 @@ module github.com/ivanzzeth/trust-proxy
 go 1.24.7
 
 require (
+	github.com/coder/websocket v1.8.14
 	github.com/sagernet/sing v0.8.12-0.20260721063414-596db5dd6ef4
 	github.com/sagernet/sing-box v1.13.14
 	github.com/sagernet/sing-tun v0.8.12-0.20260721064816-ac719ebeead0
@@ -24,7 +25,6 @@ require (
 	github.com/anytls/sing-anytls v0.0.11 // indirect
 	github.com/caddyserver/certmagic v0.25.3-0.20260421143802-60d9d8b415d6 // indirect
 	github.com/caddyserver/zerossl v0.1.5 // indirect
-	github.com/coder/websocket v1.8.14 // indirect
 	github.com/coreos/go-iptables v0.7.1-0.20240112124308-65c67c9f46e6 // indirect
 	github.com/coreos/go-oidc/v3 v3.17.0 // indirect
 	github.com/creack/pty v1.1.24 // indirect

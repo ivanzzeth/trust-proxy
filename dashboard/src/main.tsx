@@ -12,6 +12,8 @@ import Subscriptions from '@/pages/subscriptions';
 import Profiles from '@/pages/profiles';
 import Whitelist from '@/pages/whitelist';
 import RuleSets from '@/pages/rulesets';
+import Proxies from '@/pages/proxies';
+import Logs from '@/pages/logs';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
@@ -28,6 +30,8 @@ const router = createHashRouter([
       { path: 'profiles', element: <Profiles /> },
       { path: 'whitelist', element: <Whitelist /> },
       { path: 'rulesets', element: <RuleSets /> },
+      { path: 'proxies', element: <Proxies /> },
+      { path: 'logs', element: <Logs /> },
     ],
   },
 ]);
