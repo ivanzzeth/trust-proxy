@@ -2,7 +2,7 @@ import { useSuspenseQuery } from '@tanstack/react-query';
 import cx from 'clsx';
 import * as React from 'react';
 import { useTranslation } from 'react-i18next';
-import { FcAreaChart, FcDocument, FcGlobe, FcLink, FcRuler, FcSettings } from 'react-icons/fc';
+import { FcAreaChart, FcDocument, FcGlobe, FcLink, FcRuler, FcServices, FcSettings } from 'react-icons/fc';
 import { Link, useLocation } from 'react-router-dom';
 
 import { fetchVersion } from '~/api/version';
@@ -24,6 +24,7 @@ const icons = {
   file: FcDocument,
   settings: FcSettings,
   link: FcLink,
+  subs: FcServices,
 };
 
 const SideBarRow = React.memo(function SideBarRow({
@@ -59,6 +60,11 @@ const pages = [
     to: '/proxies',
     iconId: 'globe',
     labelText: 'Proxies',
+  },
+  {
+    to: '/subscriptions',
+    iconId: 'subs',
+    labelText: '订阅',
   },
   {
     to: '/rules',

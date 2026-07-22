@@ -1,0 +1,107 @@
+.page {
+  padding: 20px 24px 60px;
+  max-width: 1100px;
+}
+.title {
+  font-size: 20px;
+  font-weight: 700;
+  margin: 8px 0 20px;
+}
+.addForm {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+}
+.input {
+  flex: 1;
+  min-width: 150px;
+  background: var(--color-input-bg, #1e222b);
+  border: 1px solid var(--color-input-border, #2a2f3a);
+  color: inherit;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+}
+.input:focus {
+  outline: none;
+  border-color: var(--color-focus-blue, #4f8cff);
+}
+.error {
+  color: #e5484d;
+  border: 1px solid #e5484d;
+  background: rgba(229, 72, 77, 0.12);
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 14px;
+}
+.errInline {
+  color: #e5484d;
+  font-size: 12px;
+  margin-top: 4px;
+}
+.tableWrap {
+  overflow-x: auto;
+  border: 1px solid var(--color-row-odd, #2a2f3a);
+  border-radius: 8px;
+}
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.table th,
+.table td {
+  text-align: left;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--color-row-odd, #2a2f3a);
+  vertical-align: top;
+}
+.table th {
+  font-size: 12px;
+  opacity: 0.6;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+.table tbody tr:last-child td {
+  border-bottom: none;
+}
+.right {
+  text-align: right;
+}
+.name {
+  font-weight: 600;
+}
+.url {
+  opacity: 0.55;
+  font-size: 12px;
+  word-break: break-all;
+  max-width: 460px;
+  margin-top: 2px;
+}
+.muted {
+  opacity: 0.6;
+  font-size: 12px;
+}
+.empty {
+  text-align: center;
+  opacity: 0.6;
+  padding: 28px;
+}
+.actions {
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+.badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 1px solid currentColor;
+  opacity: 0.6;
+}
+.applied {
+  color: #30a46c;
+  opacity: 1;
+}

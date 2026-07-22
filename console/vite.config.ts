@@ -14,6 +14,10 @@ export default defineConfig(({ mode }) => ({
   server: {
     host: '127.0.0.1',
     port: 3000,
+    // dev: proxy our backend API so /api works under `pnpm dev` too
+    proxy: {
+      '/api': 'http://127.0.0.1:9096',
+    },
   },
   resolve: {
     alias: {
