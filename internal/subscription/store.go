@@ -106,7 +106,7 @@ func idFor(url string) string {
 
 // DefaultUserAgent is what we send when fetching a subscription. Many airports
 // gate by UA (a generic curl UA gets a 403), so we default to a common client.
-const DefaultUserAgent = "clash-verge/v2.0.0"
+const DefaultUserAgent = "clash-verge/v2.4.2"
 
 // Add registers a subscription (id derived from URL, so re-adding is
 // idempotent) and immediately refreshes it. via, if set, routes the fetch
