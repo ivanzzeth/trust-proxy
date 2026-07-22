@@ -306,7 +306,7 @@ func (s *Server) consoleHandler() http.Handler {
 		if _, err := os.Stat(index); err != nil {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.WriteHeader(http.StatusOK)
-			_, _ = w.Write([]byte("trust-proxy console not built.\nRun: make console\n"))
+			_, _ = w.Write([]byte("trust-proxy dashboard not built.\nRun: make dashboard\n"))
 			return
 		}
 		if p := filepath.Join(s.consoleDir, filepath.Clean(r.URL.Path)); r.URL.Path != "/" {
