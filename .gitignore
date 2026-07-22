@@ -12,3 +12,7 @@ data/
 # our React console (vendored Yacd-meta) — regenerable artifacts
 /console/public
 /console/node_modules
+
+# new shadcn dashboard — regenerable artifacts
+/dashboard/dist
+/dashboard/node_modules

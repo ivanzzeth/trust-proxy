@@ -8,7 +8,7 @@ WEBUI_DIR    := webui
 #   with_grpc      -> full gRPC transport (there is a lite fallback without it)
 TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor
 
-.PHONY: run build tidy webui webui-dev console console-dev deps clean e2e
+.PHONY: run build tidy webui webui-dev console console-dev dashboard dashboard-dev deps clean e2e
 
 ## Boot the embedded sing-box with configs/config.json
 run: build
@@ -46,6 +46,14 @@ console:
 ## Run the console dev server (Vite at :3000)
 console-dev:
 	cd console && corepack pnpm dev
+
+## Build the new shadcn dashboard -> dashboard/dist (served at :9096, the default UI)
+dashboard:
+	cd dashboard && corepack pnpm install && corepack pnpm build
+
+## Run the dashboard dev server (Vite at :3100, proxies /api -> :9096)
+dashboard-dev:
+	cd dashboard && corepack pnpm dev
 
 clean:
 	rm -f trust-proxy

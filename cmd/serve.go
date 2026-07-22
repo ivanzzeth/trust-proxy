@@ -55,7 +55,7 @@ func init() {
 	f.StringVarP(&serveConfig, "config", "c", "configs/config.json", "sing-box config path")
 	f.StringVar(&serveAPIAddr, "api-addr", "127.0.0.1:9096", "trust-proxy backend API listen address")
 	f.StringVar(&serveDataDir, "data", "data", "data directory (subscriptions, etc.)")
-	f.StringVar(&serveConsoleDir, "console", "console/public", "React console static dir (Yacd build output)")
+	f.StringVar(&serveConsoleDir, "console", "dashboard/dist", "dashboard static dir (shadcn build output)")
 	f.StringVar(&serveClashAddr, "clash-addr", "127.0.0.1:9090", "Clash API address (proxied to the console)")
 	f.StringVar(&serveClashSecret, "clash-secret", "", "Clash API secret (empty = load/generate a random one in the data dir)")
 	f.StringVar(&serveMode, "mode", gateway.ModeManual, "capture mode: manual | system | tun (tun needs root)")
@@ -151,11 +151,7 @@ func runServe() error {
 	defer apiSrv.Close()
 
 	log.Printf("trust-proxy serve: gateway up, backend API at http://%s", serveAPIAddr)
-	host, port, _ := strings.Cut(serveClashAddr, ":")
-	if host == "" {
-		host = "127.0.0.1"
-	}
-	log.Printf("console: http://%s/?hostname=%s&port=%s&secret=%s", serveAPIAddr, host, port, secret)
+	log.Printf("dashboard: http://%s/", serveAPIAddr)
 	log.Printf("mode: %s | auto-block: %v", mgr.Mode(), serveAutoBlock)
 
 	// Persist the audit log periodically so a crash loses at most one interval.
