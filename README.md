@@ -1,101 +1,100 @@
 # trust-proxy
 
-出入网流量控制 / 检测 / 异常行为识别网关，以 [sing-box](https://github.com/SagerNet/sing-box) 为数据面底座。
+出入网流量控制 / 检测 / 木马外泄识别网关，以 [sing-box](https://github.com/SagerNet/sing-box) 为数据面底座。
 
-- **数据面**：Go 后端以库方式 `import` sing-box（`third_party/sing-box` 子模块），负责代理、路由、分流、连接跟踪。
-- **控制面 / UI**：克隆官方 [sing-box-dashboard](https://github.com/SagerNet/sing-box-dashboard)（React 19 + Vite + TS）自行维护，通过 sing-box 内置的 `service/api`（Connect/protobuf daemon）通信。
-- **检测层**：`detector.go` 通过 `route.Router.AppendTracker` 把每条**放行**连接喂进自研引擎（当前为遥测 stub），后续做 C2 信誉匹配、beaconing、异常上行、数据外泄识别，并以断连处置。
-- **安全模型**：出网**白名单默认拒绝**（allow-list 放行 + 末尾 `reject` 兜底）。黑名单追不完，白名单才能卡死木马向任意 C2 回传。
+内网机器的出网流量经 trust-proxy 网关 → **白名单默认拒绝**（黑名单追不完，白名单才能卡死木马向任意 C2 回传）→ **检测**异常出网（威胁情报命中、异常大上传=疑似外泄）→ 经订阅/自建节点出口。
 
-> 自用部署，不分发二进制，故不触发 sing-box 的 GPLv3 分发义务。
+一个二进制，三种角色：
 
-## 里程碑 0（已跑通）
-
-单进程：Go 后端启动 sing-box + 代理入站 + 内置 API/dashboard + 域名黑名单。已验证：代理出网、域名 `reject`、API 服务、dashboard serving，且不与本机 Surge 冲突（无 TUN、不改系统代理、端口错开）。
-
-### 依赖
-- Go 1.24.7+
-- Node 20+（构建 dashboard）
-
-### 首次拉取子模块
-```bash
-make deps            # git submodule update --init --recursive
-```
-sing-box 子模块跟踪 `testing` 分支——官方 dashboard 依赖的 `service/api` 尚未进入稳定 tag（v1.13.x 无此模块）。
-
-### 跑起来（单一二进制，子命令区分）
-```bash
-make build                 # 编译 -> ./trust-proxy（默认带 with_clash_api）
-make console               # 构建我们的 React 控制台 -> console/dist（首次需要）
-./trust-proxy serve        # 跑网关：sing-box + detection + 后端 /api + 控制台(:9096)
-# 浏览器打开 http://127.0.0.1:9096/  —— 我们自己的控制台（订阅/节点管理 + 实时连接）
-# 前端开发热更：make console-dev（Vite，代理 /api 到 :9096）
-
-# 另开终端，CLI 即客户端（经 Go SDK 调后端）：
-./trust-proxy sub add https://airport.example/subscribe --name my-airport  # 订阅(抓取+解析)
-./trust-proxy sub ls                      # 列出订阅+节点数
-./trust-proxy sub apply <id>              # 把订阅节点热重载进 `proxy` 组（白名单放行流量即经其出网）
-./trust-proxy conn ls                     # 活动连接(底层 Clash 原语)
-./trust-proxy conn kill <id|all>          # 断连
-```
-解析支持 **sing-box JSON**（无损）、**Clash YAML**、base64/明文 **share 链**（vless/trojan/ss/vmess/hysteria2/tuic）。来源可为 http(s) URL 或 **`file://` 本地文件**。
-
-抓取用 **uTLS 伪装 Chrome 指纹**（`internal/subscription/fetch.go`），绕过机场按客户端指纹识别的 WAF——trust-proxy 自主抓取，无需外部客户端。
-极端情况仍可用本地文件兜底（如 clash-verge 的 profile）：
-> `./trust-proxy sub add "file://$HOME/Library/Application Support/io.github.clash-verge-rev.clash-verge-rev/profiles/<uid>.yaml" --name my`
-SDK 分层：`pkg/clash`（标准 Clash API 原语，可复用）+ `pkg/client`（trust-proxy 易用封装，组合 clash）。
-
-验证（白名单默认拒绝）：
-```bash
-# 白名单内 -> 放行
-curl -x socks5h://127.0.0.1:17070 https://api.ipify.org         # 200
-curl -x socks5h://127.0.0.1:17070 https://example.com           # 200
-# 非白名单 -> 默认拒绝
-curl -x socks5h://127.0.0.1:17070 https://www.google.com        # 连接失败 (reject)
-# detector 遥测（每条放行连接）在 stdout：形如 "[detector] allow tcp host=... rule=... out=..."
-# Clash API：
-curl -H "Authorization: Bearer trust-proxy" http://127.0.0.1:9090/connections
-```
-在 `configs/config.json` 的 `route.rules` 里增删 `domain_suffix` / `ip_cidr` 白名单条目即可调整放行范围。
-
-### 接官方 WebUI（已在本仓 webui/ 落地并验证）
-```bash
-# 克隆官方 dashboard 进 webui/，去掉它的 .git 变成我们自己的副本
-git clone https://github.com/SagerNet/sing-box-dashboard webui && rm -rf webui/.git
-# 它依赖一个 vendor 子模块（生成终端主题用），单独拉一份
-git clone --depth 1 https://github.com/mbadolato/iTerm2-Color-Schemes \
-    webui/vendor/iterm2-color-schemes && rm -rf webui/vendor/iterm2-color-schemes/.git
-
-make webui           # pnpm install -> pnpm run generate(buf 生成 protobuf 客户端) -> build -> webui/dist
-make run             # 浏览器打开 http://127.0.0.1:9095/  (会跳 /dashboard/)
-```
-- 用 **pnpm**（仓库带 `pnpm-lock.yaml`，`packageManager: pnpm@11.13.0`，用 `corepack` 自动取对版本）。
-- `build` 前必须 `generate`：`buf generate` 把 `proto/daemon/started_service.proto` 生成到 `src/gen`，App 直接 import 它。
-- Dashboard 通过 Connect/protobuf 连 `service/api`（:9095），非 Clash REST。
-
-## 端口
-| 服务 | 地址 | 说明 |
+| 角色 | 命令 | 说明 |
 |---|---|---|
-| 代理入站 (mixed) | `127.0.0.1:17070` | socks/http 混合，验证用 |
-| API / dashboard | `127.0.0.1:9095` | 官方 UI 对接口 (Connect/protobuf) |
-| Clash API | `127.0.0.1:9090` | 底层 SDK(pkg/clash)消费 (REST/WS)，secret=`trust-proxy` |
-| 后端 /api + **控制台** | `127.0.0.1:9096` | 我们自己的 API + React 控制台（单一 origin，代理 Clash 连接数据） |
+| **客户端网关** | `trust-proxy serve` | mixed 入站(:17070) + 白名单 + 检测 + 控制台/API(:9096) |
+| **TUN 全流量网关** | `sudo trust-proxy serve -c configs/config.tun.json` | 网络层接管**所有**出入网流量（木马裸 socket 也逃不掉），需 root，专用网关机 |
+| **代理服务端（出口节点）** | `trust-proxy proxy run` / `proxy gen` | 自建任意协议出口节点 |
 
-均绑 loopback。**别开 TUN / 别设系统代理**，以免与 Surge 等打架。
+> **架构**：Go `main` 以库方式 `import` sing-box（`third_party/sing-box` 子模块）→ 数据面（代理/路由/连接跟踪）。检测/白名单/订阅/控制台是自研的控制面。自用不分发二进制，不触发 GPLv3 分发义务（详见 CLAUDE.md「许可证」）。
 
-## Build tags
-里程碑 0 无需任何 tag（`service/api` 无条件编译）。后续按需在 `make build TAGS="..."` 加：
-- `with_clash_api` — 额外暴露 Clash REST/WS（可挂 zashboard / metacubexd）
-- `with_quic` — Hysteria2 / TUIC / QUIC 嗅探
-- `with_utls` — uTLS 指纹
+## 快速开始
+
+依赖：Go 1.24.7+、Node 20+ / pnpm（构建控制台）。
+
+```bash
+make deps            # git submodule update --init --recursive（拉 sing-box，testing 分支）
+make console         # 构建控制台(vendored Yacd) -> console/public
+make build           # 编译 -> ./trust-proxy（默认 tags：clash_api quic utls grpc gvisor）
+./trust-proxy serve  # 启动客户端网关
+```
+
+浏览器打开控制台（secret 预填）：**http://127.0.0.1:9096/?hostname=127.0.0.1&port=9090&secret=trust-proxy**
+
+## 控制台（`console/`，基于 Yacd，React 19）
+
+自研页（走后端 `/api`）：
+- **订阅 / 节点**：三种添加方式 —— ① 订阅链接（可 `--via` 经代理抓取）② 手动填写（选协议出对应字段）③ 粘贴（share 链接 / base64 / Clash YAML / sing-box JSON）。列表可 **应用（热重载进 `proxy` 组）/ 刷新 / 删除**。
+- **白名单**：出网允许清单（域名 → 走代理组出网；IP 段 → 直连），增删**即时热重载**生效。
+- **告警**：出网审计 + 检测（威胁情报域名/IP 命中、≥10MiB 大上传=疑似外泄），告警高亮、只看告警、3s 刷新。
+- \+ Yacd 原生监控：连接 / 日志 / 代理组 / 规则（走标准 Clash API）。
+
+## 节点 / 订阅
+
+- 解析支持：**sing-box JSON**（无损直取）、**Clash YAML**（含单个节点）、base64/明文 **share 链**。协议：vless(reality)、vmess、trojan、shadowsocks、anytls、hysteria2、tuic。
+- 来源：http(s) URL、`file://` 本地文件、或直接粘贴内容。
+- **抓取**用标准 TLS + 跟随重定向（`internal/subscription/fetch.go`）；`--via socks5://|http://` 可经指定代理出口抓取（绕开机场对来源 IP 的封锁）。
+- CLI：`sub add <url> [--via ..]` / `sub import [file]`（stdin 亦可）/ `sub ls` / `sub apply <id>` / `sub refresh` / `sub rm`。
+
+## 一键部署代理服务端
+
+```bash
+./trust-proxy proxy gen --type <协议> --server <你的服务器IP> --port 443
+#   协议: shadowsocks | vless-reality | vless | vmess | trojan | anytls | hysteria2 | tuic
+#   输出：服务端 config + 客户端节点(Clash dict，可粘进控制台导入)
+#   TLS 类自动内联自签证书(客户端 skip-cert-verify)；vless-reality 免证书自动生成密钥对
+./trust-proxy proxy run -c server.json          # 在服务器上运行
+```
+
+## TUN 全流量网关
+
+```bash
+sudo ./trust-proxy serve -c configs/config.tun.json
+```
+`tun` 入站 + `auto_route` 网络层接管全部出入网流量。需 **root**，与其它 TUN 工具（Surge 增强模式等）互斥 → 用于专用网关机/软路由。检测与白名单逻辑不变。
+
+## CLI / SDK
+
+- SDK 分层：`pkg/clash`（标准 Clash API 原语，可复用于任何 sing-box/mihomo/clash）+ `pkg/client`（trust-proxy 易用封装，组合 clash）。
+- 低层原语：`conn ls` / `conn kill <id|all>`（走 Clash API）。
+- 高层：`sub *`（走后端 `/api`）。
+
+## 端口（均绑 loopback）
+
+| 服务 | 地址 |
+|---|---|
+| 代理入站 (mixed) | `127.0.0.1:17070` |
+| Clash API（`pkg/clash` 消费，secret=`trust-proxy`） | `127.0.0.1:9090` |
+| 官方 sing-box dashboard（可选，service/api） | `127.0.0.1:9095` |
+| **后端 /api + 控制台** | `127.0.0.1:9096` |
+
+客户端网关默认不开 TUN、不改系统代理，与本机 Surge 等互不干扰。
 
 ## 目录
+
 ```
-main.go              # 启动入口：include.Context -> 解析 config -> box.New -> Start
-configs/config.json  # sing-box 配置：mixed 入站 + sniff + 域名 reject + api service
-third_party/sing-box # 子模块 (testing)，replace 进本模块编译
-webui/               # 克隆的官方 dashboard（自维护），build 到 webui/dist
+main.go                  cmd.Execute()
+cmd/                     cobra 命令：serve / proxy / sub / conn
+internal/gateway/        box 引导 + 热重载(节点/白名单注入) + detector 挂载
+internal/detect/         检测引擎（事件环形缓冲 + 字节计数 + 规则）
+internal/subscription/   订阅 抓取/解析/存储 + 转换(share链/clash → sing-box outbound)
+internal/whitelist/      出网白名单存储
+internal/api/            后端 /api（订阅/白名单/事件/连接代理）+ serve 控制台
+pkg/clash, pkg/client, pkg/apitypes   SDK
+console/                 控制台（vendored Yacd，自维护，+ 我们的页面）
+webui/                   官方 sing-box dashboard（vendored，可选监控）
+configs/config.json      客户端网关配置（mixed + sniff + reject + 注入白名单）
+configs/config.tun.json  TUN 网关配置
+third_party/sing-box     子模块（testing 分支），replace 进本模块编译
+data/                    运行时数据（subscriptions.json / whitelist.json，gitignore）
 ```
 
-## 稳定版退路
-若不想跟 `testing`：把子模块切到 `v1.13.14`，改用 `-tags with_clash_api` 暴露 Clash API，UI 换成 zashboard / metacubexd（走 Clash REST，非官方 React dashboard）。
+## 上游同步 & 更多细节
+
+见 [CLAUDE.md](./CLAUDE.md)：架构、sing-box 子模块 vs vendored 前端的同步方式、build tags、已踩的坑、路线图、许可证边界。
