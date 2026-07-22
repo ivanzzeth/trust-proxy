@@ -30,9 +30,10 @@ const ProxyGroupTag = "proxy"
 
 // Manager owns the running box and rebuilds it in place when policy changes.
 type Manager struct {
-	configPath string
-	logger     log.Logger
-	engine     *detect.Engine
+	configPath  string
+	logger      log.Logger
+	engine      *detect.Engine
+	clashSecret string
 
 	rebuildMu sync.Mutex // serializes rebuilds
 
@@ -42,10 +43,10 @@ type Manager struct {
 	wl       whitelist.Rules
 }
 
-// NewManager returns a manager seeded with the initial whitelist and the
-// detection engine to attach to the data path.
-func NewManager(configPath string, wl whitelist.Rules, engine *detect.Engine) *Manager {
-	return &Manager{configPath: configPath, logger: log.StdLogger(), wl: wl, engine: engine}
+// NewManager returns a manager seeded with the initial whitelist, the detection
+// engine, and the Clash API secret to inject into the config.
+func NewManager(configPath string, wl whitelist.Rules, engine *detect.Engine, clashSecret string) *Manager {
+	return &Manager{configPath: configPath, logger: log.StdLogger(), wl: wl, engine: engine, clashSecret: clashSecret}
 }
 
 // Start builds and starts the box from the base config + current policy.
@@ -90,7 +91,7 @@ func (m *Manager) rebuild() error {
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl)
+	merged, err := buildMergedConfig(base, nodes, wl, m.clashSecret)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -135,7 +136,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // buildMergedConfig injects (a) subscription node outbounds + the `proxy` group
 // and (b) whitelist allow rules into the route, at the JSON level so sing-box's
 // own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, clashSecret string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -146,7 +147,46 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules) (
 	if err := injectWhitelist(cfg, wl); err != nil {
 		return nil, err
 	}
+	if err := injectClashSecret(cfg, clashSecret); err != nil {
+		return nil, err
+	}
 	return json.Marshal(cfg)
+}
+
+// injectClashSecret sets experimental.clash_api.secret (so the secret isn't
+// baked into the repo's config; serve resolves/generates it at runtime).
+func injectClashSecret(cfg map[string]json.RawMessage, secret string) error {
+	if secret == "" {
+		return nil
+	}
+	expRaw, ok := cfg["experimental"]
+	if !ok {
+		return nil
+	}
+	var exp map[string]json.RawMessage
+	if err := json.Unmarshal(expRaw, &exp); err != nil {
+		return err
+	}
+	caRaw, ok := exp["clash_api"]
+	if !ok {
+		return nil
+	}
+	var ca map[string]any
+	if err := json.Unmarshal(caRaw, &ca); err != nil {
+		return err
+	}
+	ca["secret"] = secret
+	newCA, err := json.Marshal(ca)
+	if err != nil {
+		return err
+	}
+	exp["clash_api"] = newCA
+	newExp, err := json.Marshal(exp)
+	if err != nil {
+		return err
+	}
+	cfg["experimental"] = newExp
+	return nil
 }
 
 func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node) error {

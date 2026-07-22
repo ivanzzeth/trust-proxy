@@ -1,11 +1,15 @@
 package cmd
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -42,10 +46,15 @@ func init() {
 	f.StringVar(&serveDataDir, "data", "data", "data directory (subscriptions, etc.)")
 	f.StringVar(&serveConsoleDir, "console", "console/public", "React console static dir (Yacd build output)")
 	f.StringVar(&serveClashAddr, "clash-addr", "127.0.0.1:9090", "Clash API address (proxied to the console)")
-	f.StringVar(&serveClashSecret, "clash-secret", "trust-proxy", "Clash API secret")
+	f.StringVar(&serveClashSecret, "clash-secret", "", "Clash API secret (empty = load/generate a random one in the data dir)")
 }
 
 func runServe() error {
+	secret, err := resolveClashSecret(serveDataDir)
+	if err != nil {
+		return err
+	}
+
 	wlStore, err := whitelist.NewStore(serveDataDir + "/whitelist.json")
 	if err != nil {
 		return err
@@ -55,7 +64,7 @@ func runServe() error {
 	// Demo threat indicators; replace/extend with a real feed (abuse.ch, etc.).
 	engine.LoadThreats([]string{"malware.test", "c2.example.com"}, nil)
 
-	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine)
+	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine, secret)
 	if err := mgr.Start(); err != nil {
 		return err
 	}
@@ -72,7 +81,7 @@ func runServe() error {
 		Whitelist:  wlStore,
 		WLApplier:  mgr,
 		Detect:     engine,
-		Clash:      clash.New(serveClashAddr, serveClashSecret),
+		Clash:      clash.New(serveClashAddr, secret),
 		ConsoleDir: serveConsoleDir,
 	})
 	go func() {
@@ -83,10 +92,41 @@ func runServe() error {
 	defer apiSrv.Close()
 
 	log.Printf("trust-proxy serve: gateway up, backend API at http://%s", serveAPIAddr)
+	host, port, _ := strings.Cut(serveClashAddr, ":")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	log.Printf("console: http://%s/?hostname=%s&port=%s&secret=%s", serveAPIAddr, host, port, secret)
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	<-signals
 	log.Println("shutting down")
 	return nil
+}
+
+// resolveClashSecret returns the --clash-secret flag if set, else a secret
+// persisted in <dataDir>/clash-secret (generating a random one on first run).
+func resolveClashSecret(dataDir string) (string, error) {
+	if serveClashSecret != "" {
+		return serveClashSecret, nil
+	}
+	path := filepath.Join(dataDir, "clash-secret")
+	if b, err := os.ReadFile(path); err == nil {
+		if s := strings.TrimSpace(string(b)); s != "" {
+			return s, nil
+		}
+	}
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	secret := hex.EncodeToString(buf)
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+		return "", err
+	}
+	return secret, nil
 }

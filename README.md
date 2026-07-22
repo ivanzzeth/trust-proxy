@@ -25,7 +25,7 @@ make build           # 编译 -> ./trust-proxy（默认 tags：clash_api quic ut
 ./trust-proxy serve  # 启动客户端网关
 ```
 
-浏览器打开控制台（secret 预填）：**http://127.0.0.1:9096/?hostname=127.0.0.1&port=9090&secret=trust-proxy**
+启动时 Clash secret 随机生成并持久化到 `data/clash-secret`，`serve` 日志会打印可直接打开的控制台 URL（`console: http://127.0.0.1:9096/?...&secret=<生成的>`）；也可用 `--clash-secret` 指定。
 
 ## 控制台（`console/`，基于 Yacd，React 19）
 
@@ -70,7 +70,7 @@ sudo ./trust-proxy serve -c configs/config.tun.json
 | 服务 | 地址 |
 |---|---|
 | 代理入站 (mixed) | `127.0.0.1:17070` |
-| Clash API（`pkg/clash` 消费，secret=`trust-proxy`） | `127.0.0.1:9090` |
+| Clash API（`pkg/clash` 消费，secret 见 `data/clash-secret`） | `127.0.0.1:9090` |
 | 官方 sing-box dashboard（可选，service/api） | `127.0.0.1:9095` |
 | **后端 /api + 控制台** | `127.0.0.1:9096` |
 
@@ -94,6 +94,15 @@ configs/config.tun.json  TUN 网关配置
 third_party/sing-box     子模块（testing 分支），replace 进本模块编译
 data/                    运行时数据（subscriptions.json / whitelist.json，gitignore）
 ```
+
+## 许可证与归属
+
+本项目以 **GPLv3** 授权（见 [LICENSE](./LICENSE)），因为它链接/内嵌了 GPLv3 的上游代码。分发本项目源码或二进制须遵守 GPLv3（保留声明、随附对应源码）。
+
+上游组件：
+- [sing-box](https://github.com/SagerNet/sing-box) — 数据面（子模块），**GPLv3**（+ 命名附加条款：衍生品不得使用其名称做宣传）
+- [Yacd-meta](https://github.com/MetaCubeX/Yacd-meta) — 控制台底座（`console/`），MIT
+- [sing-box-dashboard](https://github.com/SagerNet/sing-box-dashboard) — 可选官方监控面板（`webui/`），GPLv3
 
 ## 上游同步 & 更多细节
 

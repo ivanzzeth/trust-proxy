@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -63,10 +65,16 @@ var connKillCmd = &cobra.Command{
 
 func init() {
 	connCmd.PersistentFlags().StringVar(&clashAddr, "clash-addr", "127.0.0.1:9090", "Clash API address")
-	connCmd.PersistentFlags().StringVar(&clashSecret, "clash-secret", "trust-proxy", "Clash API secret")
+	connCmd.PersistentFlags().StringVar(&clashSecret, "clash-secret", "", "Clash API secret (empty = read data/clash-secret)")
 	connCmd.AddCommand(connLsCmd, connKillCmd)
 }
 
 func clashClient() *clash.Client {
-	return clash.New(clashAddr, clashSecret)
+	secret := clashSecret
+	if secret == "" {
+		if b, err := os.ReadFile("data/clash-secret"); err == nil {
+			secret = strings.TrimSpace(string(b))
+		}
+	}
+	return clash.New(clashAddr, secret)
 }
