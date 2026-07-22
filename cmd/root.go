@@ -17,5 +17,5 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.AddCommand(serveCmd, subCmd, connCmd)
+	rootCmd.AddCommand(serveCmd, subCmd, connCmd, proxyCmd)
 }
