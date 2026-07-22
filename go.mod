@@ -3,7 +3,6 @@ module github.com/ivanzzeth/trust-proxy
 go 1.24.7
 
 require (
-	github.com/metacubex/utls v1.8.7
 	github.com/sagernet/sing v0.8.12-0.20260721063414-596db5dd6ef4
 	github.com/sagernet/sing-box v1.13.14
 	github.com/sagernet/sing-tun v0.8.12-0.20260721064816-ac719ebeead0
@@ -76,6 +75,7 @@ require (
 	github.com/logrusorgru/aurora v2.0.3+incompatible // indirect
 	github.com/mdlayher/netlink v1.9.0 // indirect
 	github.com/mdlayher/socket v0.5.1 // indirect
+	github.com/metacubex/utls v1.8.7 // indirect
 	github.com/mholt/acmez/v3 v3.1.6 // indirect
 	github.com/miekg/dns v1.1.72 // indirect
 	github.com/mitchellh/go-ps v1.0.0 // indirect
