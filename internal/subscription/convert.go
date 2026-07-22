@@ -323,6 +323,18 @@ func clashProxyToOutbound(p map[string]any) (proto, server string, port int, ob 
 			ob["congestion_control"] = cc
 		}
 		return "tuic", server, port, ob, true
+	case "anytls":
+		ob["type"] = "anytls"
+		ob["password"] = mstr(p, "password")
+		tls := map[string]any{"enabled": true, "server_name": nz(mstr(p, "sni"), mstr(p, "servername"), server)}
+		if boolOf(p, "skip-cert-verify") {
+			tls["insecure"] = true
+		}
+		if fp := mstr(p, "client-fingerprint"); fp != "" {
+			tls["utls"] = map[string]any{"enabled": true, "fingerprint": fp}
+		}
+		ob["tls"] = tls
+		return "anytls", server, port, ob, true
 	default:
 		return "", server, port, nil, false
 	}

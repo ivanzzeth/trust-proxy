@@ -79,17 +79,31 @@ func parseSingBoxJSON(text string) ([]apitypes.Node, bool) {
 }
 
 func parseClashYAML(text string) ([]apitypes.Node, bool) {
-	if !strings.Contains(text, "proxies:") {
+	var proxies []map[string]any
+
+	if strings.Contains(text, "proxies:") {
+		var doc struct {
+			Proxies []map[string]any `yaml:"proxies"`
+		}
+		if err := yaml.Unmarshal([]byte(text), &doc); err == nil {
+			proxies = doc.Proxies
+		}
+	}
+	// Also accept a single pasted proxy dict (has top-level type: + server:).
+	if len(proxies) == 0 {
+		var one map[string]any
+		if err := yaml.Unmarshal([]byte(text), &one); err == nil {
+			if one["type"] != nil && one["server"] != nil {
+				proxies = []map[string]any{one}
+			}
+		}
+	}
+	if len(proxies) == 0 {
 		return nil, false
 	}
-	var doc struct {
-		Proxies []map[string]any `yaml:"proxies"`
-	}
-	if err := yaml.Unmarshal([]byte(text), &doc); err != nil || len(doc.Proxies) == 0 {
-		return nil, false
-	}
+
 	var nodes []apitypes.Node
-	for _, p := range doc.Proxies {
+	for _, p := range proxies {
 		if proto, server, port, ob, ok := clashProxyToOutbound(p); ok {
 			raw, _ := json.Marshal(ob)
 			nodes = append(nodes, apitypes.Node{
