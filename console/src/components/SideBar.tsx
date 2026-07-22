@@ -64,7 +64,7 @@ const pages = [
   {
     to: '/subscriptions',
     iconId: 'subs',
-    labelText: '订阅',
+    labelText: 'Subscriptions',
   },
   {
     to: '/rules',

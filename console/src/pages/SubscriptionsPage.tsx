@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { tp } from '~/api/trustproxy';
 import Button from '~/components/Button';
@@ -9,6 +10,7 @@ import s from './SubscriptionsPage.module.scss';
 const KEY = ['tp', 'subscriptions'];
 
 export default function SubscriptionsPage() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const invalidate = () => qc.invalidateQueries({ queryKey: KEY });
   const [err, setErr] = useState('');
@@ -42,7 +44,7 @@ export default function SubscriptionsPage() {
 
   return (
     <div className={s.page}>
-      <h1 className={s.title}>订阅 / 节点</h1>
+      <h1 className={s.title}>{t('Subscriptions')}</h1>
 
       <form
         className={s.addForm}
@@ -54,13 +56,13 @@ export default function SubscriptionsPage() {
         <input
           className={s.input}
           style={{ flex: 3 }}
-          placeholder="订阅链接 (https:// 或 file://)"
+          placeholder={t('sub_url_ph')}
           value={url}
           onChange={(e) => setUrl(e.target.value)}
         />
-        <input className={s.input} placeholder="名称 (可选)" value={name} onChange={(e) => setName(e.target.value)} />
-        <input className={s.input} placeholder="UA (可选)" value={ua} onChange={(e) => setUa(e.target.value)} />
-        <Button disabled={busy || !url}>添加</Button>
+        <input className={s.input} placeholder={t('sub_name_ph')} value={name} onChange={(e) => setName(e.target.value)} />
+        <input className={s.input} placeholder={t('sub_ua_ph')} value={ua} onChange={(e) => setUa(e.target.value)} />
+        <Button disabled={busy || !url}>{t('sub_add')}</Button>
       </form>
 
       {err && <div className={s.error}>⚠ {err}</div>}
@@ -69,47 +71,47 @@ export default function SubscriptionsPage() {
         <table className={s.table}>
           <thead>
             <tr>
-              <th>名称</th>
-              <th>节点</th>
-              <th>状态</th>
-              <th>更新时间</th>
-              <th className={s.right}>操作</th>
+              <th>{t('sub_name')}</th>
+              <th>{t('sub_nodes')}</th>
+              <th>{t('sub_status')}</th>
+              <th>{t('sub_updated')}</th>
+              <th className={s.right}>{t('sub_actions')}</th>
             </tr>
           </thead>
           <tbody>
             {subs.length === 0 && (
               <tr>
                 <td colSpan={5} className={s.empty}>
-                  {isLoading ? '加载中…' : '暂无订阅'}
+                  {isLoading ? t('sub_loading') : t('sub_empty')}
                 </td>
               </tr>
             )}
             {subs.map((sub) => (
               <tr key={sub.id}>
                 <td>
-                  <div className={s.name}>{sub.name || '(未命名)'}</div>
+                  <div className={s.name}>{sub.name || t('sub_unnamed')}</div>
                   <div className={s.url}>{sub.url}</div>
                   {sub.last_error && <div className={s.errInline}>⚠ {sub.last_error}</div>}
                 </td>
                 <td>{sub.node_count}</td>
                 <td>
                   {sub.applied ? (
-                    <span className={`${s.badge} ${s.applied}`}>已应用</span>
+                    <span className={`${s.badge} ${s.applied}`}>{t('sub_applied')}</span>
                   ) : (
-                    <span className={s.badge}>未应用</span>
+                    <span className={s.badge}>{t('sub_not_applied')}</span>
                   )}
                 </td>
                 <td className={s.muted}>{sub.updated_at ? new Date(sub.updated_at).toLocaleString() : '-'}</td>
                 <td>
                   <div className={s.actions}>
                     <Button kind="minimal" disabled={busy || sub.node_count === 0} onClick={() => applyM.mutate(sub.id)}>
-                      应用
+                      {t('sub_apply')}
                     </Button>
                     <Button kind="minimal" disabled={busy} onClick={() => refreshM.mutate(sub.id)}>
-                      刷新
+                      {t('sub_refresh')}
                     </Button>
                     <Button kind="minimal" disabled={busy} onClick={() => delM.mutate(sub.id)}>
-                      删除
+                      {t('sub_delete')}
                     </Button>
                   </div>
                 </td>
