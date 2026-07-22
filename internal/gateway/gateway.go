@@ -20,6 +20,7 @@ import (
 	singjson "github.com/sagernet/sing/common/json"
 	"github.com/sagernet/sing/service"
 
+	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
@@ -62,6 +63,7 @@ type Manager struct {
 	instance *box.Box
 	nodes    []apitypes.Node
 	wl       whitelist.Rules
+	bl       blacklist.Rules
 	mode     string
 	rulesets ruleset.Sets
 	dns      apitypes.DNSConfig
@@ -154,6 +156,32 @@ func (m *Manager) SetWhitelist(wl whitelist.Rules) error {
 		m.mu.Unlock()
 		_ = m.rebuild() // best-effort restore
 		return fmt.Errorf("apply whitelist failed (reverted): %w", err)
+	}
+	return nil
+}
+
+// SetInitialBlacklist sets the egress deny-list used by the first Start()
+// (before the box runs).
+func (m *Manager) SetInitialBlacklist(bl blacklist.Rules) {
+	m.mu.Lock()
+	m.bl = bl
+	m.mu.Unlock()
+}
+
+// SetBlacklist sets the egress deny-list and hot-reloads. On rebuild failure
+// (e.g. a malformed entry) it reverts to the previous list so the gateway stays
+// up rather than going down with a bad config.
+func (m *Manager) SetBlacklist(bl blacklist.Rules) error {
+	m.mu.Lock()
+	prev := m.bl
+	m.bl = bl
+	m.mu.Unlock()
+	if err := m.rebuild(); err != nil {
+		m.mu.Lock()
+		m.bl = prev
+		m.mu.Unlock()
+		_ = m.rebuild() // best-effort restore
+		return fmt.Errorf("apply blacklist failed (reverted): %w", err)
 	}
 	return nil
 }
@@ -271,14 +299,14 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, mode, sets, dns, inbound, tun := m.nodes, m.wl, m.mode, m.rulesets, m.dns, m.inbound, m.tun
+	nodes, wl, bl, mode, sets, dns, inbound, tun := m.nodes, m.wl, m.bl, m.mode, m.rulesets, m.dns, m.inbound, m.tun
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, mode, sets, dns, inbound, tun, m.clashSecret)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, mode, sets, dns, inbound, tun, m.clashSecret)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -325,7 +353,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // buildMergedConfig injects (a) subscription node outbounds + the `proxy` group
 // and (b) whitelist allow rules into the route, at the JSON level so sing-box's
 // own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, clashSecret string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, clashSecret string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -338,6 +366,11 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, m
 		return nil, err
 	}
 	if err := applyMode(cfg, mode, inbound, tun); err != nil {
+		return nil, err
+	}
+	// Deny-list first: reject rules go right after the prelude, ABOVE the
+	// whitelist allows, so a blacklisted target is dropped no matter what.
+	if err := injectBlacklist(cfg, bl); err != nil {
 		return nil, err
 	}
 	if err := injectWhitelist(cfg, wl); err != nil {
@@ -942,6 +975,80 @@ func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node) erro
 		return err
 	}
 	cfg["outbounds"] = newOuts
+	return nil
+}
+
+// injectBlacklist inserts reject rules for explicitly denied destinations right
+// after the prelude (leading sniff/hijack-dns rules) and before any allow rule,
+// so a blacklisted target is rejected first — even if it is also whitelisted or
+// matched by an allow rule-set. Emits one rule per matcher kind present; skips
+// empty kinds.
+func injectBlacklist(cfg map[string]json.RawMessage, bl blacklist.Rules) error {
+	routeRaw, ok := cfg["route"]
+	if !ok {
+		return nil
+	}
+	var route map[string]json.RawMessage
+	if err := json.Unmarshal(routeRaw, &route); err != nil {
+		return err
+	}
+	var rules []json.RawMessage
+	if raw, ok := route["rules"]; ok {
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return err
+		}
+	}
+
+	var reject []json.RawMessage
+	if len(bl.Domains) > 0 {
+		r, _ := json.Marshal(map[string]any{"domain_suffix": bl.Domains, "action": "reject"})
+		reject = append(reject, r)
+	}
+	if len(bl.Keywords) > 0 {
+		r, _ := json.Marshal(map[string]any{"domain_keyword": bl.Keywords, "action": "reject"})
+		reject = append(reject, r)
+	}
+	if len(bl.Regexes) > 0 {
+		r, _ := json.Marshal(map[string]any{"domain_regex": bl.Regexes, "action": "reject"})
+		reject = append(reject, r)
+	}
+	if len(bl.IPs) > 0 {
+		r, _ := json.Marshal(map[string]any{"ip_cidr": bl.IPs, "action": "reject"})
+		reject = append(reject, r)
+	}
+	if len(reject) == 0 {
+		return nil
+	}
+
+	// Insert right after the prelude (leading sniff/hijack-dns rules), which is
+	// above every allow rule and thus wins under sing-box's first-match routing.
+	preludeEnd := 0
+	for preludeEnd < len(rules) {
+		var meta struct {
+			Action string `json:"action"`
+		}
+		_ = json.Unmarshal(rules[preludeEnd], &meta)
+		if meta.Action == "sniff" || meta.Action == "hijack-dns" {
+			preludeEnd++
+			continue
+		}
+		break
+	}
+	merged := make([]json.RawMessage, 0, len(rules)+len(reject))
+	merged = append(merged, rules[:preludeEnd]...)
+	merged = append(merged, reject...)
+	merged = append(merged, rules[preludeEnd:]...)
+
+	newRules, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	route["rules"] = newRules
+	newRoute, err := json.Marshal(route)
+	if err != nil {
+		return err
+	}
+	cfg["route"] = newRoute
 	return nil
 }
 

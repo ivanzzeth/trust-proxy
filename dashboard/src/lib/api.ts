@@ -60,6 +60,13 @@ export interface Whitelist {
   devices: string[];
 }
 export type WLType = 'domain' | 'ip' | 'process' | 'device';
+export interface Blacklist {
+  domains: string[];
+  keywords: string[];
+  regexes: string[];
+  ips: string[];
+}
+export type BLType = 'domain' | 'keyword' | 'regex' | 'ip';
 export interface TPNode {
   tag: string;
   protocol: string;
@@ -248,6 +255,16 @@ export const api = {
     })),
   addWL: (type: WLType, value: string) => post<Whitelist>('/whitelist', { type, value }),
   delWL: (type: WLType, value: string) => del<Whitelist>('/whitelist', { type, value }),
+
+  blacklist: () =>
+    get<Blacklist>('/blacklist').then((b) => ({
+      domains: b.domains ?? [],
+      keywords: b.keywords ?? [],
+      regexes: b.regexes ?? [],
+      ips: b.ips ?? [],
+    })),
+  addBL: (type: BLType, value: string) => post<Blacklist>('/blacklist', { type, value }),
+  delBL: (type: BLType, value: string) => del<Blacklist>('/blacklist', { type, value }),
 
   subs: () => get<Subscription[]>('/subscriptions'),
   addSub: (name: string, url: string, userAgent?: string, via?: string) =>

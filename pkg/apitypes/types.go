@@ -116,6 +116,18 @@ type Rules struct {
 	Devices   []string `json:"devices"`
 }
 
+// Blacklist is the egress deny-list snapshot: destinations that are REJECTED
+// even if an allow rule (whitelist / allow rule-set) would otherwise permit
+// them. Domains match domain_suffix, Keywords match domain_keyword, Regexes
+// match domain_regex, IPs match ip_cidr. Injected as reject rules above the
+// allows so a blacklisted target is dropped first.
+type Blacklist struct {
+	Domains  []string `json:"domains"`
+	Keywords []string `json:"keywords"`
+	Regexes  []string `json:"regexes"`
+	IPs      []string `json:"ips"`
+}
+
 // DNSServer is one resolver. Type: local (system) | udp | tcp | tls | https |
 // quic | fakeip | hosts. Non-local network servers take Server(+Port) and an
 // optional Detour outbound ("direct" or "proxy") — Detour="proxy" resolves

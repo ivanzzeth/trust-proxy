@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ivanzzeth/trust-proxy/internal/api"
+	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
@@ -92,6 +93,11 @@ func runServe() error {
 		return err
 	}
 
+	blStore, err := blacklist.NewStore(serveDataDir + "/blacklist.json")
+	if err != nil {
+		return err
+	}
+
 	engine := detect.New(2000)
 	engine.SetAutoBlock(serveAutoBlock)
 
@@ -158,6 +164,7 @@ func runServe() error {
 
 	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
+	mgr.SetInitialBlacklist(blStore.Get())
 	mgr.SetInitialRuleSets(rsStore.Get())
 	mgr.SetInitialDNS(dnsStore.Get())
 	mgr.SetInitialInbound(inbStore.Get())
@@ -177,6 +184,8 @@ func runServe() error {
 		Applier:     mgr,
 		Whitelist:   wlStore,
 		WLApplier:   mgr,
+		Blacklist:   blStore,
+		BLApplier:   mgr,
 		Detect:      engine,
 		Mode:        mgr,
 		RuleSets:    rsStore,

@@ -11,6 +11,7 @@ import Connections from '@/pages/connections';
 import Subscriptions from '@/pages/subscriptions';
 import Profiles from '@/pages/profiles';
 import Whitelist from '@/pages/whitelist';
+import Blacklist from '@/pages/blacklist';
 import RuleSets from '@/pages/rulesets';
 import Proxies from '@/pages/proxies';
 import Rules from '@/pages/rules';
@@ -34,6 +35,7 @@ const router = createHashRouter([
       { path: 'subscriptions', element: <Subscriptions /> },
       { path: 'profiles', element: <Profiles /> },
       { path: 'whitelist', element: <Whitelist /> },
+      { path: 'blacklist', element: <Blacklist /> },
       { path: 'rulesets', element: <RuleSets /> },
       { path: 'proxies', element: <Proxies /> },
       { path: 'rules', element: <Rules /> },

@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
@@ -38,6 +39,11 @@ type Applier interface {
 // WhitelistApplier hot-reloads the egress whitelist (gateway.Manager).
 type WhitelistApplier interface {
 	SetWhitelist(whitelist.Rules) error
+}
+
+// BlacklistApplier hot-reloads the egress blacklist (gateway.Manager).
+type BlacklistApplier interface {
+	SetBlacklist(blacklist.Rules) error
 }
 
 // ModeController switches the gateway capture mode (gateway.Manager).
@@ -78,6 +84,8 @@ type Options struct {
 	Applier     Applier
 	Whitelist   *whitelist.Store
 	WLApplier   WhitelistApplier
+	Blacklist   *blacklist.Store
+	BLApplier   BlacklistApplier
 	Detect      *detect.Engine
 	Mode        ModeController
 	RuleSets    *ruleset.Store
@@ -105,6 +113,8 @@ type Server struct {
 	applier     Applier
 	wl          *whitelist.Store
 	wlApplier   WhitelistApplier
+	bl          *blacklist.Store
+	blApplier   BlacklistApplier
 	detect      *detect.Engine
 	mode        ModeController
 	rs          *ruleset.Store
@@ -127,7 +137,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -151,6 +161,9 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("GET /api/whitelist", s.handleGetWhitelist)
 	mux.HandleFunc("POST /api/whitelist", s.handleAddWhitelist)
 	mux.HandleFunc("DELETE /api/whitelist", s.handleDelWhitelist)
+	mux.HandleFunc("GET /api/blacklist", s.handleGetBlacklist)
+	mux.HandleFunc("POST /api/blacklist", s.handleAddBlacklist)
+	mux.HandleFunc("DELETE /api/blacklist", s.handleDelBlacklist)
 	mux.HandleFunc("GET /api/rulesets", s.handleListRuleSets)
 	mux.HandleFunc("GET /api/rulesets/catalog", s.handleRuleSetCatalog)
 	mux.HandleFunc("POST /api/rulesets", s.handleAddRuleSet)
@@ -493,6 +506,87 @@ func (s *Server) mutateWhitelist(w http.ResponseWriter, r *http.Request, add boo
 		if err := s.wlApplier.SetWhitelist(rules); err != nil {
 			_, _ = s.wl.Set(prev) // un-poison the store so it matches the running plane
 			writeErr(w, http.StatusBadGateway, "apply whitelist: "+err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, rules)
+}
+
+// ---- blacklist (egress deny-list) -----------------------------------------
+
+type blacklistReq struct {
+	Type  string `json:"type"` // "domain" | "keyword" | "regex" | "ip"
+	Value string `json:"value"`
+}
+
+func (s *Server) handleGetBlacklist(w http.ResponseWriter, r *http.Request) {
+	if s.bl == nil {
+		writeErr(w, http.StatusServiceUnavailable, "blacklist not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.bl.Get())
+}
+
+func (s *Server) handleAddBlacklist(w http.ResponseWriter, r *http.Request) {
+	s.mutateBlacklist(w, r, true)
+}
+
+func (s *Server) handleDelBlacklist(w http.ResponseWriter, r *http.Request) {
+	s.mutateBlacklist(w, r, false)
+}
+
+func (s *Server) mutateBlacklist(w http.ResponseWriter, r *http.Request, add bool) {
+	if s.bl == nil {
+		writeErr(w, http.StatusServiceUnavailable, "blacklist not available")
+		return
+	}
+	var req blacklistReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Value == "" {
+		writeErr(w, http.StatusBadRequest, "type and value are required")
+		return
+	}
+	prev := s.bl.Get() // for rollback if the apply fails
+	var (
+		rules blacklist.Rules
+		err   error
+	)
+	switch req.Type {
+	case "domain":
+		if add {
+			rules, err = s.bl.AddDomain(req.Value)
+		} else {
+			rules, err = s.bl.RemoveDomain(req.Value)
+		}
+	case "keyword":
+		if add {
+			rules, err = s.bl.AddKeyword(req.Value)
+		} else {
+			rules, err = s.bl.RemoveKeyword(req.Value)
+		}
+	case "regex":
+		if add {
+			rules, err = s.bl.AddRegex(req.Value)
+		} else {
+			rules, err = s.bl.RemoveRegex(req.Value)
+		}
+	case "ip":
+		if add {
+			rules, err = s.bl.AddIP(req.Value)
+		} else {
+			rules, err = s.bl.RemoveIP(req.Value)
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "type must be domain, keyword, regex or ip")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error()) // validation error (bad IP/regex)
+		return
+	}
+	if s.blApplier != nil {
+		if err := s.blApplier.SetBlacklist(rules); err != nil {
+			_, _ = s.bl.Set(prev) // un-poison the store so it matches the running plane
+			writeErr(w, http.StatusBadGateway, "apply blacklist: "+err.Error())
 			return
 		}
 	}

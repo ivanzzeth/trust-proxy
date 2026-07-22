@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -45,7 +46,7 @@ func TestInjectOrder_ProcessAboveAllowsAboveCatchAll(t *testing.T) {
 		{Tag: "ads", Type: "remote", Format: "binary", URL: "https://x/ads.srs", Role: apitypes.RuleRoleBlock, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 		{Tag: "cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 	}}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, ModeManual, sets, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, "sekret")
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, blacklist.Rules{}, ModeManual, sets, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, "sekret")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,6 +99,58 @@ func TestInjectOrder_ProcessAboveAllowsAboveCatchAll(t *testing.T) {
 	}
 }
 
+func TestInjectBlacklist_RejectsAboveWhitelistAllows(t *testing.T) {
+	// A domain that is BOTH whitelisted (allow) and blacklisted (reject) must be
+	// rejected: the reject rule has to sit above the allow so first-match wins.
+	wl := whitelist.Rules{Domains: []string{"evil.com", "example.com"}}
+	bl := blacklist.Rules{
+		Domains:  []string{"evil.com"},
+		Keywords: []string{"tracker"},
+		Regexes:  []string{`.*\.onion$`},
+		IPs:      []string{"6.6.6.6/32"},
+	}
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, bl, ModeManual, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, "s")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := routeRules(t, merged)
+
+	idx := map[string]int{}
+	for i, r := range rules {
+		switch {
+		case r["action"] == "sniff":
+			idx["sniff"] = i
+		case r["action"] == "reject" && r["domain_suffix"] != nil:
+			idx["blDomain"] = i
+		case r["action"] == "reject" && r["domain_keyword"] != nil:
+			idx["blKeyword"] = i
+		case r["action"] == "reject" && r["domain_regex"] != nil:
+			idx["blRegex"] = i
+		case r["action"] == "reject" && r["ip_cidr"] != nil:
+			idx["blIP"] = i
+		case r["action"] == "route" && r["domain_suffix"] != nil:
+			idx["wlAllow"] = i
+		case r["action"] == "route" && r["outbound"] == "blocked" && r["network"] != nil:
+			idx["catchall"] = i
+		}
+	}
+	for _, k := range []string{"sniff", "blDomain", "blKeyword", "blRegex", "blIP", "wlAllow", "catchall"} {
+		if _, ok := idx[k]; !ok {
+			t.Fatalf("missing rule %q in %v", k, rules)
+		}
+	}
+	// Every blacklist reject must come after sniff and BEFORE the whitelist allow.
+	for _, k := range []string{"blDomain", "blKeyword", "blRegex", "blIP"} {
+		if !(idx["sniff"] < idx[k] && idx[k] < idx["wlAllow"]) {
+			t.Fatalf("blacklist %q at %d not between sniff(%d) and wlAllow(%d): %v", k, idx[k], idx["sniff"], idx["wlAllow"], idx)
+		}
+	}
+	// Catch-all must stay last and keep its network matcher (default-deny intact).
+	if idx["wlAllow"] >= idx["catchall"] || rules[idx["catchall"]]["network"] == nil {
+		t.Fatalf("default-deny broken: %v", idx)
+	}
+}
+
 func TestApplyMode_Inbounds(t *testing.T) {
 	for _, tc := range []struct {
 		mode      string
@@ -107,7 +160,7 @@ func TestApplyMode_Inbounds(t *testing.T) {
 		{ModeSystem, []string{"mixed"}},
 		{ModeTUN, []string{"tun", "mixed"}},
 	} {
-		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, "s")
+		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, "s")
 		if err != nil {
 			t.Fatalf("%s: %v", tc.mode, err)
 		}
@@ -136,7 +189,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 		StrictRoute:    false,
 		ExcludePackage: []string{"com.example.app"},
 	}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, "s")
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +215,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 		t.Fatalf("exclude_package=%v want [com.example.app]", tunIn["exclude_package"])
 	}
 	// MTU 0 must omit the "mtu" key entirely (auto).
-	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, "s")
+	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, "s")
 	if err != nil {
 		t.Fatal(err)
 	}
