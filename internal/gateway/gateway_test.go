@@ -13,6 +13,7 @@ import (
 	"github.com/sagernet/sing/service"
 
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
+	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
@@ -29,7 +30,13 @@ const baseCfg = `{
 // build is a thin wrapper around buildMergedConfig with the common test defaults.
 func build(t *testing.T, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, sets ruleset.Sets) []byte {
 	t.Helper()
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, bl, dl, ModeManual, sets,
+	return buildCR(t, wl, bl, dl, customrules.Rules{}, sets, nil)
+}
+
+// buildCR adds custom rules + node member tags for the custom-routing tests.
+func buildCR(t *testing.T, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, sets ruleset.Sets, nodes []apitypes.Node) []byte {
+	t.Helper()
+	merged, err := buildMergedConfig([]byte(baseCfg), nodes, wl, bl, dl, cr, ModeManual, sets,
 		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "sekret", t.TempDir())
 	if err != nil {
 		t.Fatalf("buildMergedConfig: %v", err)
@@ -152,7 +159,7 @@ func TestLayerOrder(t *testing.T) {
 		{Tag: "cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 		{Tag: "gg", Type: "remote", Format: "binary", URL: "https://x/gg.srs", Role: apitypes.RuleRoleAllowProxy, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 	}}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, bl, directlist.Rules{}, ModeManual, sets,
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, bl, directlist.Rules{}, customrules.Rules{}, ModeManual, sets,
 		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, []int{22, 9096}, "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -326,7 +333,7 @@ func TestApplyMode_Inbounds(t *testing.T) {
 		{ModeSystem, []string{"mixed"}},
 		{ModeTUN, []string{"tun", "mixed"}},
 	} {
-		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "s", t.TempDir())
+		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "s", t.TempDir())
 		if err != nil {
 			t.Fatalf("%s: %v", tc.mode, err)
 		}
@@ -355,7 +362,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 		StrictRoute:    false,
 		ExcludePackage: []string{"com.example.app"},
 	}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, nil, nil, "s", t.TempDir())
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, nil, nil, "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +384,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 	if !ok || len(ep) != 1 || ep[0] != "com.example.app" {
 		t.Fatalf("exclude_package=%v want [com.example.app]", tunIn["exclude_package"])
 	}
-	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "s", t.TempDir())
+	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -392,7 +399,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 
 // TUN mode keeps the hijack-dns prelude rule directly after sniff, above the floor.
 func TestTUNHijackPrelude(t *testing.T) {
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}}, blacklist.Rules{}, directlist.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"}, nil, nil, "s", t.TempDir())
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"}, nil, nil, "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,5 +412,99 @@ func TestTUNHijackPrelude(t *testing.T) {
 	}
 	if !(hijack < gate) {
 		t.Fatalf("hijack-dns(%d) must be in the prelude, above the gate(%d)", hijack, gate)
+	}
+}
+
+// --- custom routing rules (Task C) -----------------------------------------
+
+func node(tag string) apitypes.Node {
+	ob, _ := json.Marshal(map[string]any{"type": "socks", "tag": tag, "server": "1.1.1.1", "server_port": 1080})
+	return apitypes.Node{Tag: tag, Protocol: "socks", Server: "1.1.1.1", Port: 1080, Outbound: ob}
+}
+
+// A custom direct/proxy/block rule: direct/proxy join the allow-set (they imply
+// allow); block does not. Custom rules sit above rule-set egress in L4.
+func TestCustomRules_AllowSetAndOrder(t *testing.T) {
+	cr := customrules.Rules{Rules: []apitypes.CustomRule{
+		{Match: "domain_suffix", Value: "force-proxy.com", Action: "proxy", Enabled: true},
+		{Match: "domain_suffix", Value: "go-direct.com", Action: "direct", Enabled: true},
+		{Match: "domain_suffix", Value: "blocked-anyway.com", Action: "block", Enabled: true},
+	}}
+	sets := ruleset.Sets{Sets: []apitypes.RuleSet{
+		{Tag: "cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+	}}
+	merged := buildCR(t, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, cr, sets, nil)
+	parseValidate(t, merged)
+	rules := routeRules(t, merged)
+
+	// Gate allow-set contains the direct + proxy custom domains, NOT the block one.
+	gate := rules[firstIdx(rules, isGate)]
+	subs, _ := gate["rules"].([]any)
+	inAllow := func(dom string) bool {
+		for _, s := range subs {
+			if containsStr(s.(map[string]any)["domain_suffix"], dom) {
+				return true
+			}
+		}
+		return false
+	}
+	if !inAllow("force-proxy.com") || !inAllow("go-direct.com") {
+		t.Fatalf("direct/proxy custom rules must join allow-set: %v", gate)
+	}
+	if inAllow("blocked-anyway.com") {
+		t.Fatal("a block custom rule must NOT join the allow-set")
+	}
+
+	// Custom rules emit L4 rules above the rule-set direct egress.
+	customIdx := firstIdx(rules, func(r map[string]any) bool {
+		return containsStr(r["domain_suffix"], "go-direct.com") && r["outbound"] == "direct"
+	})
+	rsDirectIdx := firstIdx(rules, func(r map[string]any) bool { return containsStr(r["rule_set"], "cn") && r["outbound"] == "direct" })
+	blockIdx := firstIdx(rules, func(r map[string]any) bool {
+		return containsStr(r["domain_suffix"], "blocked-anyway.com") && r["outbound"] == "blocked" && r["network"] == nil
+	})
+	gateIdx := firstIdx(rules, isGate)
+	if customIdx == -1 || rsDirectIdx == -1 || blockIdx == -1 {
+		t.Fatalf("missing rules: custom=%d rsDirect=%d block=%d", customIdx, rsDirectIdx, blockIdx)
+	}
+	if !(gateIdx < customIdx && customIdx < rsDirectIdx) {
+		t.Fatalf("custom rules must be below gate(%d) and above rule-set egress(%d), got %d", gateIdx, rsDirectIdx, customIdx)
+	}
+}
+
+// A node rule routes to that outbound iff the tag is a live member; otherwise
+// the whole rule is skipped (self-heal) and the box still builds.
+func TestCustomRules_NodeSelfHeal(t *testing.T) {
+	// Valid node target: HK is a subscription node, so its outbound tag exists.
+	crOK := customrules.Rules{Rules: []apitypes.CustomRule{
+		{Match: "domain_suffix", Value: "via-hk.com", Action: "node", Node: "HK", Enabled: true},
+	}}
+	merged := buildCR(t, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, crOK, ruleset.Sets{}, []apitypes.Node{node("HK")})
+	parseValidate(t, merged)
+	rules := routeRules(t, merged)
+	if firstIdx(rules, func(r map[string]any) bool {
+		return containsStr(r["domain_suffix"], "via-hk.com") && r["outbound"] == "HK"
+	}) == -1 {
+		t.Fatal("expected a route->HK rule for the valid node target")
+	}
+
+	// Dead node target: no such outbound => rule skipped entirely, no gate opened
+	// by it, config still valid (would otherwise brick the box).
+	crDead := customrules.Rules{Rules: []apitypes.CustomRule{
+		{Match: "domain_suffix", Value: "via-ghost.com", Action: "node", Node: "GHOST", Enabled: true},
+	}}
+	merged2 := buildCR(t, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, crDead, ruleset.Sets{}, nil)
+	parseValidate(t, merged2)
+	rules2 := routeRules(t, merged2)
+	if firstIdx(rules2, func(r map[string]any) bool { return containsStr(r["domain_suffix"], "via-ghost.com") }) != -1 {
+		t.Fatal("dead-node rule must be skipped entirely")
+	}
+	// Its matcher must NOT have opened the gate (it was the only allow input).
+	if firstIdx(rules2, isGate) != -1 {
+		t.Fatal("a skipped dead-node rule must not open the ACL gate")
+	}
+	ci := firstIdx(rules2, isCatchAll)
+	if rules2[ci]["outbound"] != "blocked" {
+		t.Fatalf("with only a dead-node rule, catch-all stays blocked, got %v", rules2[ci]["outbound"])
 	}
 }

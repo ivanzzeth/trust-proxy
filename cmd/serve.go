@@ -21,6 +21,7 @@ import (
 
 	"github.com/ivanzzeth/trust-proxy/internal/api"
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
+	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
@@ -153,6 +154,11 @@ func runServe() error {
 		return err
 	}
 
+	crStore, err := customrules.NewStore(serveDataDir + "/customrules.json")
+	if err != nil {
+		return err
+	}
+
 	engine := detect.New(2000)
 	engine.SetAutoBlock(serveAutoBlock)
 
@@ -225,6 +231,7 @@ func runServe() error {
 	mgr.SetInitialMode(serveMode)
 	mgr.SetInitialBlacklist(blStore.Get())
 	mgr.SetInitialDirectList(dlStore.Get())
+	mgr.SetInitialCustomRules(crStore.Get())
 	mgr.SetInitialRuleSets(rsStore.Get())
 	mgr.SetInitialDNS(dnsStore.Get())
 	mgr.SetInitialInbound(inbStore.Get())
@@ -250,6 +257,8 @@ func runServe() error {
 		BLApplier:   mgr,
 		Directlist:  dlStore,
 		DLApplier:   mgr,
+		CustomRules: crStore,
+		CRApplier:   mgr,
 		Detect:      engine,
 		Mode:        mgr,
 		RuleSets:    rsStore,

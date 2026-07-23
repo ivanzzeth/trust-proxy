@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
+	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
@@ -51,6 +52,11 @@ type BlacklistApplier interface {
 // DirectListApplier hot-reloads the no-proxy (bypass) list (gateway.Manager).
 type DirectListApplier interface {
 	SetDirectList(directlist.Rules) error
+}
+
+// CustomRulesApplier hot-reloads the custom routing rules (gateway.Manager).
+type CustomRulesApplier interface {
+	SetCustomRules(customrules.Rules) error
 }
 
 // ModeController switches the gateway capture mode (gateway.Manager).
@@ -103,6 +109,8 @@ type Options struct {
 	BLApplier   BlacklistApplier
 	Directlist  *directlist.Store
 	DLApplier   DirectListApplier
+	CustomRules *customrules.Store
+	CRApplier   CustomRulesApplier
 	Detect      *detect.Engine
 	Mode        ModeController
 	RuleSets    *ruleset.Store
@@ -136,6 +144,8 @@ type Server struct {
 	blApplier   BlacklistApplier
 	dl          *directlist.Store
 	dlApplier   DirectListApplier
+	cr          *customrules.Store
+	crApplier   CustomRulesApplier
 	detect      *detect.Engine
 	mode        ModeController
 	rs          *ruleset.Store
@@ -160,7 +170,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -193,6 +203,11 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("GET /api/directlist", s.handleGetDirectlist)
 	mux.HandleFunc("POST /api/directlist", s.handleAddDirectlist)
 	mux.HandleFunc("DELETE /api/directlist", s.handleDelDirectlist)
+	mux.HandleFunc("GET /api/customrules", s.handleListCustomRules)
+	mux.HandleFunc("POST /api/customrules", s.handleAddCustomRule)
+	mux.HandleFunc("PATCH /api/customrules/{id}", s.handlePatchCustomRule)
+	mux.HandleFunc("DELETE /api/customrules/{id}", s.handleDeleteCustomRule)
+	mux.HandleFunc("POST /api/customrules/{id}/move", s.handleMoveCustomRule)
 	mux.HandleFunc("GET /api/rulesets", s.handleListRuleSets)
 	mux.HandleFunc("GET /api/rulesets/catalog", s.handleRuleSetCatalog)
 	mux.HandleFunc("GET /api/rulesets/{tag}/rules", s.handleRuleSetRules)

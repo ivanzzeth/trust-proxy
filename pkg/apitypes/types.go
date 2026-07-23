@@ -68,10 +68,10 @@ const (
 type RuleSetCatalogEntry struct {
 	Tag           string `json:"tag"`
 	Name          string `json:"name"`
-	URL           string `json:"url"`             // raw.githubusercontent primary
-	Mirror        string `json:"mirror"`          // jsdelivr CDN alternative
-	Format        string `json:"format"`          // "binary" | "source"
-	SuggestedRole string `json:"suggested_role"`  // default role on import
+	URL           string `json:"url"`            // raw.githubusercontent primary
+	Mirror        string `json:"mirror"`         // jsdelivr CDN alternative
+	Format        string `json:"format"`         // "binary" | "source"
+	SuggestedRole string `json:"suggested_role"` // default role on import
 }
 
 // AddRuleSetRequest is the POST /api/rulesets body. Either provide a full
@@ -93,6 +93,44 @@ type AddRuleSetRequest struct {
 type PatchRuleSetRequest struct {
 	Enabled *bool   `json:"enabled,omitempty"`
 	Role    *string `json:"role,omitempty"`
+}
+
+// CustomRule is one ordered custom routing rule (the L4/routing layer): a
+// matcher plus the egress it selects. Order is priority (first-match). Actions
+// direct/proxy/node also imply "allow" (the matcher joins the ACL allow-set);
+// block does not. A node action targets a single subscription/endpoint outbound
+// by its (unstable) tag — the gateway skips the rule if that tag isn't a live
+// outbound (self-heal), so a removed node can't brick the box.
+type CustomRule struct {
+	ID      string `json:"id"`    // sha256(match|value|action|node)[:12], idempotent
+	Match   string `json:"match"` // domain | domain_suffix | keyword | regex | ip_cidr
+	Value   string `json:"value"`
+	Action  string `json:"action"`         // direct | proxy | block | node
+	Node    string `json:"node,omitempty"` // target outbound tag (required when action==node)
+	Enabled bool   `json:"enabled"`
+}
+
+// Custom-rule actions + match kinds.
+const (
+	CustomActionDirect = "direct"
+	CustomActionProxy  = "proxy"
+	CustomActionBlock  = "block"
+	CustomActionNode   = "node"
+
+	CustomMatchDomain       = "domain"
+	CustomMatchDomainSuffix = "domain_suffix"
+	CustomMatchKeyword      = "keyword"
+	CustomMatchRegex        = "regex"
+	CustomMatchIPCIDR       = "ip_cidr"
+)
+
+// PatchCustomRuleRequest is the PATCH /api/customrules/{id} body (all optional).
+type PatchCustomRuleRequest struct {
+	Enabled *bool   `json:"enabled,omitempty"`
+	Match   *string `json:"match,omitempty"`
+	Value   *string `json:"value,omitempty"`
+	Action  *string `json:"action,omitempty"`
+	Node    *string `json:"node,omitempty"`
 }
 
 // Profile bundles a named policy set (applied subscription + whitelist snapshot

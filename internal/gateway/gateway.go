@@ -26,6 +26,7 @@ import (
 	"github.com/sagernet/sing/service"
 
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
+	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
@@ -72,6 +73,7 @@ type Manager struct {
 	wl        whitelist.Rules
 	bl        blacklist.Rules
 	dl        directlist.Rules
+	cr        customrules.Rules
 	mode      string
 	rulesets  ruleset.Sets
 	dns       apitypes.DNSConfig
@@ -324,6 +326,30 @@ func (m *Manager) SetDirectList(dl directlist.Rules) error {
 	return nil
 }
 
+// SetInitialCustomRules sets the custom routing rules used by the first Start().
+func (m *Manager) SetInitialCustomRules(cr customrules.Rules) {
+	m.mu.Lock()
+	m.cr = cr
+	m.mu.Unlock()
+}
+
+// SetCustomRules sets the custom routing rules and hot-reloads. On rebuild
+// failure it reverts to the previous rules so the gateway stays up.
+func (m *Manager) SetCustomRules(cr customrules.Rules) error {
+	m.mu.Lock()
+	prev := m.cr
+	m.cr = cr
+	m.mu.Unlock()
+	if err := m.rebuild(); err != nil {
+		m.mu.Lock()
+		m.cr = prev
+		m.mu.Unlock()
+		_ = m.rebuild() // best-effort restore
+		return fmt.Errorf("apply custom rules failed (reverted): %w", err)
+	}
+	return nil
+}
+
 // SetInitialRuleSets sets the imported rule sets used by the first Start().
 func (m *Manager) SetInitialRuleSets(sets ruleset.Sets) {
 	m.mu.Lock()
@@ -437,14 +463,14 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, bl, dl, mode, sets, dns, inbound, tun, eps, mgmt := m.nodes, m.wl, m.bl, m.dl, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts
+	nodes, wl, bl, dl, cr, mode, sets, dns, inbound, tun, eps, mgmt := m.nodes, m.wl, m.bl, m.dl, m.cr, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, bl, dl, mode, sets, dns, inbound, tun, eps, mgmt, m.clashSecret, m.dataDir)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, dl, cr, mode, sets, dns, inbound, tun, eps, mgmt, m.clashSecret, m.dataDir)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -502,7 +528,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // The split keeps two orthogonal concerns apart: the whitelist decides only
 // allow/deny (L3), the no-proxy list + rule-sets decide only egress (L4). All
 // injection is at the JSON level so sing-box's own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, clashSecret, dataDir string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, clashSecret, dataDir string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -512,7 +538,10 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	if err != nil {
 		return nil, err
 	}
-	if err := injectOutbounds(cfg, nodes, epTags); err != nil {
+	// memberTags = proxy group members (node + endpoint outbounds); the valid
+	// targets for a custom rule's `node` action.
+	memberTags, err := injectOutbounds(cfg, nodes, epTags)
+	if err != nil {
 		return nil, err
 	}
 	// Before applyMode: a configured dns block wins over TUN's default resolver.
@@ -542,8 +571,9 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 		return nil, err
 	}
 	// L3 ACL gate + L4 routing egress + catch-all flip. Needs whitelist +
-	// allow-rule-set tags + no-proxy list together (they form one allow-set).
-	if err := injectAllow(cfg, wl, sets, dl); err != nil {
+	// allow-rule-set tags + no-proxy list + custom rules together (they form one
+	// allow-set); memberTags validates custom `node` targets.
+	if err := injectAllow(cfg, wl, sets, dl, cr, memberTags); err != nil {
 		return nil, err
 	}
 	// L0: management-port allow LAST => inserted right after the prelude, above
@@ -1293,11 +1323,15 @@ func injectEndpoints(cfg map[string]json.RawMessage, list []apitypes.Endpoint, d
 	return tags, nil
 }
 
-func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extraTags []string) error {
+// injectOutbounds rewrites outbounds from the subscription nodes + the proxy
+// group, and returns the proxy group's member tags (node + endpoint outbound
+// tags). Those are the only valid targets for a custom rule's `node` action;
+// a rule pinning any other tag is skipped at inject time (self-heal).
+func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extraTags []string) ([]string, error) {
 	var outs []json.RawMessage
 	if raw, ok := cfg["outbounds"]; ok {
 		if err := json.Unmarshal(raw, &outs); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	kept := outs[:0:0]
@@ -1357,16 +1391,16 @@ func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extr
 	}
 	groupRaw, err := json.Marshal(group)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	kept = append(kept, groupRaw)
 
 	newOuts, err := json.Marshal(kept)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	cfg["outbounds"] = newOuts
-	return nil
+	return tags, nil
 }
 
 // injectBlacklist inserts reject rules for explicitly denied destinations right
@@ -1535,7 +1569,14 @@ func injectProcessDeviceFloor(cfg map[string]json.RawMessage, wl whitelist.Rules
 // one-click allowed. When the allow-set is empty, NO gate is emitted and the
 // catch-all stays `blocked` (fail-closed default-deny). The whitelist never
 // picks an egress here — that is entirely the no-proxy list's / rule-sets' job.
-func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets ruleset.Sets, dl directlist.Rules) error {
+//
+// Custom routing rules (cr) are the ordered, top-priority slice of L4: each
+// enabled rule routes its matcher to direct/proxy/blocked/<node>, evaluated in
+// order ABOVE the rule-set egress. A direct/proxy/node rule also joins the
+// allow-set (it implies "allow"); a block rule does not. A `node` rule whose
+// target tag isn't a current outbound (memberTags) is skipped entirely
+// (self-heal) so a removed node can't brick the box.
+func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets ruleset.Sets, dl directlist.Rules, cr customrules.Rules, memberTags []string) error {
 	routeRaw, ok := cfg["route"]
 	if !ok {
 		return nil
@@ -1564,11 +1605,54 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	wlSfx, wlRgx := splitDomainMatchers(wl.Domains)
 	dlSfx, dlRgx := splitDomainMatchers(dl.Domains)
 
+	// Custom routing rules (ordered): build the top-priority L4 egress slice and
+	// their allow-set sub-rules in one pass. node rules with a dead tag are
+	// skipped (self-heal). block rules route but do NOT join the allow-set.
+	members := map[string]bool{}
+	for _, t := range memberTags {
+		members[t] = true
+	}
+	var customEgress []json.RawMessage
+	var customSubRules []map[string]any
+	hasCustomAllow := false
+	for _, rule := range cr.Rules {
+		if !rule.Enabled {
+			continue
+		}
+		key, ok := customrules.SingboxMatchKey(rule.Match)
+		if !ok || rule.Value == "" {
+			continue
+		}
+		var outbound string
+		switch rule.Action {
+		case apitypes.CustomActionDirect:
+			outbound = "direct"
+		case apitypes.CustomActionProxy:
+			outbound = ProxyGroupTag
+		case apitypes.CustomActionBlock:
+			outbound = "blocked"
+		case apitypes.CustomActionNode:
+			if !members[rule.Node] {
+				continue // self-heal: target node isn't a live outbound
+			}
+			outbound = rule.Node
+		default:
+			continue
+		}
+		r, _ := json.Marshal(map[string]any{key: []string{rule.Value}, "action": "route", "outbound": outbound})
+		customEgress = append(customEgress, r)
+		if rule.Action != apitypes.CustomActionBlock {
+			customSubRules = append(customSubRules, map[string]any{key: []string{rule.Value}})
+			hasCustomAllow = true
+		}
+	}
+
 	// Gate ONLY when the user actually allowed something. The built-in private
-	// CIDRs are not a user allow: with no whitelist / no-proxy / allow rule-set,
-	// they must NOT open the gate — the catch-all stays blocked (fail-closed).
+	// CIDRs are not a user allow: with no whitelist / no-proxy / allow rule-set /
+	// custom allow rule, they must NOT open the gate — the catch-all stays
+	// blocked (fail-closed).
 	hasUserAllow := len(wlSfx) > 0 || len(wlRgx) > 0 || len(wl.IPs) > 0 ||
-		len(dlSfx) > 0 || len(dlRgx) > 0 || len(dl.IPs) > 0 || len(allowSetTags) > 0
+		len(dlSfx) > 0 || len(dlRgx) > 0 || len(dl.IPs) > 0 || len(allowSetTags) > 0 || hasCustomAllow
 	if !hasUserAllow {
 		return nil
 	}
@@ -1594,15 +1678,17 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	if len(allowSetTags) > 0 {
 		subRules = append(subRules, map[string]any{"rule_set": allowSetTags})
 	}
+	subRules = append(subRules, customSubRules...)
 	gate, _ := json.Marshal(map[string]any{
 		"type": "logical", "mode": "or", "rules": subRules,
 		"invert": true, "action": "route", "outbound": "blocked",
 	})
 
-	// L4 egress: direct-bypass first (rule_sets, then no-proxy domains/ips), then
-	// allow-proxy sets. Allowed traffic matched by neither falls to the catch-all
-	// default (proxy).
+	// L4 egress: custom rules first (ordered, user's explicit per-rule intent),
+	// then direct-bypass (rule_sets, then no-proxy domains/ips), then allow-proxy
+	// sets. Allowed traffic matched by none falls to the catch-all default (proxy).
 	var egress []json.RawMessage
+	egress = append(egress, customEgress...)
 	if len(directSetTags) > 0 {
 		r, _ := json.Marshal(map[string]any{"rule_set": directSetTags, "action": "route", "outbound": "direct"})
 		egress = append(egress, r)
@@ -1645,12 +1731,12 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	// allowed traffic that no L4 rule routed egresses via the proxy group.
 	newCatchIdx := catchIdx + len(inserted)
 	if newCatchIdx < len(merged) {
-		var cr map[string]any
-		if err := json.Unmarshal(merged[newCatchIdx], &cr); err == nil {
-			if _, hasNet := cr["network"]; hasNet {
-				cr["action"] = "route"
-				cr["outbound"] = ProxyGroupTag
-				if b, err := json.Marshal(cr); err == nil {
+		var catchRule map[string]any
+		if err := json.Unmarshal(merged[newCatchIdx], &catchRule); err == nil {
+			if _, hasNet := catchRule["network"]; hasNet {
+				catchRule["action"] = "route"
+				catchRule["outbound"] = ProxyGroupTag
+				if b, err := json.Marshal(catchRule); err == nil {
 					merged[newCatchIdx] = b
 				}
 			}
