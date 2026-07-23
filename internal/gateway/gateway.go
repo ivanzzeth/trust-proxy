@@ -495,6 +495,11 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	if err := injectRuleSets(cfg, sets); err != nil {
 		return nil, err
 	}
+	// Rule<->Global routing toggle. Runs after the whitelist/rule-sets so its rule
+	// lands just above the catch-all (below the security floor). Inert in Rule mode.
+	if err := injectClashModeGlobal(cfg); err != nil {
+		return nil, err
+	}
 	// Management-port allow LAST => inserted right after the prelude, above every
 	// other rule (even the blacklist): SSH + the API port must never be cut, or a
 	// remote TUN/system switch would lock you out of the box.
@@ -844,6 +849,101 @@ func ensureCacheFile(cfg map[string]json.RawMessage) error {
 		cf, _ := json.Marshal(map[string]any{"enabled": true, "path": "data/cache.db"})
 		exp["cache_file"] = cf
 	}
+	newExp, err := json.Marshal(exp)
+	if err != nil {
+		return err
+	}
+	cfg["experimental"] = newExp
+	return nil
+}
+
+// injectClashModeGlobal adds a route rule that routes everything to the proxy
+// group ONLY when the live Clash mode is "Global" — a no-rebuild toggle that
+// turns the whitelist default-deny OFF (unlisted traffic egresses via proxy
+// instead of being blocked). It is inserted just above the default-deny
+// catch-all and BELOW the security floor (blacklist / rule-set-block /
+// process+device gates), so blacklisted and unknown-process/device connections
+// are still rejected even in Global mode. In "Rule" mode the rule is inert
+// (clash_mode mismatch, matched case-insensitively) and default-deny applies
+// unchanged. sing-box derives the selectable mode list from the clash_mode
+// values present in the rules, so this alone exposes ["Global","Rule"].
+func injectClashModeGlobal(cfg map[string]json.RawMessage) error {
+	routeRaw, ok := cfg["route"]
+	if !ok {
+		return nil
+	}
+	var route map[string]json.RawMessage
+	if err := json.Unmarshal(routeRaw, &route); err != nil {
+		return err
+	}
+	var rules []json.RawMessage
+	if raw, ok := route["rules"]; ok {
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return err
+		}
+	}
+	// Insert right before the default-deny catch-all (the bare network matcher).
+	catchIdx := len(rules)
+	for i, raw := range rules {
+		var meta struct {
+			Network json.RawMessage `json:"network"`
+		}
+		_ = json.Unmarshal(raw, &meta)
+		if len(meta.Network) > 0 {
+			catchIdx = i
+			break
+		}
+	}
+	globalRule, _ := json.Marshal(map[string]any{"clash_mode": "Global", "action": "route", "outbound": ProxyGroupTag})
+	merged := make([]json.RawMessage, 0, len(rules)+1)
+	merged = append(merged, rules[:catchIdx]...)
+	merged = append(merged, globalRule)
+	merged = append(merged, rules[catchIdx:]...)
+	nr, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	route["rules"] = nr
+	nrt, err := json.Marshal(route)
+	if err != nil {
+		return err
+	}
+	cfg["route"] = nrt
+	// Seed the safe default mode; cache_file persists the live selection across
+	// restarts (sing-box loads it on start if present in the mode list).
+	if err := setClashDefaultMode(cfg, "Rule"); err != nil {
+		return err
+	}
+	return ensureCacheFile(cfg)
+}
+
+// setClashDefaultMode sets experimental.clash_api.default_mode (the mode used on
+// first run, before any cached selection). No-op if clash_api is absent.
+func setClashDefaultMode(cfg map[string]json.RawMessage, mode string) error {
+	expRaw, ok := cfg["experimental"]
+	if !ok {
+		return nil
+	}
+	var exp map[string]json.RawMessage
+	if err := json.Unmarshal(expRaw, &exp); err != nil {
+		return err
+	}
+	caRaw, ok := exp["clash_api"]
+	if !ok {
+		return nil
+	}
+	var ca map[string]any
+	if err := json.Unmarshal(caRaw, &ca); err != nil {
+		return err
+	}
+	if _, set := ca["default_mode"]; !set {
+		ca["default_mode"] = mode
+	}
+	newCA, err := json.Marshal(ca)
+	if err != nil {
+		return err
+	}
+	exp["clash_api"] = newCA
 	newExp, err := json.Marshal(exp)
 	if err != nil {
 		return err

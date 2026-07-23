@@ -74,6 +74,7 @@ function ModeSwitcher() {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex items-center gap-1 rounded-lg border bg-card p-0.5">
+        <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Capture</span>
         {st.modes.map((mode) => {
           const active = mode === st.mode;
           const needRoot = mode === 'tun' && !st.root;
@@ -97,6 +98,72 @@ function ModeSwitcher() {
         })}
       </div>
     </TooltipProvider>
+  );
+}
+
+// RoutingSwitcher toggles the live Clash routing mode: Rule (whitelist
+// default-deny, the safe default) <-> Global (default-deny OFF, unlisted traffic
+// egresses via proxy; security floor stays on). Global is styled amber as a
+// standing warning. The switch is live (no data-plane rebuild), so no guard.
+function RoutingSwitcher() {
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ['clash-mode'], queryFn: api.clashMode, refetchInterval: 5000 });
+  const m = useMutation({
+    mutationFn: (mode: string) => api.setClashMode(mode),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['clash-mode'] }),
+    onError: (e) => toast.error(String((e as Error).message)),
+  });
+  if (!data) return null;
+  const cur = data.mode?.toLowerCase();
+  return (
+    <TooltipProvider delayDuration={200}>
+      <div className="flex items-center gap-1 rounded-lg border bg-card p-0.5">
+        <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Routing</span>
+        {data.modes.map((mode) => {
+          const active = mode.toLowerCase() === cur;
+          const isGlobal = mode.toLowerCase() === 'global';
+          return (
+            <Tooltip key={mode}>
+              <TooltipTrigger asChild>
+                <button
+                  disabled={m.isPending}
+                  onClick={() => m.mutate(mode)}
+                  className={cn(
+                    'rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer',
+                    active
+                      ? isGlobal
+                        ? 'bg-amber-500 text-white shadow-sm'
+                        : 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  {mode}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {isGlobal ? 'Global: default-deny OFF — unlisted traffic egresses via proxy' : 'Rule: whitelist default-deny (safe)'}
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
+    </TooltipProvider>
+  );
+}
+
+// GlobalModeBanner is a standing amber warning shown whenever routing is in
+// Global mode, so "default-deny is off" is never a silent state.
+function GlobalModeBanner() {
+  const { data } = useQuery({ queryKey: ['clash-mode'], queryFn: api.clashMode, refetchInterval: 5000 });
+  if (data?.mode?.toLowerCase() !== 'global') return null;
+  return (
+    <div className="flex items-center gap-2 border-b border-amber-500/50 bg-amber-500/15 px-6 py-2 text-sm">
+      <AlertTriangle className="size-4 shrink-0 text-amber-500" />
+      <span>
+        <b>Global routing</b>: whitelist default-deny is <b>OFF</b> — unlisted traffic egresses via proxy (blacklist / threat-intel /
+        process·device gates still apply). Switch back to <b>Rule</b> to restore default-deny.
+      </span>
+    </div>
   );
 }
 
@@ -252,9 +319,11 @@ export function AppShell() {
           <NodeSwitcher />
           <TrafficPill />
           <AutoBlock />
+          <RoutingSwitcher />
           <ModeSwitcher />
         </header>
         <RevertBanner />
+        <GlobalModeBanner />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-[1400px] px-6 py-6">
             <Outlet />

@@ -170,6 +170,8 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("PUT /api/proxies/select", s.handleSelectProxy)
 	mux.HandleFunc("GET /api/proxies/{name}/delay", s.handleProxyDelay)
 	mux.HandleFunc("GET /api/rules", s.handleRules)
+	mux.HandleFunc("GET /api/clash-mode", s.handleGetClashMode)
+	mux.HandleFunc("PUT /api/clash-mode", s.handleSetClashMode)
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/whitelist", s.handleGetWhitelist)

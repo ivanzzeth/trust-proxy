@@ -128,6 +128,22 @@ func (c *Client) Delay(name, testURL string, timeoutMs int) ([]byte, error) {
 	return c.GetRaw("/proxies/" + url.PathEscape(name) + "/delay?" + q.Encode())
 }
 
+// Mode returns the current routing mode (the Clash "mode" field of GET /configs).
+func (c *Client) Mode() (string, error) {
+	var cfg struct {
+		Mode string `json:"mode"`
+	}
+	err := c.do(http.MethodGet, "/configs", &cfg)
+	return cfg.Mode, err
+}
+
+// SetMode sets the routing mode live via PATCH /configs (no data-plane rebuild).
+func (c *Client) SetMode(mode string) error {
+	body, _ := json.Marshal(map[string]string{"mode": mode})
+	_, err := c.raw(http.MethodPatch, "/configs", body)
+	return err
+}
+
 // StreamLogs dials the Clash /logs WebSocket and invokes fn for each raw log
 // message until ctx is cancelled or the stream errors.
 func (c *Client) StreamLogs(ctx context.Context, level string, fn func([]byte) error) error {

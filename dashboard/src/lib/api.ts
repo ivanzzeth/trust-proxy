@@ -159,6 +159,10 @@ export interface ClashRule {
   payload: string;
   proxy: string;
 }
+export interface ClashMode {
+  mode: string;
+  modes: string[];
+}
 export interface Profile {
   id: string;
   name: string;
@@ -302,6 +306,9 @@ export const api = {
   selectProxy: (group: string, name: string) => put<void>('/proxies/select', { group, name }),
   delay: (name: string) => get<{ delay: number; error?: string }>(`/proxies/${encodeURIComponent(name)}/delay?timeout=3000`),
   rules: () => get<{ rules: ClashRule[] }>('/rules'),
+
+  clashMode: () => get<ClashMode>('/clash-mode'),
+  setClashMode: (mode: string) => put<{ mode: string }>('/clash-mode', { mode }),
 
   profiles: () => get<Profile[]>('/profiles'),
   addProfile: (name: string) => post<Profile>('/profiles', { name }),
