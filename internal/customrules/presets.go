@@ -8,6 +8,16 @@ import "github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 // exhaustive list — users edit/extend them like any custom rule afterwards.
 var Presets = []apitypes.PackPreset{
 	{
+		Name:        "AI",
+		Description: "OpenAI / Anthropic / Gemini / Grok / Perplexity / HuggingFace via the proxy.",
+		Rules: proxyRules("AI",
+			"openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com",
+			"anthropic.com", "claude.ai",
+			"gemini.google.com", "generativelanguage.googleapis.com", "aistudio.google.com", "deepmind.com",
+			"x.ai", "grok.com",
+			"perplexity.ai", "huggingface.co", "poe.com", "mistral.ai", "cohere.com", "groq.com"),
+	},
+	{
 		Name:        "Dev",
 		Description: "GitHub / npm / PyPI / Go / Docker registries via the proxy.",
 		Rules: proxyRules("Dev",
@@ -15,6 +25,18 @@ var Presets = []apitypes.PackPreset{
 			"npmjs.org", "npmjs.com", "pypi.org", "pythonhosted.org",
 			"pkg.go.dev", "proxy.golang.org", "sum.golang.org",
 			"docker.io", "docker.com"),
+	},
+	{
+		Name:        "Telegram",
+		Description: "Telegram apps + media via the proxy.",
+		Rules:       proxyRules("Telegram", "telegram.org", "t.me", "telegram.me", "telesco.pe", "tdesktop.com"),
+	},
+	{
+		Name:        "Streaming",
+		Description: "Netflix / Disney+ / HBO / Spotify / Twitch via the proxy.",
+		Rules: proxyRules("Streaming",
+			"netflix.com", "nflxvideo.net", "disneyplus.com", "disney-plus.net",
+			"hbomax.com", "max.com", "spotify.com", "scdn.co", "twitch.tv", "ttvnw.net"),
 	},
 	{
 		Name:        "Google",

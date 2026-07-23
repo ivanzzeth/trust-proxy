@@ -377,7 +377,7 @@ export function AppShell() {
             <Logo className="size-5" />
           </div>
           <div className="flex flex-col leading-none">
-            <span className="text-sm font-bold tracking-tight">trust-proxy</span>
+            <span className="text-sm font-bold tracking-tight">Trust Proxy</span>
             <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{t('brand.subtitle')}</span>
           </div>
         </div>

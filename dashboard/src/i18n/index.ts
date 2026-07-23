@@ -40,8 +40,15 @@ void i18n
     resources: { en: { translation: enRes }, zh: { translation: zhRes } },
     fallbackLng: 'en',
     supportedLngs: ['en', 'zh'],
+    // Map region variants to the base language (zh-CN/zh-TW -> zh, en-US -> en)
+    // so first-visit detection follows the OS/browser language instead of
+    // wrongly falling back to English when the tag carries a region.
+    load: 'languageOnly',
+    nonExplicitSupportedLngs: true,
     interpolation: { escapeValue: false },
     detection: {
+      // No stored choice yet -> use the system/browser language; a manual pick
+      // in Settings persists to localStorage and wins thereafter.
       order: ['localStorage', 'navigator'],
       lookupLocalStorage: 'tp-lang',
       caches: ['localStorage'],
