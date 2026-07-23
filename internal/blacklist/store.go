@@ -149,6 +149,9 @@ func (s *Store) AddDomain(d string) (Rules, error) {
 	if d == "" || strings.ContainsAny(d, "/ \t") {
 		return s.Get(), fmt.Errorf("invalid domain: %q", d)
 	}
+	if strings.Trim(d, "*?.") == "" {
+		return s.Get(), fmt.Errorf("domain pattern too broad: %q", d)
+	}
 	return s.mutate(func() { s.data.Domains = add(s.data.Domains, d) })
 }
 func (s *Store) RemoveDomain(d string) (Rules, error) {

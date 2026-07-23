@@ -38,8 +38,8 @@ export default function Blacklist() {
           type="domain"
           icon={Globe}
           title="Domains"
-          hint="Matched as a domain suffix (evil.com blocks *.evil.com)."
-          placeholder="evil.com"
+          hint="Suffix by default (evil.com blocks its subdomains). Wildcards: *.evil.com, ads-* (prefix)."
+          placeholder="evil.com  /  *.evil.com"
           items={bl?.domains ?? []}
           onAdd={(v) => add.mutate({ type: 'domain', value: v })}
           onDel={(v) => del.mutate({ type: 'domain', value: v })}

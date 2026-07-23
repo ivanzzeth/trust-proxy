@@ -38,7 +38,8 @@ export default function Whitelist() {
           type="domain"
           icon={Globe}
           title="Domains"
-          placeholder="example.com"
+          hint="Suffix by default (example.com covers its subdomains). Wildcards: *.example.com (subdomains), foo* (prefix)."
+          placeholder="example.com  /  *.example.com"
           items={wl?.domains ?? []}
           onAdd={(v) => add.mutate({ type: 'domain', value: v })}
           onDel={(v) => del.mutate({ type: 'domain', value: v })}

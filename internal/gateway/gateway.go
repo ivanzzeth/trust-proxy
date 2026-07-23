@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1344,9 +1345,15 @@ func injectBlacklist(cfg map[string]json.RawMessage, bl blacklist.Rules) error {
 	}
 
 	var reject []json.RawMessage
-	if len(bl.Domains) > 0 {
-		r, _ := json.Marshal(map[string]any{"domain_suffix": bl.Domains, "action": "reject"})
-		reject = append(reject, r)
+	if sfx, rgx := splitDomainMatchers(bl.Domains); len(sfx) > 0 || len(rgx) > 0 {
+		if len(sfx) > 0 {
+			r, _ := json.Marshal(map[string]any{"domain_suffix": sfx, "action": "reject"})
+			reject = append(reject, r)
+		}
+		if len(rgx) > 0 {
+			r, _ := json.Marshal(map[string]any{"domain_regex": rgx, "action": "reject"})
+			reject = append(reject, r)
+		}
 	}
 	if len(bl.Keywords) > 0 {
 		r, _ := json.Marshal(map[string]any{"domain_keyword": bl.Keywords, "action": "reject"})
@@ -1444,9 +1451,15 @@ func injectWhitelist(cfg map[string]json.RawMessage, wl whitelist.Rules) error {
 		r, _ := json.Marshal(map[string]any{"source_ip_cidr": wl.Devices, "invert": true, "action": "reject"})
 		allow = append(allow, r)
 	}
-	if len(wl.Domains) > 0 {
-		r, _ := json.Marshal(map[string]any{"domain_suffix": wl.Domains, "action": "route", "outbound": ProxyGroupTag})
-		allow = append(allow, r)
+	if sfx, rgx := splitDomainMatchers(wl.Domains); len(sfx) > 0 || len(rgx) > 0 {
+		if len(sfx) > 0 {
+			r, _ := json.Marshal(map[string]any{"domain_suffix": sfx, "action": "route", "outbound": ProxyGroupTag})
+			allow = append(allow, r)
+		}
+		if len(rgx) > 0 {
+			r, _ := json.Marshal(map[string]any{"domain_regex": rgx, "action": "route", "outbound": ProxyGroupTag})
+			allow = append(allow, r)
+		}
 	}
 	if len(wl.IPs) > 0 {
 		r, _ := json.Marshal(map[string]any{"ip_cidr": wl.IPs, "action": "route", "outbound": "direct"})
@@ -1482,6 +1495,44 @@ func injectWhitelist(cfg map[string]json.RawMessage, wl whitelist.Rules) error {
 	}
 	cfg["route"] = newRoute
 	return nil
+}
+
+// globToRegex compiles a domain glob (containing * or ?) to an anchored Go
+// regex: * => any run of chars, ? => one char, everything else literal.
+//
+//	*.example.com -> subdomains of example.com
+//	foo*          -> prefix match
+func globToRegex(g string) string {
+	var b strings.Builder
+	b.WriteByte('^')
+	for _, r := range g {
+		switch r {
+		case '*':
+			b.WriteString(".*")
+		case '?':
+			b.WriteByte('.')
+		default:
+			b.WriteString(regexp.QuoteMeta(string(r)))
+		}
+	}
+	b.WriteByte('$')
+	return b.String()
+}
+
+// splitDomainMatchers partitions domain entries into plain suffix matches and
+// glob patterns. A plain entry keeps domain_suffix semantics (matches the
+// domain + its subdomains); an entry containing * or ? becomes a domain_regex.
+// This is how whitelist/blacklist domains gain prefix/suffix/wildcard support
+// without a schema change — the match type is encoded in the value itself.
+func splitDomainMatchers(domains []string) (suffixes, regexes []string) {
+	for _, d := range domains {
+		if strings.ContainsAny(d, "*?") {
+			regexes = append(regexes, globToRegex(d))
+		} else {
+			suffixes = append(suffixes, d)
+		}
+	}
+	return
 }
 
 func stringOr(v any, fallback string) string {
