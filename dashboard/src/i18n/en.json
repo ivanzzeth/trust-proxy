@@ -45,9 +45,10 @@
   "common": { "empty": "empty" },
   "pages": {
     "acls": {
-      "desc": "Access control: what egress is allowed (whitelist) and what is explicitly denied (blacklist). Deny always wins over allow.",
+      "desc": "Access control: what egress is allowed (whitelist) and what is explicitly denied (blacklist). Deny always wins over allow. No-Proxy picks the egress (direct vs proxy) — it never grants access.",
       "allow": "Allow",
-      "deny": "Deny"
+      "deny": "Deny",
+      "direct": "No-Proxy"
     },
     "whitelist": {
       "desc": "Default-deny egress allow-list. Domains & IPs are destinations; Processes & Devices are opt-in source gates (empty = off).",
@@ -77,6 +78,15 @@
       "ip": "IP / CIDR",
       "ipHint": "Reject connections to these destination IPs/CIDRs.",
       "ipPh": "6.6.6.6/32"
+    },
+    "directlist": {
+      "desc": "No-proxy (bypass) list: allowed traffic to these destinations egresses DIRECT instead of through the proxy. This is routing, not access — an entry must also be allowed (whitelisted or matched by an allow rule-set). Private/LAN ranges are always bypassed automatically.",
+      "domains": "Domains",
+      "domainsHint": "Suffix by default (corp.local covers its subdomains). Wildcards: *.corp.local, intra-* (prefix).",
+      "domainsPh": "corp.local  /  *.corp.local",
+      "ip": "IP / CIDR",
+      "ipHint": "These destination IPs/CIDRs egress direct (never through the proxy).",
+      "ipPh": "203.0.113.0/24"
     }
   }
 }

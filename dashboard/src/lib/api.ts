@@ -70,6 +70,11 @@ export interface Blacklist {
   ips: string[];
 }
 export type BLType = 'domain' | 'keyword' | 'regex' | 'ip';
+export interface Directlist {
+  domains: string[];
+  ips: string[];
+}
+export type DLType = 'domain' | 'ip';
 export interface TPNode {
   tag: string;
   protocol: string;
@@ -286,6 +291,14 @@ export const api = {
     })),
   addBL: (type: BLType, value: string) => post<Blacklist>('/blacklist', { type, value }),
   delBL: (type: BLType, value: string) => del<Blacklist>('/blacklist', { type, value }),
+
+  directlist: () =>
+    get<Directlist>('/directlist').then((d) => ({
+      domains: d.domains ?? [],
+      ips: d.ips ?? [],
+    })),
+  addDL: (type: DLType, value: string) => post<Directlist>('/directlist', { type, value }),
+  delDL: (type: DLType, value: string) => del<Directlist>('/directlist', { type, value }),
 
   subs: () => get<Subscription[]>('/subscriptions'),
   addSub: (name: string, url: string, userAgent?: string, via?: string) =>

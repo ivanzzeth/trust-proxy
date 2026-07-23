@@ -6,6 +6,12 @@
 > (`kill %1` 跨 Bash 调用无效,会残留孤儿进程;别动用户网关 pid)。
 
 ## 本会话已完成(勿重做)
+- **P0 分层 allow 闸重构 + no-proxy 路由层(✅)**:白名单=纯 ACL(允/拒),出口交给 routing。
+  引擎按 L0 管理救援 / L1 安全地板(reject) / L2 Global 旁路 / **L3 ACL 闸**(一条 logical-or-invert `route→blocked`) / **L4 路由**(direct-bypass→direct、allow-proxy 集→proxy、兜底→proxy) 分层
+  (`internal/gateway/gateway.go`:`injectAllow`+`injectProcessDeviceFloor`,拆自旧 `injectWhitelist`;`injectRuleSets` 只留描述符+block reject;`injectClashModeGlobal` 移到 `injectAllow` 前)。
+  新 `internal/directlist`(no-proxy 域名/IP store,镜像 blacklist)+ `/api/directlist` CRUD + ACLs 页第三 tab「No-Proxy/免代理」+ i18n。
+  内置私网段(RFC1918/loopback/CGNAT)自动直连(LAN 永不出境)。空允许集→无闸→兜底 blocked=全拒(fail-closed)。
+  单测覆盖 8 条不变量 + sing-box schema 解析校验;端到端已验(白名单可达/未列拒/黑名单胜/no-proxy IP 直连可达/未列 IP 拒)。
 - 黑白名单**通配符/前缀/后缀**匹配(glob→domain_regex)
 - 专属 **logo**(盾+流量检查点)+ favicon
 - **i18n 全站中英**(react-i18next;`src/i18n/pages/<ns>.ts` 每页模块 + `import.meta.glob` 合并;Settings 语言切换)
@@ -17,34 +23,13 @@
 
 ---
 
-## P0 —— 统一 allow 闸重构(分层修复,最优先)
+## ~~P0 —— 统一 allow 闸重构~~（✅ 已完成,见「本会话已完成」+ CLAUDE.md 分层顺序表）
 
-**背景/为什么**:当前 `injectWhitelist` 把白名单**域名写死路由到 `proxy` 组**(IP→direct),把「允许」和「选出口」两层混一起 → 白名单的国内站(如 aliyun)被强制送去境外出口而打不开。用户要求严格分层:**白名单只管允不允许,出口是 routing 的事**。
-
-**sing-box 约束(关键)**:扁平 route(first-match)里「允许」=「路由到某出口」是同一操作,没有"先允许再由后续规则选出口"。所以**不能**简单把白名单改成"不在名单就 block"的闸放在规则集前——那会**破坏规则集批量放行**(如 `geosite-cn allow-direct` 让所有 CN 域名放行+直连,不需逐个加白;naive 闸会把没单独加白的 CN 域名提前 block)。
-
-**正确模型(要实现的)**:
-1. **一个统一 allow 闸**(ACL 层):`route→block  一切 不属于 (白名单域名 ∪ 白名单IP ∪ allow-规则集命中) 的流量`。
-   - 用 `route→"blocked"`(**不是 action:reject**),让被拦连接仍过 detector、保留 sniff 的 SNI、可一键加白(保住里程碑5)。
-   - 域名用 `domain_suffix` + `domain_regex`(glob);与 IP、与 allow-规则集 tag 用 `{type:logical, mode:or, rules:[...], invert:true}` 组合。
-   - **空白名单(且无 allow 规则集)→ 不生成闸 → 兜底保持 block = 全拒(fail-closed)**。
-2. **Routing 层(纯出口)**:allow-规则集 → direct/proxy(只选出口);自定义规则(见 C);**兜底 catch-all 改成默认出口 `proxy`**(仅当有 allow 闸时;否则维持 block)。
-3. 效果:aliyun 被允许(在白名单或 geosite-cn)→ 出口由 geosite-cn 判 **direct**;白名单不再碰出口;geosite 批量放行不破。
-
-**实现要点**:allow 闸需**同时**拿到白名单 + allow-规则集 tag——现在 `injectWhitelist` 与 `injectRuleSets` 分离,要小改注入管线(把两者输入喂给同一个闸构建;注意注入顺序:blacklist/ruleset-block 在最前,闸在其后,routing 出口规则再后,catch-all 兜底)。
-
-**回归测试(必须全过)**:
-- 空白名单 → 全拒。
-- 白名单域名 X → X 可达,且出口由规则/兜底决定(不写死 proxy)。
-- geosite-cn(allow-direct)未单独加白的 CN 域名 → **放行 + 直连**。
-- 白名单某域名 + geosite-cn direct → 该域名走直连(不再 proxy)。
-- 黑名单优先于一切(仍 reject)。
-- 被拦连接仍可见于连接页 + 一键加白。
-- 挂境外出口时:境外站→proxy、国内站→direct 各就各位。
+分层引擎 + no-proxy 列表已落地并端到端验证。剩下的延伸(C / #10)如下。
 
 ---
 
-## C —— 自定义路由规则 CRUD（P0 的延伸,routing 层)
+## C —— 自定义路由规则 CRUD（P0 的延伸,routing 层）
 - 新 store `internal/customrules`(或并入现有):每条 `{matcher(domain/domain_suffix/keyword/regex/ip_cidr/wildcard), action(direct|proxy|block|指定节点tag)}`,可增删改**排序**。
 - 注入到 routing 层(allow 闸之后、catch-all 之前);API CRUD + dashboard 编辑器。
 - 白名单域名可选「直连/代理」= 其实就是"允许"+"一条自定义 routing 规则"的组合(别再在白名单里塞出口)。
@@ -78,8 +63,8 @@
 ---
 
 ## 给用户的即时动作(非开发任务)
-- **救 aliyun**:把 `ecs.console.aliyun.com` 从白名单**删掉**(当前白名单域名→proxy 会强制出境),让 geosite-cn(allow-direct)接管→直连。控制台还需放行 `aliyun.com`/`aliyuncs.com`/`alicdn.com` 一组(或靠 geosite-cn)。
-- **升级网关**:用户网关跑的是今天之前的旧二进制,`git pull && make build` 重启,才能拿到「规则集经代理下载」等修复(否则 geosite-cn 拉不下来=空规则集)。
+- **救 aliyun(分层后的正确姿势)**:白名单只管「允不允许」不再强制出境。要让 aliyun 走直连:① 在白名单放行 `aliyun.com`/`aliyuncs.com`/`alicdn.com`(或启用 geosite-cn allow-direct 批量放行),② 若挂了境外出口且想让它直连,把这些域名(或 IP)加进 **ACLs → 免代理(No-Proxy)** tab(私网/LAN 已自动直连,无需手动加)。不再需要「从白名单删掉」的旧绕法。
+- **升级网关**:用户网关跑的是旧二进制,`git pull && make build` 重启才能拿到分层引擎 + no-proxy + 「规则集经代理下载」等修复。
 
 ## 许可证/安全红线(持续)
 - 全项目 GPLv3,可公开分发;分发物随附源码+保留声明。

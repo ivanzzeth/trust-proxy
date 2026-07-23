@@ -22,6 +22,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/api"
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
+	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/endpoints"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
@@ -147,6 +148,11 @@ func runServe() error {
 		return err
 	}
 
+	dlStore, err := directlist.NewStore(serveDataDir + "/directlist.json")
+	if err != nil {
+		return err
+	}
+
 	engine := detect.New(2000)
 	engine.SetAutoBlock(serveAutoBlock)
 
@@ -218,6 +224,7 @@ func runServe() error {
 	mgr := gateway.NewManager(serveConfig, serveDataDir, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
 	mgr.SetInitialBlacklist(blStore.Get())
+	mgr.SetInitialDirectList(dlStore.Get())
 	mgr.SetInitialRuleSets(rsStore.Get())
 	mgr.SetInitialDNS(dnsStore.Get())
 	mgr.SetInitialInbound(inbStore.Get())
@@ -241,6 +248,8 @@ func runServe() error {
 		WLApplier:   mgr,
 		Blacklist:   blStore,
 		BLApplier:   mgr,
+		Directlist:  dlStore,
+		DLApplier:   mgr,
 		Detect:      engine,
 		Mode:        mgr,
 		RuleSets:    rsStore,

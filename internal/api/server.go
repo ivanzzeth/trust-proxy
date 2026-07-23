@@ -17,6 +17,7 @@ import (
 
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
+	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/endpoints"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
@@ -45,6 +46,11 @@ type WhitelistApplier interface {
 // BlacklistApplier hot-reloads the egress blacklist (gateway.Manager).
 type BlacklistApplier interface {
 	SetBlacklist(blacklist.Rules) error
+}
+
+// DirectListApplier hot-reloads the no-proxy (bypass) list (gateway.Manager).
+type DirectListApplier interface {
+	SetDirectList(directlist.Rules) error
 }
 
 // ModeController switches the gateway capture mode (gateway.Manager).
@@ -95,6 +101,8 @@ type Options struct {
 	WLApplier   WhitelistApplier
 	Blacklist   *blacklist.Store
 	BLApplier   BlacklistApplier
+	Directlist  *directlist.Store
+	DLApplier   DirectListApplier
 	Detect      *detect.Engine
 	Mode        ModeController
 	RuleSets    *ruleset.Store
@@ -110,8 +118,8 @@ type Options struct {
 	Endpoints   *endpoints.Store
 	EPApplier   EndpointsApplier
 	History     *history.Store
-	Nodes       *nodes.Store // brain: registry of remote gateways (reverse-proxied)
-	Token       string       // if set, /api/* requires this bearer token (probe mode)
+	Nodes       *nodes.Store  // brain: registry of remote gateways (reverse-proxied)
+	Token       string        // if set, /api/* requires this bearer token (probe mode)
 	Clash       *clash.Client // low-level Clash primitives, proxied to the browser
 	ConsoleDir  string        // on-disk dashboard dir (dev); used when ConsoleFS is nil
 	ConsoleFS   fs.FS         // embedded dashboard build (release); wins over ConsoleDir
@@ -126,6 +134,8 @@ type Server struct {
 	wlApplier   WhitelistApplier
 	bl          *blacklist.Store
 	blApplier   BlacklistApplier
+	dl          *directlist.Store
+	dlApplier   DirectListApplier
 	detect      *detect.Engine
 	mode        ModeController
 	rs          *ruleset.Store
@@ -150,7 +160,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -180,6 +190,9 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("GET /api/blacklist", s.handleGetBlacklist)
 	mux.HandleFunc("POST /api/blacklist", s.handleAddBlacklist)
 	mux.HandleFunc("DELETE /api/blacklist", s.handleDelBlacklist)
+	mux.HandleFunc("GET /api/directlist", s.handleGetDirectlist)
+	mux.HandleFunc("POST /api/directlist", s.handleAddDirectlist)
+	mux.HandleFunc("DELETE /api/directlist", s.handleDelDirectlist)
 	mux.HandleFunc("GET /api/rulesets", s.handleListRuleSets)
 	mux.HandleFunc("GET /api/rulesets/catalog", s.handleRuleSetCatalog)
 	mux.HandleFunc("GET /api/rulesets/{tag}/rules", s.handleRuleSetRules)
@@ -632,6 +645,75 @@ func (s *Server) mutateBlacklist(w http.ResponseWriter, r *http.Request, add boo
 		if err := s.blApplier.SetBlacklist(rules); err != nil {
 			_, _ = s.bl.Set(prev) // un-poison the store so it matches the running plane
 			writeErr(w, http.StatusBadGateway, "apply blacklist: "+err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, rules)
+}
+
+// ---- directlist (no-proxy / bypass, routing layer) ------------------------
+
+type directlistReq struct {
+	Type  string `json:"type"` // "domain" | "ip"
+	Value string `json:"value"`
+}
+
+func (s *Server) handleGetDirectlist(w http.ResponseWriter, r *http.Request) {
+	if s.dl == nil {
+		writeErr(w, http.StatusServiceUnavailable, "directlist not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.dl.Get())
+}
+
+func (s *Server) handleAddDirectlist(w http.ResponseWriter, r *http.Request) {
+	s.mutateDirectlist(w, r, true)
+}
+
+func (s *Server) handleDelDirectlist(w http.ResponseWriter, r *http.Request) {
+	s.mutateDirectlist(w, r, false)
+}
+
+func (s *Server) mutateDirectlist(w http.ResponseWriter, r *http.Request, add bool) {
+	if s.dl == nil {
+		writeErr(w, http.StatusServiceUnavailable, "directlist not available")
+		return
+	}
+	var req directlistReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Value == "" {
+		writeErr(w, http.StatusBadRequest, "type and value are required")
+		return
+	}
+	prev := s.dl.Get() // for rollback if the apply fails
+	var (
+		rules directlist.Rules
+		err   error
+	)
+	switch req.Type {
+	case "domain":
+		if add {
+			rules, err = s.dl.AddDomain(req.Value)
+		} else {
+			rules, err = s.dl.RemoveDomain(req.Value)
+		}
+	case "ip":
+		if add {
+			rules, err = s.dl.AddIP(req.Value)
+		} else {
+			rules, err = s.dl.RemoveIP(req.Value)
+		}
+	default:
+		writeErr(w, http.StatusBadRequest, "type must be domain or ip")
+		return
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error()) // validation error (bad IP)
+		return
+	}
+	if s.dlApplier != nil {
+		if err := s.dlApplier.SetDirectList(rules); err != nil {
+			_, _ = s.dl.Set(prev) // un-poison the store so it matches the running plane
+			writeErr(w, http.StatusBadGateway, "apply directlist: "+err.Error())
 			return
 		}
 	}
