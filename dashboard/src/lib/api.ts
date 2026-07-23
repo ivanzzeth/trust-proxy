@@ -383,7 +383,11 @@ export const api = {
       `/rulesets/${encodeURIComponent(tag)}/rules?q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`,
     ),
   effectiveRules: () => get<RuleView[]>('/effective-rules'),
-  proxyGroups: () => get<ProxyGroupsConfig>('/proxygroups'),
+  proxyGroups: () =>
+    get<ProxyGroupsConfig>('/proxygroups').then((c) => ({
+      auto_country: !!c.auto_country,
+      groups: c.groups ?? [],
+    })),
   setProxyGroups: (cfg: ProxyGroupsConfig) => put<ProxyGroupsConfig>('/proxygroups', cfg),
 
   proxies: () => get<{ proxies: Record<string, ProxyNode> }>('/proxies'),

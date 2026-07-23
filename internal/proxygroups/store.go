@@ -147,7 +147,7 @@ func (s *Store) Get() Config {
 }
 
 func snapshot(c Config) Config {
-	return Config{AutoCountry: c.AutoCountry, Groups: append([]Group(nil), c.Groups...)}
+	return Config{AutoCountry: c.AutoCountry, Groups: append(make([]Group, 0, len(c.Groups)), c.Groups...)}
 }
 
 // Set validates and replaces the whole config, then persists. Rejects duplicate
