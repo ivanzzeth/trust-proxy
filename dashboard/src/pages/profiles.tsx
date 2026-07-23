@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Check, Layers, Play, Plus, Trash2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
@@ -11,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
 export default function Profiles() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data: profiles = [] } = useQuery({ queryKey: ['profiles'], queryFn: api.profiles });
   const invalidate = () => {
@@ -19,7 +21,7 @@ export default function Profiles() {
   };
   const err = (e: unknown) => toast.error(String((e as Error).message));
   const add = useMutation({ mutationFn: api.addProfile, onSuccess: invalidate, onError: err });
-  const activate = useMutation({ mutationFn: api.activateProfile, onSuccess: () => { toast.success('Profile activated'); invalidate(); }, onError: err });
+  const activate = useMutation({ mutationFn: api.activateProfile, onSuccess: () => { toast.success(t('pages.profiles.profileActivated')); invalidate(); }, onError: err });
   const del = useMutation({ mutationFn: api.delProfile, onSuccess: invalidate, onError: err });
 
   const [name, setName] = useState('');
@@ -27,13 +29,13 @@ export default function Profiles() {
   return (
     <div>
       <PageHeader
-        title="Profiles"
-        description="Bundle nodes + whitelist + rule sets + capture mode. Activate one to switch your whole policy in a single reload."
+        title={t('pages.profiles.title')}
+        description={t('pages.profiles.description')}
         actions={
           <div className="flex gap-2">
-            <Input className="w-48" placeholder="new profile name" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && name.trim() && (add.mutate(name.trim()), setName(''))} />
+            <Input className="w-48" placeholder={t('pages.profiles.namePlaceholder')} value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && name.trim() && (add.mutate(name.trim()), setName(''))} />
             <Button disabled={!name.trim() || add.isPending} onClick={() => { add.mutate(name.trim()); setName(''); }}>
-              <Plus className="size-4" /> Save current
+              <Plus className="size-4" /> {t('pages.profiles.saveCurrent')}
             </Button>
           </div>
         }
@@ -43,7 +45,7 @@ export default function Profiles() {
         <Card>
           <CardContent className="flex flex-col items-center gap-2 py-16 text-center">
             <Layers className="size-8 text-muted-foreground/50" />
-            <p className="text-sm text-muted-foreground">No profiles yet. Configure your policy, then “Save current”.</p>
+            <p className="text-sm text-muted-foreground">{t('pages.profiles.empty')}</p>
           </CardContent>
         </Card>
       ) : (
@@ -56,16 +58,16 @@ export default function Profiles() {
                     <Layers className="size-4 text-primary" />
                     {p.name}
                   </div>
-                  {p.active && <Badge variant="success"><Check className="size-3" /> active</Badge>}
+                  {p.active && <Badge variant="success"><Check className="size-3" /> {t('pages.profiles.active')}</Badge>}
                 </div>
                 <dl className="space-y-1.5 text-sm">
-                  <Stat k="Whitelist" v={`${p.whitelist?.domains?.length ?? 0} domains · ${p.whitelist?.ips?.length ?? 0} IPs`} />
-                  <Stat k="Rule sets" v={`${p.ruleset_tags?.length ?? 0}`} />
-                  <Stat k="Mode" v={p.mode || '—'} />
+                  <Stat k={t('pages.profiles.statWhitelist')} v={t('pages.profiles.whitelistStat', { domains: p.whitelist?.domains?.length ?? 0, ips: p.whitelist?.ips?.length ?? 0 })} />
+                  <Stat k={t('pages.profiles.statRuleSets')} v={`${p.ruleset_tags?.length ?? 0}`} />
+                  <Stat k={t('pages.profiles.statMode')} v={p.mode || '—'} />
                 </dl>
                 <div className="mt-4 flex gap-2">
                   <Button size="sm" className="flex-1" disabled={p.active || activate.isPending} onClick={() => activate.mutate(p.id)}>
-                    <Play className="size-3.5" /> Activate
+                    <Play className="size-3.5" /> {t('pages.profiles.activate')}
                   </Button>
                   <Button size="icon" variant="ghost" className="text-destructive" onClick={() => del.mutate(p.id)}>
                     <Trash2 className="size-4" />

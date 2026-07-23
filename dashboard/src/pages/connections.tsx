@@ -2,6 +2,7 @@ import { type ElementType, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Ban, Globe, Cpu, MonitorSmartphone, Network, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { api, isIP, splitHost, toCIDR, WLType } from '@/lib/api';
 import { cn, fmtBytes } from '@/lib/utils';
@@ -31,6 +32,7 @@ interface Row {
 }
 
 export default function Connections() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const [tab, setTab] = useState<'all' | 'live' | 'closed'>('all');
   const [alertsOnly, setAlertsOnly] = useState(false);
@@ -41,7 +43,7 @@ export default function Connections() {
   const addWL = useMutation({
     mutationFn: (v: { type: WLType; value: string }) => api.addWL(v.type, v.value),
     onSuccess: (_d, v) => {
-      toast.success(`Whitelisted ${v.type}: ${v.value}`);
+      toast.success(t('pages.connections.whitelisted', { type: v.type, value: v.value }));
       qc.invalidateQueries({ queryKey: ['whitelist'] });
       qc.invalidateQueries({ queryKey: ['conns'] });
       qc.invalidateQueries({ queryKey: ['events'] });
@@ -95,14 +97,14 @@ export default function Connections() {
   const badge = (r: Row) =>
     r.status === 'live' ? (
       <Badge variant="success">
-        <span className="size-1.5 rounded-full bg-primary animate-pulse" /> live
+        <span className="size-1.5 rounded-full bg-primary animate-pulse" /> {t('pages.connections.statusLive')}
       </Badge>
     ) : r.status === 'denied' ? (
       <Badge variant="danger">
-        <Ban className="size-3" /> blocked
+        <Ban className="size-3" /> {t('pages.connections.statusBlocked')}
       </Badge>
     ) : (
-      <Badge variant="muted">allowed</Badge>
+      <Badge variant="muted">{t('pages.connections.statusAllowed')}</Badge>
     );
 
   const destIP = (r: Row) => splitHost(r.dest);
@@ -110,17 +112,17 @@ export default function Connections() {
   return (
     <div>
       <PageHeader
-        title="Connections"
-        description="Live connections, blocked attempts, and detection history — one place. Add anything to the whitelist in one click."
+        title={t('pages.connections.title')}
+        description={t('pages.connections.description')}
         actions={
           <>
             <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
-              <Switch checked={alertsOnly} onCheckedChange={setAlertsOnly} /> Alerts only
+              <Switch checked={alertsOnly} onCheckedChange={setAlertsOnly} /> {t('pages.connections.alertsOnly')}
               {alertCount > 0 && <Badge variant="danger">{alertCount}</Badge>}
             </label>
             {liveRows.length > 0 && (
               <Button variant="outline" size="sm" disabled={killAll.isPending} onClick={() => killAll.mutate()}>
-                <X className="size-4" /> Close all
+                <X className="size-4" /> {t('pages.connections.closeAll')}
               </Button>
             )}
           </>
@@ -130,13 +132,13 @@ export default function Connections() {
       <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="mb-4">
         <TabsList>
           <TabsTrigger value="all">
-            All <span className="tnum text-muted-foreground">{liveRows.length + closedRows.length}</span>
+            {t('pages.connections.tabAll')} <span className="tnum text-muted-foreground">{liveRows.length + closedRows.length}</span>
           </TabsTrigger>
           <TabsTrigger value="live">
-            Live <span className="tnum text-muted-foreground">{liveRows.length}</span>
+            {t('pages.connections.tabLive')} <span className="tnum text-muted-foreground">{liveRows.length}</span>
           </TabsTrigger>
           <TabsTrigger value="closed">
-            Closed <span className="tnum text-muted-foreground">{closedRows.length}</span>
+            {t('pages.connections.tabClosed')} <span className="tnum text-muted-foreground">{closedRows.length}</span>
           </TabsTrigger>
         </TabsList>
       </Tabs>
@@ -145,21 +147,21 @@ export default function Connections() {
         <Table>
           <TableHeader>
             <TableRow className="hover:bg-transparent">
-              <TableHead className="w-24">Status</TableHead>
-              <TableHead className="w-20">Time</TableHead>
-              <TableHead>Destination</TableHead>
-              <TableHead>Process</TableHead>
+              <TableHead className="w-24">{t('pages.connections.colStatus')}</TableHead>
+              <TableHead className="w-20">{t('pages.connections.colTime')}</TableHead>
+              <TableHead>{t('pages.connections.colDestination')}</TableHead>
+              <TableHead>{t('pages.connections.colProcess')}</TableHead>
               <TableHead className="text-right">↑</TableHead>
               <TableHead className="text-right">↓</TableHead>
-              <TableHead>Detail</TableHead>
-              <TableHead className="text-right">Add to whitelist</TableHead>
+              <TableHead>{t('pages.connections.colDetail')}</TableHead>
+              <TableHead className="text-right">{t('pages.connections.colAddToWhitelist')}</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
                 <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
-                  No connections
+                  {t('pages.connections.empty')}
                 </TableCell>
               </TableRow>
             )}
@@ -188,18 +190,30 @@ export default function Connections() {
                 <TableCell>
                   <div className="flex items-center justify-end gap-1">
                     {r.host && !isIP(r.host) && (
-                      <AddBtn icon={Globe} label="domain" onClick={() => addWL.mutate({ type: 'domain', value: r.host })} />
+                      <AddBtn
+                        icon={Globe}
+                        label={t('pages.connections.addDomain')}
+                        onClick={() => addWL.mutate({ type: 'domain', value: r.host })}
+                      />
                     )}
                     {isIP(destIP(r)) && (
-                      <AddBtn icon={Network} label="IP" onClick={() => addWL.mutate({ type: 'ip', value: toCIDR(destIP(r)) })} />
+                      <AddBtn
+                        icon={Network}
+                        label={t('pages.connections.addIP')}
+                        onClick={() => addWL.mutate({ type: 'ip', value: toCIDR(destIP(r)) })}
+                      />
                     )}
                     {r.process && (
-                      <AddBtn icon={Cpu} label="proc" onClick={() => addWL.mutate({ type: 'process', value: r.process })} />
+                      <AddBtn
+                        icon={Cpu}
+                        label={t('pages.connections.addProcess')}
+                        onClick={() => addWL.mutate({ type: 'process', value: r.process })}
+                      />
                     )}
                     {isIP(r.source) && (
                       <AddBtn
                         icon={MonitorSmartphone}
-                        label="dev"
+                        label={t('pages.connections.addDevice')}
                         onClick={() => addWL.mutate({ type: 'device', value: toCIDR(r.source) })}
                       />
                     )}

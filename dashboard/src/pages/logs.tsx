@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Pause, Play, Trash2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { logsURL } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -15,10 +16,17 @@ interface LogLine {
   payload: string;
 }
 const LEVELS = ['debug', 'info', 'warning', 'error'];
+const LEVEL_LABEL_KEYS: Record<string, string> = {
+  debug: 'levelDebug',
+  info: 'levelInfo',
+  warning: 'levelWarning',
+  error: 'levelError',
+};
 const typeColor = (t: string) =>
   t === 'error' ? 'danger' : t === 'warning' ? 'warning' : t === 'debug' ? 'muted' : 'outline';
 
 export default function Logs() {
+  const { t } = useTranslation();
   const [level, setLevel] = useState('info');
   const [paused, setPaused] = useState(false);
   const [lines, setLines] = useState<LogLine[]>([]);
@@ -44,8 +52,8 @@ export default function Logs() {
   return (
     <div>
       <PageHeader
-        title="Logs"
-        description="Live sing-box log stream (Clash API, proxied as SSE)."
+        title={t('pages.logs.title')}
+        description={t('pages.logs.description')}
         actions={
           <>
             <Select value={level} onValueChange={setLevel}>
@@ -55,16 +63,16 @@ export default function Logs() {
               <SelectContent>
                 {LEVELS.map((l) => (
                   <SelectItem key={l} value={l}>
-                    {l}
+                    {t(`pages.logs.${LEVEL_LABEL_KEYS[l]}`)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <Button variant="outline" size="sm" onClick={() => setPaused((p) => !p)}>
-              {paused ? <Play className="size-4" /> : <Pause className="size-4" />} {paused ? 'Resume' : 'Pause'}
+              {paused ? <Play className="size-4" /> : <Pause className="size-4" />} {paused ? t('pages.logs.resume') : t('pages.logs.pause')}
             </Button>
             <Button variant="ghost" size="sm" onClick={() => setLines([])}>
-              <Trash2 className="size-4" /> Clear
+              <Trash2 className="size-4" /> {t('pages.logs.clear')}
             </Button>
           </>
         }
@@ -73,7 +81,7 @@ export default function Logs() {
         <div className="max-h-[calc(100dvh-13rem)] overflow-y-auto font-mono text-xs">
           {lines.length === 0 ? (
             <div className="py-16 text-center text-sm text-muted-foreground">
-              {paused ? 'Paused.' : 'Waiting for logs…'}
+              {paused ? t('pages.logs.paused') : t('pages.logs.waitingForLogs')}
             </div>
           ) : (
             lines.map((l) => (

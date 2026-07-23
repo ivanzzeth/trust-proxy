@@ -1,0 +1,28 @@
+export default {
+  en: {
+    title: 'Logs',
+    description: 'Live sing-box log stream (Clash API, proxied as SSE).',
+    levelDebug: 'debug',
+    levelInfo: 'info',
+    levelWarning: 'warning',
+    levelError: 'error',
+    resume: 'Resume',
+    pause: 'Pause',
+    clear: 'Clear',
+    paused: 'Paused.',
+    waitingForLogs: 'Waiting for logs…',
+  },
+  zh: {
+    title: '日志',
+    description: '实时 sing-box 日志流（Clash API，经 SSE 转发）。',
+    levelDebug: '调试',
+    levelInfo: '信息',
+    levelWarning: '警告',
+    levelError: '错误',
+    resume: '继续',
+    pause: '暂停',
+    clear: '清空',
+    paused: '已暂停。',
+    waitingForLogs: '等待日志…',
+  },
+};

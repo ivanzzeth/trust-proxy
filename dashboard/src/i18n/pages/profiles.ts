@@ -1,0 +1,31 @@
+export default {
+  en: {
+    title: 'Profiles',
+    description:
+      'Bundle nodes + whitelist + rule sets + capture mode. Activate one to switch your whole policy in a single reload.',
+    namePlaceholder: 'new profile name',
+    saveCurrent: 'Save current',
+    profileActivated: 'Profile activated',
+    empty: 'No profiles yet. Configure your policy, then "Save current".',
+    active: 'active',
+    statWhitelist: 'Whitelist',
+    statRuleSets: 'Rule sets',
+    statMode: 'Mode',
+    whitelistStat: '{{domains}} domains · {{ips}} IPs',
+    activate: 'Activate',
+  },
+  zh: {
+    title: '配置档',
+    description: '打包节点 + 白名单 + 规则集 + 抓包模式。激活其中一个，一次重载即可切换整套策略。',
+    namePlaceholder: '新配置档名称',
+    saveCurrent: '保存当前配置',
+    profileActivated: '配置档已激活',
+    empty: '暂无配置档。先配置好策略，再点击“保存当前配置”。',
+    active: '已激活',
+    statWhitelist: '白名单',
+    statRuleSets: '规则集',
+    statMode: '模式',
+    whitelistStat: '{{domains}} 个域名 · {{ips}} 个 IP',
+    activate: '激活',
+  },
+};

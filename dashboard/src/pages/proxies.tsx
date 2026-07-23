@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Check, Gauge, Loader2, Zap } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { api, ProxyNode } from '@/lib/api';
 import { cn } from '@/lib/utils';
@@ -17,13 +18,14 @@ function delayColor(ms?: number) {
   if (ms < 800) return 'text-warning';
   return 'text-destructive';
 }
-function delayText(ms?: number) {
+function delayText(ms: number | undefined, timeoutLabel: string) {
   if (ms === undefined) return '—';
-  if (ms <= 0) return 'timeout';
+  if (ms <= 0) return timeoutLabel;
   return `${ms} ms`;
 }
 
 export default function Proxies() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['proxies'], queryFn: api.proxies, refetchInterval: 5000 });
   const [delays, setDelays] = useState<Record<string, number>>({});
@@ -63,13 +65,13 @@ export default function Proxies() {
   return (
     <div>
       <PageHeader
-        title="Proxies"
-        description="Outbound groups and their nodes (via the Clash API). The gateway's whitelisted traffic exits through the “proxy” group."
+        title={t('pages.proxies.title')}
+        description={t('pages.proxies.description')}
       />
       {groups.length === 0 && (
         <Card>
           <CardContent className="py-16 text-center text-sm text-muted-foreground">
-            No proxy groups. Apply a subscription under Nodes first.
+            {t('pages.proxies.emptyGroups')}
           </CardContent>
         </Card>
       )}
@@ -83,10 +85,10 @@ export default function Proxies() {
                 <CardTitle className="flex items-center gap-2 text-sm">
                   {name}
                   <Badge variant="outline">{g.type}</Badge>
-                  {g.now && <span className="text-xs font-normal text-muted-foreground">now: <span className="text-primary">{g.now}</span></span>}
+                  {g.now && <span className="text-xs font-normal text-muted-foreground">{t('pages.proxies.nowLabel')} <span className="text-primary">{g.now}</span></span>}
                 </CardTitle>
                 <Button size="xs" variant="outline" disabled={!!testing} onClick={() => testGroup(members)}>
-                  {testing === members.join() ? <Loader2 className="size-3.5 animate-spin" /> : <Zap className="size-3.5" />} Test
+                  {testing === members.join() ? <Loader2 className="size-3.5 animate-spin" /> : <Zap className="size-3.5" />} {t('pages.proxies.test')}
                 </Button>
               </CardHeader>
               <CardContent className="pt-0">
@@ -109,7 +111,7 @@ export default function Proxies() {
                           {active && <Check className="size-3.5 shrink-0 text-primary" />}
                           <span className="truncate">{m}</span>
                         </span>
-                        <span className={cn('tnum shrink-0 text-xs', delayColor(d))}>{delayText(d)}</span>
+                        <span className={cn('tnum shrink-0 text-xs', delayColor(d))}>{delayText(d, t('pages.proxies.delayTimeout'))}</span>
                       </button>
                     );
                   })}
@@ -120,7 +122,7 @@ export default function Proxies() {
         })}
       </div>
       <p className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Gauge className="size-3.5" /> URLTest groups auto-select the lowest-latency node; Selector groups let you pin one.
+        <Gauge className="size-3.5" /> {t('pages.proxies.footerHint')}
       </p>
     </div>
   );
