@@ -182,6 +182,7 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("DELETE /api/blacklist", s.handleDelBlacklist)
 	mux.HandleFunc("GET /api/rulesets", s.handleListRuleSets)
 	mux.HandleFunc("GET /api/rulesets/catalog", s.handleRuleSetCatalog)
+	mux.HandleFunc("GET /api/rulesets/{tag}/rules", s.handleRuleSetRules)
 	mux.HandleFunc("POST /api/rulesets", s.handleAddRuleSet)
 	mux.HandleFunc("PATCH /api/rulesets/{tag}", s.handlePatchRuleSet)
 	mux.HandleFunc("DELETE /api/rulesets/{tag}", s.handleDeleteRuleSet)
