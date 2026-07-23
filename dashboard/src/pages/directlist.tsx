@@ -1,7 +1,7 @@
 import { type ElementType, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Globe, Network, Plus, X } from 'lucide-react';
+import { Globe, Lock, Network, Plus, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api, DLType } from '@/lib/api';
@@ -36,6 +36,23 @@ export default function DirectList({ embedded }: { embedded?: boolean }) {
   return (
     <div>
       {!embedded && <PageHeader title={t('nav.acls')} description={t('pages.directlist.desc')} />}
+
+      <Card className="mb-4">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-sm">
+            <Lock className="size-4 text-muted-foreground" />
+            {t('pages.directlist.builtinTitle')}
+            <Badge variant="muted" className="ml-auto tnum">{dl?.builtin?.length ?? 0}</Badge>
+          </CardTitle>
+          <p className="text-xs leading-relaxed text-muted-foreground">{t('pages.directlist.builtinHint')}</p>
+        </CardHeader>
+        <CardContent className="flex flex-wrap gap-1.5">
+          {(dl?.builtin ?? []).map((c) => (
+            <Badge key={c} variant="outline" className="tnum font-mono text-[10px]">{c}</Badge>
+          ))}
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 md:grid-cols-2">
         <DLCard
           icon={Globe}

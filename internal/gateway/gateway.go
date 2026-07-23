@@ -776,6 +776,11 @@ var privateCIDRs = []string{
 	"::1/128", "fc00::/7", "fe80::/10",
 }
 
+// PrivateCIDRs returns the built-in LAN/private/reserved ranges that always
+// egress direct (and always join the ACL allow-set when a gate is present).
+// The API surfaces these as read-only defaults in the No-Proxy view.
+func PrivateCIDRs() []string { return append([]string(nil), privateCIDRs...) }
+
 // injectDNS builds the sing-box dns block from our config. Empty servers => no
 // dns block (keep sing-box defaults / TUN's injected resolver). Server types map
 // straight to sing-box 1.12+ typed DNS servers; local needs no address.

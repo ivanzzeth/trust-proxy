@@ -98,7 +98,9 @@
       "domainsPh": "corp.local  /  *.corp.local",
       "ip": "IP / CIDR",
       "ipHint": "这些目标 IP/CIDR 走直连（绝不经代理）。",
-      "ipPh": "203.0.113.0/24"
+      "ipPh": "203.0.113.0/24",
+      "builtinTitle": "内置（LAN / 私网）",
+      "builtinHint": "常见私网、环回、链路本地、CGNAT 网段始终直连、永不走代理——无需手动添加。你自己的域名/IP 在下方添加。"
     }
   }
 }

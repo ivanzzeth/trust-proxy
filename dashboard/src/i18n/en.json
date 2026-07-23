@@ -98,7 +98,9 @@
       "domainsPh": "corp.local  /  *.corp.local",
       "ip": "IP / CIDR",
       "ipHint": "These destination IPs/CIDRs egress direct (never through the proxy).",
-      "ipPh": "203.0.113.0/24"
+      "ipPh": "203.0.113.0/24",
+      "builtinTitle": "Built-in (LAN / private)",
+      "builtinHint": "Common private, loopback, link-local and CGNAT ranges are always routed direct and never proxied — no need to add them. Add your own domains/IPs below."
     }
   }
 }

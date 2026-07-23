@@ -705,7 +705,14 @@ func (s *Server) handleGetDirectlist(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "directlist not available")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.dl.Get())
+	rules := s.dl.Get()
+	// builtin = the gateway's always-on LAN/private ranges, shown read-only so
+	// the user sees that LAN never proxies without a footgun to delete them.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"domains": rules.Domains,
+		"ips":     rules.IPs,
+		"builtin": gateway.PrivateCIDRs(),
+	})
 }
 
 func (s *Server) handleAddDirectlist(w http.ResponseWriter, r *http.Request) {

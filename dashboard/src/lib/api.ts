@@ -74,6 +74,7 @@ export type BLType = 'domain' | 'keyword' | 'regex' | 'ip';
 export interface Directlist {
   domains: string[];
   ips: string[];
+  builtin: string[];
 }
 export type DLType = 'domain' | 'ip';
 export type CRMatch = 'domain' | 'domain_suffix' | 'keyword' | 'regex' | 'ip_cidr';
@@ -333,6 +334,7 @@ export const api = {
     get<Directlist>('/directlist').then((d) => ({
       domains: d.domains ?? [],
       ips: d.ips ?? [],
+      builtin: d.builtin ?? [],
     })),
   addDL: (type: DLType, value: string) => post<Directlist>('/directlist', { type, value }),
   delDL: (type: DLType, value: string) => del<Directlist>('/directlist', { type, value }),
