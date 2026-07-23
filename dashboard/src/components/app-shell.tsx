@@ -6,7 +6,6 @@ import {
   AlertTriangle,
   ArrowDownUp,
   Cable,
-  Ban,
   Globe,
   History as HistoryIcon,
   Layers,
@@ -34,22 +33,43 @@ import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
-const NAV = [
-  { to: '/', label: 'nav.overview', icon: Activity, end: true },
-  { to: '/connections', label: 'nav.connections', icon: Waypoints },
-  { to: '/subscriptions', label: 'nav.nodes', icon: Wifi },
-  { to: '/endpoints', label: 'nav.endpoints', icon: Cable },
-  { to: '/profiles', label: 'nav.profiles', icon: Layers },
-  { to: '/whitelist', label: 'nav.whitelist', icon: ShieldCheck },
-  { to: '/blacklist', label: 'nav.blacklist', icon: Ban },
-  { to: '/rulesets', label: 'nav.ruleSets', icon: ListChecks },
-  { to: '/proxies', label: 'nav.proxies', icon: Globe },
-  { to: '/rules', label: 'nav.rules', icon: ListTree },
-  { to: '/dns', label: 'nav.dns', icon: Radar },
-  { to: '/history', label: 'nav.history', icon: HistoryIcon },
-  { to: '/logs', label: 'nav.logs', icon: Terminal },
-  { to: '/fleet', label: 'nav.fleet', icon: Server },
-  { to: '/settings', label: 'nav.settings', icon: SettingsIcon },
+// Grouped by the user's mental model: what am I watching / what's my policy /
+// where does traffic exit / system.
+const NAV_SECTIONS = [
+  {
+    key: 'nav.grpMonitor',
+    items: [
+      { to: '/', label: 'nav.overview', icon: Activity, end: true },
+      { to: '/connections', label: 'nav.connections', icon: Waypoints },
+      { to: '/history', label: 'nav.history', icon: HistoryIcon },
+      { to: '/logs', label: 'nav.logs', icon: Terminal },
+    ],
+  },
+  {
+    key: 'nav.grpPolicy',
+    items: [
+      { to: '/acls', label: 'nav.acls', icon: ShieldCheck },
+      { to: '/rules', label: 'nav.rules', icon: ListTree },
+      { to: '/rulesets', label: 'nav.ruleSets', icon: ListChecks },
+      { to: '/profiles', label: 'nav.profiles', icon: Layers },
+    ],
+  },
+  {
+    key: 'nav.grpEgress',
+    items: [
+      { to: '/subscriptions', label: 'nav.nodes', icon: Wifi },
+      { to: '/proxies', label: 'nav.proxies', icon: Globe },
+      { to: '/endpoints', label: 'nav.vpn', icon: Cable },
+    ],
+  },
+  {
+    key: 'nav.grpSystem',
+    items: [
+      { to: '/dns', label: 'nav.dns', icon: Radar },
+      { to: '/fleet', label: 'nav.fleet', icon: Server },
+      { to: '/settings', label: 'nav.settings', icon: SettingsIcon },
+    ],
+  },
 ];
 
 const MODE_LABEL: Record<string, string> = { manual: 'Manual', system: 'System', tun: 'TUN' };
@@ -275,34 +295,41 @@ export function AppShell() {
             <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{t('brand.subtitle')}</span>
           </div>
         </div>
-        <nav className="flex-1 space-y-0.5 px-3 py-3">
-          {NAV.map(({ to, label, icon: Icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                cn(
-                  'group relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
-                  isActive
-                    ? 'bg-accent text-foreground'
-                    : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
-                )
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  <span
-                    className={cn(
-                      'absolute left-0 top-1/2 h-4 -translate-y-1/2 rounded-r-full bg-primary transition-all',
-                      isActive ? 'w-1 opacity-100' : 'w-0 opacity-0',
-                    )}
-                  />
-                  <Icon className="size-4" />
-                  {t(label)}
-                </>
-              )}
-            </NavLink>
+        <nav className="flex-1 space-y-4 overflow-y-auto px-3 py-3">
+          {NAV_SECTIONS.map((section) => (
+            <div key={section.key} className="space-y-0.5">
+              <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
+                {t(section.key)}
+              </div>
+              {section.items.map(({ to, label, icon: Icon, end }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  end={end}
+                  className={({ isActive }) =>
+                    cn(
+                      'group relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
+                      isActive
+                        ? 'bg-accent text-foreground'
+                        : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground',
+                    )
+                  }
+                >
+                  {({ isActive }) => (
+                    <>
+                      <span
+                        className={cn(
+                          'absolute left-0 top-1/2 h-4 -translate-y-1/2 rounded-r-full bg-primary transition-all',
+                          isActive ? 'w-1 opacity-100' : 'w-0 opacity-0',
+                        )}
+                      />
+                      <Icon className="size-4" />
+                      {t(label)}
+                    </>
+                  )}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="border-t p-3">

@@ -1,7 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { createHashRouter, RouterProvider } from 'react-router-dom';
+import { createHashRouter, Navigate, RouterProvider } from 'react-router-dom';
 
 import './index.css';
 import '@/i18n';
@@ -11,8 +11,7 @@ import Overview from '@/pages/overview';
 import Connections from '@/pages/connections';
 import Subscriptions from '@/pages/subscriptions';
 import Profiles from '@/pages/profiles';
-import Whitelist from '@/pages/whitelist';
-import Blacklist from '@/pages/blacklist';
+import ACLs from '@/pages/acls';
 import RuleSets from '@/pages/rulesets';
 import Proxies from '@/pages/proxies';
 import Rules from '@/pages/rules';
@@ -37,8 +36,9 @@ const router = createHashRouter([
       { path: 'subscriptions', element: <Subscriptions /> },
       { path: 'endpoints', element: <Endpoints /> },
       { path: 'profiles', element: <Profiles /> },
-      { path: 'whitelist', element: <Whitelist /> },
-      { path: 'blacklist', element: <Blacklist /> },
+      { path: 'acls', element: <ACLs /> },
+      { path: 'whitelist', element: <Navigate to="/acls" replace /> },
+      { path: 'blacklist', element: <Navigate to="/acls" replace /> },
       { path: 'rulesets', element: <RuleSets /> },
       { path: 'proxies', element: <Proxies /> },
       { path: 'rules', element: <Rules /> },

@@ -15,7 +15,13 @@
     "history": "历史",
     "logs": "日志",
     "fleet": "多节点",
-    "settings": "设置"
+    "settings": "设置",
+    "acls": "访问控制",
+    "vpn": "VPN",
+    "grpMonitor": "监控",
+    "grpPolicy": "策略",
+    "grpEgress": "出口",
+    "grpSystem": "系统"
   },
   "top": {
     "capture": "抓取",
@@ -38,6 +44,11 @@
   },
   "common": { "empty": "空" },
   "pages": {
+    "acls": {
+      "desc": "访问控制：哪些出网被放行（白名单）、哪些被显式拒绝（黑名单）。拒绝始终优先于放行。",
+      "allow": "放行",
+      "deny": "拒绝"
+    },
     "whitelist": {
       "desc": "默认拒绝的出网放行清单。域名与 IP 是目的地；进程与设备是可选的来源闸（留空=关闭）。",
       "domains": "域名",

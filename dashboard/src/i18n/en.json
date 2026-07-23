@@ -15,7 +15,13 @@
     "history": "History",
     "logs": "Logs",
     "fleet": "Fleet",
-    "settings": "Settings"
+    "settings": "Settings",
+    "acls": "ACLs",
+    "vpn": "VPN",
+    "grpMonitor": "Monitor",
+    "grpPolicy": "Policy",
+    "grpEgress": "Egress",
+    "grpSystem": "System"
   },
   "top": {
     "capture": "Capture",
@@ -38,6 +44,11 @@
   },
   "common": { "empty": "empty" },
   "pages": {
+    "acls": {
+      "desc": "Access control: what egress is allowed (whitelist) and what is explicitly denied (blacklist). Deny always wins over allow.",
+      "allow": "Allow",
+      "deny": "Deny"
+    },
     "whitelist": {
       "desc": "Default-deny egress allow-list. Domains & IPs are destinations; Processes & Devices are opt-in source gates (empty = off).",
       "domains": "Domains",

@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
-export default function Blacklist() {
+export default function Blacklist({ embedded }: { embedded?: boolean }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { data: bl } = useQuery({ queryKey: ['blacklist'], queryFn: api.blacklist });
@@ -31,7 +31,7 @@ export default function Blacklist() {
 
   return (
     <div>
-      <PageHeader title={t('nav.blacklist')} description={t('pages.blacklist.desc')} />
+      {!embedded && <PageHeader title={t('nav.blacklist')} description={t('pages.blacklist.desc')} />}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <BLCard
           type="domain"

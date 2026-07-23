@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
-export default function Whitelist() {
+export default function Whitelist({ embedded }: { embedded?: boolean }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { data: wl } = useQuery({ queryKey: ['whitelist'], queryFn: api.whitelist });
@@ -31,7 +31,7 @@ export default function Whitelist() {
 
   return (
     <div>
-      <PageHeader title={t('nav.whitelist')} description={t('pages.whitelist.desc')} />
+      {!embedded && <PageHeader title={t('nav.whitelist')} description={t('pages.whitelist.desc')} />}
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <WLCard
           type="domain"
