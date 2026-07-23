@@ -133,6 +133,19 @@ type PatchCustomRuleRequest struct {
 	Node    *string `json:"node,omitempty"`
 }
 
+// RuleView is one entry in the effective-policy explain view: a human-readable
+// projection of a single generated route rule, labeled by the layer and store
+// that produced it. It mirrors the order the gateway injects rules (first-match,
+// top to bottom) so the UI can show "why is this allowed / blocked".
+type RuleView struct {
+	Layer   string   `json:"layer"`             // L0 | L1 | L2 | L3 | L4 | catch-all
+	Source  string   `json:"source"`            // management | blacklist | rule-set:<tag> | process | device | global | no-proxy | private | custom | acl-gate | default-deny
+	Action  string   `json:"action"`            // reject | route:blocked | route:direct | route:proxy | route:<node>
+	Matcher string   `json:"matcher,omitempty"` // domain_suffix | ip_cidr | rule_set | process_name | source_ip_cidr | clash_mode | network | logical
+	Values  []string `json:"values,omitempty"`  // truncated sample of the matcher's values
+	Note    string   `json:"note,omitempty"`    // e.g. a custom node target that is currently missing
+}
+
 // Profile bundles a named policy set (applied subscription + whitelist snapshot
 // + enabled rule-set tags + optional capture mode) for one-click switching.
 type Profile struct {

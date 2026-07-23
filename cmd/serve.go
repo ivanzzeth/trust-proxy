@@ -259,6 +259,7 @@ func runServe() error {
 		DLApplier:   mgr,
 		CustomRules: crStore,
 		CRApplier:   mgr,
+		RulesView:   mgr,
 		Detect:      engine,
 		Mode:        mgr,
 		RuleSets:    rsStore,

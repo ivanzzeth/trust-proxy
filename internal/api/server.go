@@ -59,6 +59,12 @@ type CustomRulesApplier interface {
 	SetCustomRules(customrules.Rules) error
 }
 
+// RulesViewer projects the effective layered policy for the explain view
+// (gateway.Manager).
+type RulesViewer interface {
+	EffectiveRules() []apitypes.RuleView
+}
+
 // ModeController switches the gateway capture mode (gateway.Manager).
 type ModeController interface {
 	Mode() string
@@ -111,6 +117,7 @@ type Options struct {
 	DLApplier   DirectListApplier
 	CustomRules *customrules.Store
 	CRApplier   CustomRulesApplier
+	RulesView   RulesViewer
 	Detect      *detect.Engine
 	Mode        ModeController
 	RuleSets    *ruleset.Store
@@ -146,6 +153,7 @@ type Server struct {
 	dlApplier   DirectListApplier
 	cr          *customrules.Store
 	crApplier   CustomRulesApplier
+	rulesView   RulesViewer
 	detect      *detect.Engine
 	mode        ModeController
 	rs          *ruleset.Store
@@ -170,7 +178,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -208,6 +216,7 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("PATCH /api/customrules/{id}", s.handlePatchCustomRule)
 	mux.HandleFunc("DELETE /api/customrules/{id}", s.handleDeleteCustomRule)
 	mux.HandleFunc("POST /api/customrules/{id}/move", s.handleMoveCustomRule)
+	mux.HandleFunc("GET /api/effective-rules", s.handleEffectiveRules)
 	mux.HandleFunc("GET /api/rulesets", s.handleListRuleSets)
 	mux.HandleFunc("GET /api/rulesets/catalog", s.handleRuleSetCatalog)
 	mux.HandleFunc("GET /api/rulesets/{tag}/rules", s.handleRuleSetRules)

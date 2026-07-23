@@ -236,6 +236,185 @@ func (m *Manager) PendingRevert() (to string, secondsLeft int, ok bool) {
 
 func (m *Manager) nowUTC() time.Time { return time.Now() }
 
+// truncVals returns at most n values, appending a "(+K more)" marker if the
+// slice was longer — keeps the explain view readable for big rule-sets.
+func truncVals(vals []string, n int) []string {
+	if len(vals) <= n {
+		return append([]string(nil), vals...)
+	}
+	out := append([]string(nil), vals[:n]...)
+	return append(out, fmt.Sprintf("(+%d more)", len(vals)-n))
+}
+
+// EffectiveRules projects the current policy into the ordered, layer-labeled
+// view the "why is this allowed/blocked" UI renders. It mirrors, in the SAME
+// order, the rules buildMergedConfig injects — but derived directly from the
+// stores (the merged config isn't retained). The drift test in gateway_test.go
+// asserts the layer sequence here matches a freshly built merged config.
+func (m *Manager) EffectiveRules() []apitypes.RuleView {
+	m.mu.Lock()
+	wl, bl, dl, cr, sets, mode, mgmt, nodes, eps := m.wl, m.bl, m.dl, m.cr, m.rulesets, m.mode, m.mgmtPorts, m.nodes, m.endpoints
+	m.mu.Unlock()
+
+	var epTags []string
+	for _, e := range eps {
+		if e.Enabled && e.Tag != "" {
+			epTags = append(epTags, e.Tag)
+		}
+	}
+	members := map[string]bool{}
+	for _, t := range memberTags(nodes, epTags) {
+		members[t] = true
+	}
+
+	var out []apitypes.RuleView
+	add := func(v apitypes.RuleView) { out = append(out, v) }
+
+	// prelude: sniff (+ TUN hijack-dns).
+	add(apitypes.RuleView{Layer: "prelude", Source: "sniff", Action: "sniff", Note: "detect SNI/domain"})
+	if mode == ModeTUN {
+		add(apitypes.RuleView{Layer: "prelude", Source: "hijack-dns", Action: "hijack-dns", Matcher: "protocol"})
+	}
+
+	// L0 management rescue (topmost).
+	if len(mgmt) > 0 {
+		vals := make([]string, len(mgmt))
+		for i, p := range mgmt {
+			vals[i] = strconv.Itoa(p)
+		}
+		add(apitypes.RuleView{Layer: "L0", Source: "management", Action: "route:direct", Matcher: "source_port", Values: vals, Note: "SSH/API rescue"})
+	}
+
+	// L1 security floor.
+	if sfx, rgx := splitDomainMatchers(bl.Domains); len(sfx) > 0 || len(rgx) > 0 {
+		if len(sfx) > 0 {
+			add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "domain_suffix", Values: truncVals(sfx, 20)})
+		}
+		if len(rgx) > 0 {
+			add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "domain_regex", Values: truncVals(rgx, 20)})
+		}
+	}
+	if len(bl.Keywords) > 0 {
+		add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "domain_keyword", Values: truncVals(bl.Keywords, 20)})
+	}
+	if len(bl.Regexes) > 0 {
+		add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "domain_regex", Values: truncVals(bl.Regexes, 20)})
+	}
+	if len(bl.IPs) > 0 {
+		add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "ip_cidr", Values: truncVals(bl.IPs, 20)})
+	}
+	for _, rs := range sets.Sets {
+		if rs.Enabled && rs.Tag != "" && rs.Role == apitypes.RuleRoleBlock {
+			add(apitypes.RuleView{Layer: "L1", Source: "rule-set:" + rs.Tag, Action: "reject", Matcher: "rule_set", Values: []string{rs.Tag}})
+		}
+	}
+	if len(wl.Processes) > 0 {
+		add(apitypes.RuleView{Layer: "L1", Source: "process", Action: "reject", Matcher: "process (inverted)", Values: truncVals(wl.Processes, 20), Note: "unlisted processes can't egress"})
+	}
+	if len(wl.Devices) > 0 {
+		add(apitypes.RuleView{Layer: "L1", Source: "device", Action: "reject", Matcher: "source_ip_cidr (inverted)", Values: truncVals(wl.Devices, 20), Note: "unlisted source devices can't egress"})
+	}
+
+	// L2 Global bypass (always injected; inert in Rule mode).
+	add(apitypes.RuleView{Layer: "L2", Source: "global", Action: "route:proxy", Matcher: "clash_mode", Values: []string{"Global"}, Note: "only when routing mode = Global"})
+
+	// L3/L4 depend on whether anything is allowed.
+	var directSets, proxySets []string
+	allowSetTags := 0
+	for _, rs := range sets.Sets {
+		if !rs.Enabled || rs.Tag == "" {
+			continue
+		}
+		switch rs.Role {
+		case apitypes.RuleRoleAllowDirect:
+			directSets = append(directSets, rs.Tag)
+			allowSetTags++
+		case apitypes.RuleRoleAllowProxy:
+			proxySets = append(proxySets, rs.Tag)
+			allowSetTags++
+		}
+	}
+	wlSfx, wlRgx := splitDomainMatchers(wl.Domains)
+	dlSfx, dlRgx := splitDomainMatchers(dl.Domains)
+	hasCustomAllow := false
+	for _, r := range cr.Rules {
+		if !r.Enabled || r.Action == apitypes.CustomActionBlock {
+			continue
+		}
+		if r.Action == apitypes.CustomActionNode && !members[r.Node] {
+			continue
+		}
+		hasCustomAllow = true
+	}
+	hasUserAllow := len(wlSfx) > 0 || len(wlRgx) > 0 || len(wl.IPs) > 0 ||
+		len(dlSfx) > 0 || len(dlRgx) > 0 || len(dl.IPs) > 0 || allowSetTags > 0 || hasCustomAllow
+
+	if !hasUserAllow {
+		add(apitypes.RuleView{Layer: "catch-all", Source: "default-deny", Action: "route:blocked", Matcher: "network", Note: "nothing allowed → everything blocked (fail-closed)"})
+		return out
+	}
+
+	// L3 ACL gate.
+	var allowBits []string
+	if n := len(wlSfx) + len(wlRgx) + len(wl.IPs); n > 0 {
+		allowBits = append(allowBits, fmt.Sprintf("whitelist(%d)", n))
+	}
+	if n := len(dlSfx) + len(dlRgx) + len(dl.IPs); n > 0 {
+		allowBits = append(allowBits, fmt.Sprintf("no-proxy(%d)", n))
+	}
+	if allowSetTags > 0 {
+		allowBits = append(allowBits, fmt.Sprintf("rule-sets(%d)", allowSetTags))
+	}
+	allowBits = append(allowBits, "private-CIDRs")
+	add(apitypes.RuleView{Layer: "L3", Source: "acl-gate", Action: "route:blocked", Matcher: "logical (inverted)", Values: allowBits, Note: "anything NOT in the allow-set is blocked"})
+
+	// L4 routing egress, in injection order: custom → rule-set direct →
+	// no-proxy domains → no-proxy+private IPs → rule-set proxy.
+	for _, r := range cr.Rules {
+		if !r.Enabled {
+			continue
+		}
+		key, ok := customrules.SingboxMatchKey(r.Match)
+		if !ok || r.Value == "" {
+			continue
+		}
+		v := apitypes.RuleView{Layer: "L4", Source: "custom", Matcher: key, Values: []string{r.Value}}
+		switch r.Action {
+		case apitypes.CustomActionDirect:
+			v.Action = "route:direct"
+		case apitypes.CustomActionProxy:
+			v.Action = "route:proxy"
+		case apitypes.CustomActionBlock:
+			v.Action = "route:blocked"
+		case apitypes.CustomActionNode:
+			v.Action = "route:" + r.Node
+			if !members[r.Node] {
+				v.Note = "node " + r.Node + " missing — rule skipped"
+			}
+		}
+		add(v)
+	}
+	for _, tag := range directSets {
+		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:direct", Matcher: "rule_set", Values: []string{tag}})
+	}
+	if len(dlSfx) > 0 {
+		add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "domain_suffix", Values: truncVals(dlSfx, 20)})
+	}
+	if len(dlRgx) > 0 {
+		add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "domain_regex", Values: truncVals(dlRgx, 20)})
+	}
+	// no-proxy IPs + built-in private CIDRs always share one direct ip_cidr rule.
+	ipVals := append(append([]string(nil), dl.IPs...), privateCIDRs...)
+	add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "ip_cidr", Values: truncVals(ipVals, 20), Note: "includes built-in LAN/private ranges"})
+	for _, tag := range proxySets {
+		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:proxy", Matcher: "rule_set", Values: []string{tag}})
+	}
+
+	// catch-all default egress (gate present → proxy).
+	add(apitypes.RuleView{Layer: "catch-all", Source: "default", Action: "route:proxy", Matcher: "network", Note: "allowed traffic with no explicit egress"})
+	return out
+}
+
 // Start builds and starts the box from the base config + current policy.
 func (m *Manager) Start() error { return m.rebuild() }
 
@@ -1323,6 +1502,40 @@ func injectEndpoints(cfg map[string]json.RawMessage, list []apitypes.Endpoint, d
 	return tags, nil
 }
 
+// memberTags computes the proxy group's member tags for the given nodes +
+// extra (endpoint) tags, applying the same empty->"node" fallback and -2/-3
+// de-duplication that injectOutbounds uses. It is the single source of truth
+// for node tag naming (injectOutbounds zips its result back onto the outbounds)
+// and lets EffectiveRules tell whether a custom `node` rule points at a live
+// outbound. Node order in == tag order out.
+func memberTags(nodes []apitypes.Node, extraTags []string) []string {
+	used := map[string]bool{}
+	uniq := func(t string) string {
+		if t == "" {
+			t = "node"
+		}
+		base := t
+		for i := 2; used[t]; i++ {
+			t = fmt.Sprintf("%s-%d", base, i)
+		}
+		used[t] = true
+		return t
+	}
+	var tags []string
+	for _, n := range nodes {
+		if len(n.Outbound) == 0 {
+			continue
+		}
+		var ob map[string]any
+		if err := json.Unmarshal(n.Outbound, &ob); err != nil {
+			continue
+		}
+		tags = append(tags, uniq(stringOr(ob["tag"], n.Tag)))
+	}
+	tags = append(tags, extraTags...)
+	return tags
+}
+
 // injectOutbounds rewrites outbounds from the subscription nodes + the proxy
 // group, and returns the proxy group's member tags (node + endpoint outbound
 // tags). Those are the only valid targets for a custom rule's `node` action;
@@ -1346,19 +1559,11 @@ func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extr
 		kept = append(kept, raw)
 	}
 
-	used := map[string]bool{}
-	uniq := func(t string) string {
-		if t == "" {
-			t = "node"
-		}
-		base := t
-		for i := 2; used[t]; i++ {
-			t = fmt.Sprintf("%s-%d", base, i)
-		}
-		used[t] = true
-		return t
-	}
+	// memberTags is the single source of truth for node tag naming; zip it back
+	// onto the (identically-skipped) nodes so outbound tags match the member set.
+	nodeTags := memberTags(nodes, nil)
 	var tags []string
+	ti := 0
 	for _, n := range nodes {
 		if len(n.Outbound) == 0 {
 			continue
@@ -1367,7 +1572,8 @@ func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extr
 		if err := json.Unmarshal(n.Outbound, &ob); err != nil {
 			continue
 		}
-		tag := uniq(stringOr(ob["tag"], n.Tag))
+		tag := nodeTags[ti]
+		ti++
 		ob["tag"] = tag
 		raw, err := json.Marshal(ob)
 		if err != nil {

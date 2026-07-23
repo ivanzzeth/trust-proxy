@@ -415,6 +415,137 @@ func TestTUNHijackPrelude(t *testing.T) {
 	}
 }
 
+// --- effective-rules provenance (B) ----------------------------------------
+
+// layerOf classifies a generated route rule into the same layer token that
+// EffectiveRules emits, by shape.
+func layerOf(r map[string]any) string {
+	switch {
+	case r["action"] == "sniff" || r["action"] == "hijack-dns":
+		return "prelude"
+	case r["source_port"] != nil:
+		return "L0"
+	case r["action"] == "reject":
+		return "L1" // blacklist / rule-set-block / process+device invert
+	case r["clash_mode"] != nil:
+		return "L2"
+	case r["type"] == "logical":
+		return "L3"
+	case r["network"] != nil:
+		return "catch-all"
+	default:
+		return "L4" // route to direct/proxy/node with a matcher
+	}
+}
+
+func collapse(tokens []string) []string {
+	var out []string
+	for _, tk := range tokens {
+		if len(out) == 0 || out[len(out)-1] != tk {
+			out = append(out, tk)
+		}
+	}
+	return out
+}
+
+// mgrWith builds a Manager seeded with the given policy so EffectiveRules can be
+// compared against a freshly built merged config from the same inputs.
+func mgrWith(t *testing.T, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, sets ruleset.Sets, mgmt []int) *Manager {
+	t.Helper()
+	m := &Manager{}
+	m.wl, m.bl, m.dl, m.cr, m.rulesets, m.mode, m.mgmtPorts = wl, bl, dl, cr, sets, ModeManual, mgmt
+	return m
+}
+
+// EffectiveRules must mirror, layer-for-layer, what buildMergedConfig actually
+// injects — this guards the two (independently coded) orderings against drift.
+func TestEffectiveRules_MatchesMergedLayers(t *testing.T) {
+	cases := []struct {
+		name string
+		wl   whitelist.Rules
+		bl   blacklist.Rules
+		dl   directlist.Rules
+		cr   customrules.Rules
+		sets ruleset.Sets
+		mgmt []int
+	}{
+		{name: "empty"},
+		{
+			name: "full",
+			wl:   whitelist.Rules{Domains: []string{"ok.com"}, Processes: []string{"curl"}},
+			bl:   blacklist.Rules{Domains: []string{"evil.com"}, IPs: []string{"6.6.6.6/32"}},
+			dl:   directlist.Rules{Domains: []string{"intra.corp"}, IPs: []string{"203.0.113.0/24"}},
+			cr:   customrules.Rules{Rules: []apitypes.CustomRule{{Match: "domain_suffix", Value: "x.com", Action: "proxy", Enabled: true}}},
+			sets: ruleset.Sets{Sets: []apitypes.RuleSet{
+				{Tag: "ads", Type: "remote", Format: "binary", URL: "https://x/ads.srs", Role: apitypes.RuleRoleBlock, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+				{Tag: "cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+				{Tag: "gg", Type: "remote", Format: "binary", URL: "https://x/gg.srs", Role: apitypes.RuleRoleAllowProxy, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+			}},
+			mgmt: []int{22, 9096},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			merged, err := buildMergedConfig([]byte(baseCfg), nil, tc.wl, tc.bl, tc.dl, tc.cr, ModeManual, tc.sets,
+				apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, tc.mgmt, "s", t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			parseValidate(t, merged)
+			var realTokens []string
+			for _, r := range routeRules(t, merged) {
+				realTokens = append(realTokens, layerOf(r))
+			}
+
+			m := mgrWith(t, tc.wl, tc.bl, tc.dl, tc.cr, tc.sets, tc.mgmt)
+			var viewTokens []string
+			for _, v := range m.EffectiveRules() {
+				viewTokens = append(viewTokens, v.Layer)
+			}
+
+			gotR, gotV := collapse(realTokens), collapse(viewTokens)
+			if len(gotR) != len(gotV) {
+				t.Fatalf("layer sequence drift:\n merged=%v\n view  =%v", gotR, gotV)
+			}
+			for i := range gotR {
+				if gotR[i] != gotV[i] {
+					t.Fatalf("layer[%d] drift: merged=%q view=%q\n merged=%v\n view=%v", i, gotR[i], gotV[i], gotR, gotV)
+				}
+			}
+		})
+	}
+}
+
+// A dead custom node target is annotated (and its rule inert) in the view.
+func TestEffectiveRules_NodeNoteAndEmptyDeny(t *testing.T) {
+	// empty policy => only prelude + Global(L2) + catch-all(blocked), no gate.
+	m := mgrWith(t, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, ruleset.Sets{}, nil)
+	views := m.EffectiveRules()
+	last := views[len(views)-1]
+	if last.Layer != "catch-all" || last.Action != "route:blocked" {
+		t.Fatalf("empty policy should end in default-deny, got %+v", last)
+	}
+	for _, v := range views {
+		if v.Layer == "L3" {
+			t.Fatal("empty policy must not have an ACL gate")
+		}
+	}
+
+	// A valid allow (whitelist) opens the gate; a dead-node custom rule is noted.
+	m2 := mgrWith(t, whitelist.Rules{Domains: []string{"ok.com"}}, blacklist.Rules{}, directlist.Rules{},
+		customrules.Rules{Rules: []apitypes.CustomRule{{Match: "domain", Value: "g.com", Action: "node", Node: "GHOST", Enabled: true}}},
+		ruleset.Sets{}, nil)
+	foundNote := false
+	for _, v := range m2.EffectiveRules() {
+		if v.Source == "custom" && v.Note != "" {
+			foundNote = true
+		}
+	}
+	if !foundNote {
+		t.Fatal("dead-node custom rule should carry a 'missing' note")
+	}
+}
+
 // --- custom routing rules (Task C) -----------------------------------------
 
 func node(tag string) apitypes.Node {

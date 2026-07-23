@@ -110,6 +110,16 @@ func (s *Server) handleMoveCustomRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, rules)
 }
 
+// handleEffectiveRules returns the ordered, layer-labeled view of the effective
+// policy (why traffic is allowed/blocked) — the "Routing" tab's data source.
+func (s *Server) handleEffectiveRules(w http.ResponseWriter, r *http.Request) {
+	if s.rulesView == nil {
+		writeErr(w, http.StatusServiceUnavailable, "effective rules not available")
+		return
+	}
+	writeJSON(w, http.StatusOK, s.rulesView.EffectiveRules())
+}
+
 func (s *Server) applyCustomRules(rules customrules.Rules) error {
 	if s.crApplier == nil {
 		return nil
