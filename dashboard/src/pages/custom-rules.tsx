@@ -58,7 +58,7 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
       toast.error(t('pages.customRules.nodeRequired'));
       return;
     }
-    add.mutate({ match, value: v, action, node: action === 'node' ? node : undefined, enabled: true });
+    add.mutate({ match, value: v, action, node: action === 'node' || action === 'proxy' ? node || undefined : undefined, enabled: true });
     setValue('');
   };
 
@@ -103,6 +103,15 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
               <Select value={node} onValueChange={setNode}>
                 <SelectTrigger className="w-40"><SelectValue placeholder={t('pages.customRules.pickNode')} /></SelectTrigger>
                 <SelectContent>{nodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}</SelectContent>
+              </Select>
+            )}
+            {action === 'proxy' && (
+              <Select value={node || '__proxy__'} onValueChange={(v) => setNode(v === '__proxy__' ? '' : v)}>
+                <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__proxy__">{t('pages.customRules.proxySelector')}</SelectItem>
+                  {nodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+                </SelectContent>
               </Select>
             )}
             <Button disabled={!value.trim() || add.isPending} onClick={submit}>
@@ -210,6 +219,16 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
                             <SelectContent>
                               {nodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
                               {stale && r.node && <SelectItem value={r.node}>{r.node}</SelectItem>}
+                            </SelectContent>
+                          </Select>
+                        )}
+                        {r.action === 'proxy' && (
+                          <Select value={r.node || '__proxy__'} onValueChange={(v) => patch.mutate({ id: r.id, patch: { node: v === '__proxy__' ? '' : v } })}>
+                            <SelectTrigger className="w-36"><SelectValue /></SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__proxy__">{t('pages.customRules.proxySelector')}</SelectItem>
+                              {nodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
+                              {r.node && !nodes.includes(r.node) && <SelectItem value={r.node}>{r.node}</SelectItem>}
                             </SelectContent>
                           </Select>
                         )}

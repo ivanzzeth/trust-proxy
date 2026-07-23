@@ -389,7 +389,14 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 		case apitypes.CustomActionDirect:
 			v.Action = "route:direct"
 		case apitypes.CustomActionProxy:
-			v.Action = "route:proxy"
+			if r.Node != "" && members[r.Node] {
+				v.Action = "route:" + r.Node
+			} else {
+				v.Action = "route:proxy"
+				if r.Node != "" {
+					v.Note = "group " + r.Node + " missing — via proxy"
+				}
+			}
 		case apitypes.CustomActionBlock:
 			v.Action = "route:blocked"
 		case apitypes.CustomActionNode:
@@ -1983,7 +1990,12 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 		case apitypes.CustomActionDirect:
 			outbound = "direct"
 		case apitypes.CustomActionProxy:
+			// Optional group target; fall back to the top proxy selector if the
+			// named group is gone (still honors "go through proxy").
 			outbound = ProxyGroupTag
+			if rule.Node != "" && members[rule.Node] {
+				outbound = rule.Node
+			}
 		case apitypes.CustomActionBlock:
 			outbound = "blocked"
 		case apitypes.CustomActionNode:

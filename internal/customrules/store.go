@@ -70,11 +70,14 @@ func validate(r *apitypes.CustomRule) error {
 	if !validAction(r.Action) {
 		return fmt.Errorf("invalid action %q", r.Action)
 	}
+	// Node names a target outbound (a node OR a proxy group). Required for the
+	// node action; optional for proxy (empty = the top `proxy` selector, else a
+	// specific group); meaningless for direct/block.
 	if r.Action == apitypes.CustomActionNode && r.Node == "" {
-		return fmt.Errorf("action %q requires a node tag", r.Action)
+		return fmt.Errorf("action %q requires a target", r.Action)
 	}
-	if r.Action != apitypes.CustomActionNode {
-		r.Node = "" // node tag is meaningless for non-node actions
+	if r.Action != apitypes.CustomActionNode && r.Action != apitypes.CustomActionProxy {
+		r.Node = ""
 	}
 	switch r.Match {
 	case apitypes.CustomMatchIPCIDR:
