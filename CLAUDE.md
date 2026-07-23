@@ -3,8 +3,8 @@
 出入网流量控制 / 检测 / 异常行为识别网关。以 [sing-box](https://github.com/SagerNet/sing-box) 为数据面底座，
 核心目标是识别出入网异常，尤其**木马/后门向外部机器回传机密数据（exfiltration / C2）**。
 
-> 部署形态：**自用、不分发二进制**，因此不触发 sing-box 的 GPLv3 分发义务，自研代码可闭源。
-> 一旦要把二进制交给第三方，须改走进程隔离或商业授权（详见文末「许可证」）。
+> 部署形态：**GPLv3 开源，公开分发二进制/桌面端**。因整体链接 sing-box（GPLv3），分发物须遵守 GPLv3
+> （随附对应源码、保留声明）——项目本就 GPLv3，合规即可。（早期曾设想「自用不分发→可闭源」，现已作废，详见文末「许可证」。）
 
 ---
 
@@ -183,6 +183,9 @@ make run         # 用 configs/config.json 启动
 make webui       # 构建官方 dashboard -> webui/dist（pnpm install→generate→build）
 ```
 
+**数据目录**：`serve` 默认把所有运行时数据放 **`~/.trust-proxy`**（`--data` 可覆盖；`~` 会展开）。含 subscriptions/whitelist/blacklist/events/history + **`cache.db`（clash mode/urltest/rule_set 缓存）** + `ts-<tag>`（Tailscale 状态）+ `clash-secret`。注意 `cache.db`/`ts-*` 的路径由 `gateway.Manager.dataDir` 注入（不再是 cwd 相对的 `data/`）。**旧部署迁移**：`mv ./data/* ~/.trust-proxy/` 或显式 `--data ./data`。
+**后台守护**：`serve --daemon`（`-d`）re-exec 脱离终端（`daemonize`，`TP_DAEMON=1` 标记子进程），`--log`/`--pid` 默认 `<data>/serve.{log,pid}`；停止 `trust-proxy proxy stop --pid <data>/serve.pid`（`proxy stop` 通用杀 pid 文件）。同目录勿并跑两实例（`cache.db` 单写锁）。
+
 验证（不影响本机 Surge：无 TUN、不改系统代理、端口错开）：
 ```bash
 curl -x socks5h://127.0.0.1:17070 https://api.ipify.org          # 代理出网
@@ -232,7 +235,7 @@ curl -x socks5h://127.0.0.1:17070 https://example.com            # 正常 -> 200
 - **后续** DNS 查询级观测（TUN）、多节点聚合视图、**Segments**（按来源网段分层 split/strict 姿势,见 `docs/home-gateway-plan.md`）。
 
 ## 许可证
-- sing-box / 官方 dashboard 均 **GPLv3（+ 命名附加条款）**。
-- **自用不分发二进制**：GPLv3 分发义务不触发（非 AGPL，无联网条款），自研代码可闭源。
-- 保留上游版权与 GPLv3 文本；不得用 sing-box 名号做宣传。
-- 若将来要分发二进制：进程隔离 / 商业授权 / 开源，三选一，并请法务确认。
+- 本项目整体 **GPLv3 开源**（链接/内嵌 GPLv3 的 sing-box + 官方 dashboard，含命名附加条款）。
+- **公开分发二进制/桌面端（Tauri）**：分发物须遵守 GPLv3——随附对应源码、保留上游版权与 GPLv3 文本；不得用 sing-box 名号做宣传。
+- 桌面端打包 sing-box（GPLv3）→ 整个分发物即 GPLv3，这是**已选定的路线**（非闭源）。
+- （历史：早期设想「自用不分发→不触发分发义务、自研可闭源」；已改为 GPLv3 公开分发，该假设**作废**。仅当日后要**闭源**分发，才需进程隔离 / 商业授权。）

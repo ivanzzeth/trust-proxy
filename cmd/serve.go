@@ -51,6 +51,9 @@ var (
 	serveThreatFeeds   string
 	serveThreatRefresh time.Duration
 	serveNoThreatFeed  bool
+	serveDaemon        bool
+	serveLog           string
+	servePid           string
 )
 
 // embeddedUI holds the dashboard build baked into the binary via go:embed
@@ -65,15 +68,54 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Run the gateway: sing-box data plane + detection + backend API",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		dir, err := resolveDataDir(serveDataDir)
+		if err != nil {
+			return err
+		}
+		serveDataDir = dir // normalize (~/.trust-proxy by default) for the rest of serve
+		// Built-in daemon: re-exec detached (survives SSH logout) unless we're
+		// already the daemon child.
+		if serveDaemon && os.Getenv("TP_DAEMON") == "" {
+			logPath, pidPath := serveLog, servePid
+			if logPath == "" {
+				logPath = filepath.Join(dir, "serve.log")
+			}
+			if pidPath == "" {
+				pidPath = filepath.Join(dir, "serve.pid")
+			}
+			return daemonize(logPath, pidPath)
+		}
 		return runServe()
 	},
+}
+
+// resolveDataDir returns the data directory (default ~/.trust-proxy), expanding
+// a leading ~, and ensures it exists.
+func resolveDataDir(dir string) (string, error) {
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(home, ".trust-proxy")
+	} else if strings.HasPrefix(dir, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", err
+		}
+		dir = filepath.Join(home, dir[2:])
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
 }
 
 func init() {
 	f := serveCmd.Flags()
 	f.StringVarP(&serveConfig, "config", "c", "configs/config.json", "sing-box config path")
 	f.StringVar(&serveAPIAddr, "api-addr", "127.0.0.1:9096", "trust-proxy backend API listen address")
-	f.StringVar(&serveDataDir, "data", "data", "data directory (subscriptions, etc.)")
+	f.StringVar(&serveDataDir, "data", "", "data directory (subscriptions, cache, etc.); default ~/.trust-proxy")
 	f.StringVar(&serveConsoleDir, "console", "dashboard/dist", "dashboard static dir (shadcn build output)")
 	f.StringVar(&serveClashAddr, "clash-addr", "127.0.0.1:9090", "Clash API address (proxied to the console)")
 	f.StringVar(&serveClashSecret, "clash-secret", "", "Clash API secret (empty = load/generate a random one in the data dir)")
@@ -84,6 +126,9 @@ func init() {
 	f.StringVar(&serveThreatFeeds, "threat-feeds", "", "comma-separated threat-intel feed URLs (empty = built-in abuse.ch defaults)")
 	f.DurationVar(&serveThreatRefresh, "threat-refresh", 12*time.Hour, "threat-intel feed refresh interval")
 	f.BoolVar(&serveNoThreatFeed, "no-threat-feed", false, "disable automatic threat-intel feed loading")
+	f.BoolVarP(&serveDaemon, "daemon", "d", false, "run in background (detached; survives SSH logout)")
+	f.StringVar(&serveLog, "log", "", "daemon log file (default <data>/serve.log)")
+	f.StringVar(&servePid, "pid", "", "daemon pid file (default <data>/serve.pid)")
 }
 
 func runServe() error {
@@ -170,7 +215,7 @@ func runServe() error {
 		return err
 	}
 
-	mgr := gateway.NewManager(serveConfig, wlStore.Get(), engine, secret)
+	mgr := gateway.NewManager(serveConfig, serveDataDir, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
 	mgr.SetInitialBlacklist(blStore.Get())
 	mgr.SetInitialRuleSets(rsStore.Get())

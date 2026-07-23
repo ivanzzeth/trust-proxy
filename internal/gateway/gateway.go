@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ func validMode(m string) bool {
 // Manager owns the running box and rebuilds it in place when policy changes.
 type Manager struct {
 	configPath  string
+	dataDir     string // where cache.db / tailscale state live (default ~/.trust-proxy)
 	logger      log.Logger
 	engine      *detect.Engine
 	clashSecret string
@@ -116,8 +118,8 @@ func (m *Manager) SetEndpoints(eps []apitypes.Endpoint) error {
 
 // NewManager returns a manager seeded with the initial whitelist, the detection
 // engine, and the Clash API secret to inject into the config.
-func NewManager(configPath string, wl whitelist.Rules, engine *detect.Engine, clashSecret string) *Manager {
-	return &Manager{configPath: configPath, logger: log.StdLogger(), wl: wl, engine: engine, clashSecret: clashSecret, mode: ModeManual}
+func NewManager(configPath, dataDir string, wl whitelist.Rules, engine *detect.Engine, clashSecret string) *Manager {
+	return &Manager{configPath: configPath, dataDir: dataDir, logger: log.StdLogger(), wl: wl, engine: engine, clashSecret: clashSecret, mode: ModeManual}
 }
 
 // SetInitialMode sets the mode used by the first Start() (before the box runs).
@@ -415,7 +417,7 @@ func (m *Manager) rebuild() error {
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, bl, mode, sets, dns, inbound, tun, eps, mgmt, m.clashSecret)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, mode, sets, dns, inbound, tun, eps, mgmt, m.clashSecret, m.dataDir)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -462,13 +464,13 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // buildMergedConfig injects (a) subscription node outbounds + the `proxy` group
 // and (b) whitelist allow rules into the route, at the JSON level so sing-box's
 // own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, clashSecret string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, clashSecret, dataDir string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
 	}
 	// WireGuard/Tailscale exits go in endpoints[]; their tags join the proxy group.
-	epTags, err := injectEndpoints(cfg, endpoints)
+	epTags, err := injectEndpoints(cfg, endpoints, dataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -476,7 +478,7 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 		return nil, err
 	}
 	// Before applyMode: a configured dns block wins over TUN's default resolver.
-	if err := injectDNS(cfg, dns); err != nil {
+	if err := injectDNS(cfg, dns, dataDir); err != nil {
 		return nil, err
 	}
 	if err := applyMode(cfg, mode, inbound, tun); err != nil {
@@ -492,12 +494,12 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	}
 	// Must run AFTER injectWhitelist: it anchors on the network-matcher catch-all
 	// reject, which is the only reject present at whitelist time.
-	if err := injectRuleSets(cfg, sets); err != nil {
+	if err := injectRuleSets(cfg, sets, dataDir); err != nil {
 		return nil, err
 	}
 	// Rule<->Global routing toggle. Runs after the whitelist/rule-sets so its rule
 	// lands just above the catch-all (below the security floor). Inert in Rule mode.
-	if err := injectClashModeGlobal(cfg); err != nil {
+	if err := injectClashModeGlobal(cfg, dataDir); err != nil {
 		return nil, err
 	}
 	// Management-port allow LAST => inserted right after the prelude, above every
@@ -515,7 +517,7 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 // injectDNS builds the sing-box dns block from our config. Empty servers => no
 // dns block (keep sing-box defaults / TUN's injected resolver). Server types map
 // straight to sing-box 1.12+ typed DNS servers; local needs no address.
-func injectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig) error {
+func injectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig, dataDir string) error {
 	if len(d.Servers) == 0 {
 		return nil
 	}
@@ -591,10 +593,10 @@ func injectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig) error {
 	// live connections lose their fake<->real mapping. Enable cache_file (with
 	// store_fakeip) the same way remote rule_sets do.
 	if usesFakeIP {
-		if err := ensureCacheFile(cfg); err != nil {
+		if err := ensureCacheFile(cfg, dataDir); err != nil {
 			return err
 		}
-		if err := ensureStoreFakeIP(cfg); err != nil {
+		if err := ensureStoreFakeIP(cfg, dataDir); err != nil {
 			return err
 		}
 	}
@@ -634,7 +636,7 @@ func isSynthResolver(d apitypes.DNSConfig, tag string) bool {
 
 // ensureStoreFakeIP flips experimental.cache_file.store_fakeip on so fakeip
 // address allocations survive rebuilds/restarts.
-func ensureStoreFakeIP(cfg map[string]json.RawMessage) error {
+func ensureStoreFakeIP(cfg map[string]json.RawMessage, dataDir string) error {
 	var exp map[string]json.RawMessage
 	if raw, ok := cfg["experimental"]; ok {
 		if err := json.Unmarshal(raw, &exp); err != nil {
@@ -649,7 +651,7 @@ func ensureStoreFakeIP(cfg map[string]json.RawMessage) error {
 			return err
 		}
 	} else {
-		cf = map[string]any{"enabled": true, "path": "data/cache.db"}
+		cf = map[string]any{"enabled": true, "path": filepath.Join(dataDir, "cache.db")}
 	}
 	cf["store_fakeip"] = true
 	ncf, err := json.Marshal(cf)
@@ -690,7 +692,7 @@ func setDefaultDomainResolver(cfg map[string]json.RawMessage, server string) err
 // weaves their match rules into route.rules preserving default-deny order:
 //   sniff -> hijack-dns -> [block sets: reject] -> whitelist allows ->
 //   [allow sets: route] -> reject catch-all
-func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets) error {
+func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir string) error {
 	var enabled []apitypes.RuleSet
 	for _, rs := range sets.Sets {
 		if rs.Enabled && rs.Tag != "" {
@@ -831,12 +833,12 @@ func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets) error {
 
 	// Remote rule_set needs a cache so the frequent rebuilds don't re-download
 	// (and a cached copy survives a blocked URL). Ensure cache_file is on.
-	return ensureCacheFile(cfg)
+	return ensureCacheFile(cfg, dataDir)
 }
 
 // ensureCacheFile turns on experimental.cache_file (persists downloaded .srs +
 // selected outbound across rebuilds/restarts).
-func ensureCacheFile(cfg map[string]json.RawMessage) error {
+func ensureCacheFile(cfg map[string]json.RawMessage, dataDir string) error {
 	var exp map[string]json.RawMessage
 	if raw, ok := cfg["experimental"]; ok {
 		if err := json.Unmarshal(raw, &exp); err != nil {
@@ -846,7 +848,7 @@ func ensureCacheFile(cfg map[string]json.RawMessage) error {
 		exp = map[string]json.RawMessage{}
 	}
 	if _, ok := exp["cache_file"]; !ok {
-		cf, _ := json.Marshal(map[string]any{"enabled": true, "path": "data/cache.db"})
+		cf, _ := json.Marshal(map[string]any{"enabled": true, "path": filepath.Join(dataDir, "cache.db")})
 		exp["cache_file"] = cf
 	}
 	newExp, err := json.Marshal(exp)
@@ -867,7 +869,7 @@ func ensureCacheFile(cfg map[string]json.RawMessage) error {
 // (clash_mode mismatch, matched case-insensitively) and default-deny applies
 // unchanged. sing-box derives the selectable mode list from the clash_mode
 // values present in the rules, so this alone exposes ["Global","Rule"].
-func injectClashModeGlobal(cfg map[string]json.RawMessage) error {
+func injectClashModeGlobal(cfg map[string]json.RawMessage, dataDir string) error {
 	routeRaw, ok := cfg["route"]
 	if !ok {
 		return nil
@@ -914,7 +916,7 @@ func injectClashModeGlobal(cfg map[string]json.RawMessage) error {
 	if err := setClashDefaultMode(cfg, "Rule"); err != nil {
 		return err
 	}
-	return ensureCacheFile(cfg)
+	return ensureCacheFile(cfg, dataDir)
 }
 
 // setClashDefaultMode sets experimental.clash_api.default_mode (the mode used on
@@ -1182,7 +1184,7 @@ func injectManagement(cfg map[string]json.RawMessage, ports []int) error {
 // injectEndpoints appends enabled WireGuard/Tailscale exits to endpoints[] and
 // returns their tags (to be added to the proxy group). WireGuard peers keep the
 // pasted allowed_ips; Tailscale gets a per-tag state dir under data/.
-func injectEndpoints(cfg map[string]json.RawMessage, list []apitypes.Endpoint) ([]string, error) {
+func injectEndpoints(cfg map[string]json.RawMessage, list []apitypes.Endpoint, dataDir string) ([]string, error) {
 	var eps []json.RawMessage
 	if raw, ok := cfg["endpoints"]; ok {
 		if err := json.Unmarshal(raw, &eps); err != nil {
@@ -1214,7 +1216,7 @@ func injectEndpoints(cfg map[string]json.RawMessage, list []apitypes.Endpoint) (
 				m["mtu"] = e.MTU
 			}
 		case "tailscale":
-			m = map[string]any{"type": "tailscale", "tag": e.Tag, "auth_key": e.AuthKey, "state_directory": "data/ts-" + e.Tag}
+			m = map[string]any{"type": "tailscale", "tag": e.Tag, "auth_key": e.AuthKey, "state_directory": filepath.Join(dataDir, "ts-"+e.Tag)}
 			if e.Hostname != "" {
 				m["hostname"] = e.Hostname
 			}
