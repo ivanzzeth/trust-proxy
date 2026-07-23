@@ -27,6 +27,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/inbound"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
+	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/tuncfg"
@@ -64,6 +65,11 @@ type CustomRulesApplier interface {
 // (gateway.Manager).
 type RulesViewer interface {
 	EffectiveRules() []apitypes.RuleView
+}
+
+// ProxyGroupsApplier hot-reloads the proxy-group config (gateway.Manager).
+type ProxyGroupsApplier interface {
+	SetProxyGroups(proxygroups.Config) error
 }
 
 // ModeController switches the gateway capture mode (gateway.Manager).
@@ -119,6 +125,8 @@ type Options struct {
 	CustomRules *customrules.Store
 	CRApplier   CustomRulesApplier
 	RulesView   RulesViewer
+	ProxyGroups *proxygroups.Store
+	PGApplier   ProxyGroupsApplier
 	Detect      *detect.Engine
 	Mode        ModeController
 	RuleSets    *ruleset.Store
@@ -155,6 +163,8 @@ type Server struct {
 	cr          *customrules.Store
 	crApplier   CustomRulesApplier
 	rulesView   RulesViewer
+	pgroups     *proxygroups.Store
+	pgApplier   ProxyGroupsApplier
 	detect      *detect.Engine
 	mode        ModeController
 	rs          *ruleset.Store
@@ -179,7 +189,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -222,6 +232,8 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("PATCH /api/customrules/packs/{name}", s.handlePatchPack)
 	mux.HandleFunc("DELETE /api/customrules/packs/{name}", s.handleDeletePack)
 	mux.HandleFunc("GET /api/effective-rules", s.handleEffectiveRules)
+	mux.HandleFunc("GET /api/proxygroups", s.handleGetProxyGroups)
+	mux.HandleFunc("PUT /api/proxygroups", s.handleSetProxyGroups)
 	mux.HandleFunc("GET /api/rulesets", s.handleListRuleSets)
 	mux.HandleFunc("GET /api/rulesets/catalog", s.handleRuleSetCatalog)
 	mux.HandleFunc("GET /api/rulesets/{tag}/rules", s.handleRuleSetRules)

@@ -29,6 +29,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
+	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -74,6 +75,7 @@ type Manager struct {
 	bl        blacklist.Rules
 	dl        directlist.Rules
 	cr        customrules.Rules
+	pg        proxygroups.Config
 	mode      string
 	rulesets  ruleset.Sets
 	dns       apitypes.DNSConfig
@@ -253,7 +255,7 @@ func truncVals(vals []string, n int) []string {
 // asserts the layer sequence here matches a freshly built merged config.
 func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	m.mu.Lock()
-	wl, bl, dl, cr, sets, mode, mgmt, nodes, eps := m.wl, m.bl, m.dl, m.cr, m.rulesets, m.mode, m.mgmtPorts, m.nodes, m.endpoints
+	wl, bl, dl, cr, pg, sets, mode, mgmt, nodes, eps := m.wl, m.bl, m.dl, m.cr, m.pg, m.rulesets, m.mode, m.mgmtPorts, m.nodes, m.endpoints
 	m.mu.Unlock()
 
 	var epTags []string
@@ -262,8 +264,12 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 			epTags = append(epTags, e.Tag)
 		}
 	}
+	// Valid custom `node` targets = individual nodes/endpoints ∪ group tags
+	// (mirrors injectOutbounds), so a rule pointing at a group isn't flagged stale.
+	nodeT := memberTags(nodes, epTags)
+	_, groupT := buildProxyGroups(nodeT, pg)
 	members := map[string]bool{}
-	for _, t := range memberTags(nodes, epTags) {
+	for _, t := range append(append([]string(nil), nodeT...), groupT...) {
 		members[t] = true
 	}
 
@@ -529,6 +535,29 @@ func (m *Manager) SetCustomRules(cr customrules.Rules) error {
 	return nil
 }
 
+// SetInitialProxyGroups sets the proxy-group config used by the first Start().
+func (m *Manager) SetInitialProxyGroups(pg proxygroups.Config) {
+	m.mu.Lock()
+	m.pg = pg
+	m.mu.Unlock()
+}
+
+// SetProxyGroups sets the proxy-group config and hot-reloads (reverts on failure).
+func (m *Manager) SetProxyGroups(pg proxygroups.Config) error {
+	m.mu.Lock()
+	prev := m.pg
+	m.pg = pg
+	m.mu.Unlock()
+	if err := m.rebuild(); err != nil {
+		m.mu.Lock()
+		m.pg = prev
+		m.mu.Unlock()
+		_ = m.rebuild() // best-effort restore
+		return fmt.Errorf("apply proxy groups failed (reverted): %w", err)
+	}
+	return nil
+}
+
 // SetInitialRuleSets sets the imported rule sets used by the first Start().
 func (m *Manager) SetInitialRuleSets(sets ruleset.Sets) {
 	m.mu.Lock()
@@ -642,14 +671,14 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, bl, dl, cr, mode, sets, dns, inbound, tun, eps, mgmt := m.nodes, m.wl, m.bl, m.dl, m.cr, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts
+	nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt := m.nodes, m.wl, m.bl, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, bl, dl, cr, mode, sets, dns, inbound, tun, eps, mgmt, m.clashSecret, m.dataDir)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, m.clashSecret, m.dataDir)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -707,7 +736,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // The split keeps two orthogonal concerns apart: the whitelist decides only
 // allow/deny (L3), the no-proxy list + rule-sets decide only egress (L4). All
 // injection is at the JSON level so sing-box's own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, clashSecret, dataDir string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, clashSecret, dataDir string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -719,7 +748,7 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	}
 	// memberTags = proxy group members (node + endpoint outbounds); the valid
 	// targets for a custom rule's `node` action.
-	memberTags, err := injectOutbounds(cfg, nodes, epTags)
+	memberTags, err := injectOutbounds(cfg, nodes, epTags, pg)
 	if err != nil {
 		return nil, err
 	}
@@ -1541,11 +1570,137 @@ func memberTags(nodes []apitypes.Node, extraTags []string) []string {
 	return tags
 }
 
+// groupMembers resolves a user group's member tags from the full node/endpoint
+// tag pool, per its filter (country / regex / manual). Order follows the pool.
+func groupMembers(g proxygroups.Group, tags []string) []string {
+	var m []string
+	switch g.Filter {
+	case proxygroups.FilterCountry:
+		for _, t := range tags {
+			if proxygroups.Country(t) == g.Value {
+				m = append(m, t)
+			}
+		}
+	case proxygroups.FilterRegex:
+		re, err := regexp.Compile(g.Value)
+		if err != nil {
+			return nil
+		}
+		for _, t := range tags {
+			if re.MatchString(t) {
+				m = append(m, t)
+			}
+		}
+	case proxygroups.FilterManual:
+		set := map[string]bool{}
+		for _, t := range tags {
+			set[t] = true
+		}
+		for _, n := range g.Nodes {
+			if set[n] {
+				m = append(m, n)
+			}
+		}
+	}
+	return m
+}
+
+// buildProxyGroups turns the member pool (node + endpoint tags) into sing-box
+// group outbounds and the top-level `proxy` selector. It returns the outbound
+// JSON to append AND the group tags (Auto + per-country + user groups, NOT the
+// proxy selector) — those extend the valid `node`-action targets. Layering:
+//   - Auto: urltest over every member (the default the proxy selector points at,
+//     preserving the pre-grouping behavior).
+//   - per-country urltest groups (when AutoCountry and ≥1 country is detected).
+//   - user groups (select|urltest) by country/regex/manual filter.
+//   - proxy: selector over [Auto, country…, user…], default = Auto.
+//
+// Empty pool => proxy is selector[direct] and there are no groups.
+// It is pure (no cfg mutation) so EffectiveRules can reuse it for the member set.
+func buildProxyGroups(tags []string, pg proxygroups.Config) (outs []json.RawMessage, groupTags []string) {
+	if len(tags) == 0 {
+		sel, _ := json.Marshal(map[string]any{"type": "selector", "tag": ProxyGroupTag, "outbounds": []string{"direct"}})
+		return []json.RawMessage{sel}, nil
+	}
+	used := map[string]bool{"direct": true, "blocked": true, ProxyGroupTag: true}
+	for _, t := range tags {
+		used[t] = true
+	}
+	uniq := func(name string) string {
+		if name == "" {
+			name = "group"
+		}
+		base, t := name, name
+		for i := 2; used[t]; i++ {
+			t = fmt.Sprintf("%s-%d", base, i)
+		}
+		used[t] = true
+		return t
+	}
+	add := func(typ, tag string, members []string) {
+		g := map[string]any{"type": typ, "tag": tag, "outbounds": members}
+		if typ == "urltest" {
+			g["url"] = "https://www.gstatic.com/generate_204"
+			g["interval"] = "3m"
+		}
+		b, _ := json.Marshal(g)
+		outs = append(outs, b)
+		groupTags = append(groupTags, tag)
+	}
+
+	autoTag := uniq("Auto")
+	add("urltest", autoTag, tags)
+
+	if pg.AutoCountry {
+		buckets := map[string][]string{}
+		var order []string
+		real := 0
+		for _, t := range tags {
+			c := proxygroups.Country(t)
+			if c == "" {
+				c = "Other"
+			}
+			if _, ok := buckets[c]; !ok {
+				order = append(order, c)
+				if c != "Other" {
+					real++
+				}
+			}
+			buckets[c] = append(buckets[c], t)
+		}
+		if real > 0 { // skip country grouping when nothing is identifiable (== Auto)
+			for _, c := range order {
+				label := "Other"
+				if c != "Other" {
+					label = proxygroups.CountryName(c)
+				}
+				add("urltest", uniq(label), buckets[c])
+			}
+		}
+	}
+
+	for _, ug := range pg.Groups {
+		members := groupMembers(ug, tags)
+		if len(members) == 0 {
+			continue // an empty group is invalid in sing-box and useless anyway
+		}
+		typ := "urltest"
+		if ug.Type == proxygroups.TypeSelect {
+			typ = "selector"
+		}
+		add(typ, uniq(ug.Name), members)
+	}
+
+	sel, _ := json.Marshal(map[string]any{"type": "selector", "tag": ProxyGroupTag, "outbounds": groupTags, "default": autoTag})
+	outs = append(outs, sel)
+	return outs, groupTags
+}
+
 // injectOutbounds rewrites outbounds from the subscription nodes + the proxy
-// group, and returns the proxy group's member tags (node + endpoint outbound
-// tags). Those are the only valid targets for a custom rule's `node` action;
-// a rule pinning any other tag is skipped at inject time (self-heal).
-func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extraTags []string) ([]string, error) {
+// group tree, and returns the valid `node`-action targets: node + endpoint
+// outbound tags PLUS the group tags (Auto / country / user groups). A custom
+// rule pinning any other tag is skipped at inject time (self-heal).
+func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extraTags []string, pg proxygroups.Config) ([]string, error) {
 	var outs []json.RawMessage
 	if raw, ok := cfg["outbounds"]; ok {
 		if err := json.Unmarshal(raw, &outs); err != nil {
@@ -1588,30 +1743,19 @@ func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extr
 		tags = append(tags, tag)
 	}
 	// WireGuard/Tailscale endpoint tags (defined in endpoints[]) are valid group
-	// members — append so whitelisted traffic can urltest across nodes + exits.
+	// members — append so groups can urltest across nodes + exits.
 	tags = append(tags, extraTags...)
 
-	var group map[string]any
-	if len(tags) == 0 {
-		group = map[string]any{"type": "selector", "tag": ProxyGroupTag, "outbounds": []string{"direct"}}
-	} else {
-		group = map[string]any{
-			"type": "urltest", "tag": ProxyGroupTag, "outbounds": tags,
-			"url": "https://www.gstatic.com/generate_204", "interval": "3m",
-		}
-	}
-	groupRaw, err := json.Marshal(group)
-	if err != nil {
-		return nil, err
-	}
-	kept = append(kept, groupRaw)
+	groupOuts, groupTags := buildProxyGroups(tags, pg)
+	kept = append(kept, groupOuts...)
 
 	newOuts, err := json.Marshal(kept)
 	if err != nil {
 		return nil, err
 	}
 	cfg["outbounds"] = newOuts
-	return tags, nil
+	// Valid node-action targets = individual nodes/endpoints ∪ the group tags.
+	return append(append([]string(nil), tags...), groupTags...), nil
 }
 
 // injectBlacklist inserts reject rules for explicitly denied destinations right

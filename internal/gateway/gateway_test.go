@@ -15,6 +15,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
+	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -36,7 +37,7 @@ func build(t *testing.T, wl whitelist.Rules, bl blacklist.Rules, dl directlist.R
 // buildCR adds custom rules + node member tags for the custom-routing tests.
 func buildCR(t *testing.T, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, sets ruleset.Sets, nodes []apitypes.Node) []byte {
 	t.Helper()
-	merged, err := buildMergedConfig([]byte(baseCfg), nodes, wl, bl, dl, cr, ModeManual, sets,
+	merged, err := buildMergedConfig([]byte(baseCfg), nodes, wl, bl, dl, cr, proxygroups.Config{}, ModeManual, sets,
 		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "sekret", t.TempDir())
 	if err != nil {
 		t.Fatalf("buildMergedConfig: %v", err)
@@ -159,7 +160,7 @@ func TestLayerOrder(t *testing.T) {
 		{Tag: "cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 		{Tag: "gg", Type: "remote", Format: "binary", URL: "https://x/gg.srs", Role: apitypes.RuleRoleAllowProxy, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 	}}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, bl, directlist.Rules{}, customrules.Rules{}, ModeManual, sets,
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, bl, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeManual, sets,
 		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, []int{22, 9096}, "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -333,7 +334,7 @@ func TestApplyMode_Inbounds(t *testing.T) {
 		{ModeSystem, []string{"mixed"}},
 		{ModeTUN, []string{"tun", "mixed"}},
 	} {
-		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "s", t.TempDir())
+		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "s", t.TempDir())
 		if err != nil {
 			t.Fatalf("%s: %v", tc.mode, err)
 		}
@@ -362,7 +363,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 		StrictRoute:    false,
 		ExcludePackage: []string{"com.example.app"},
 	}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, nil, nil, "s", t.TempDir())
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, nil, nil, "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -384,7 +385,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 	if !ok || len(ep) != 1 || ep[0] != "com.example.app" {
 		t.Fatalf("exclude_package=%v want [com.example.app]", tunIn["exclude_package"])
 	}
-	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "s", t.TempDir())
+	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -399,7 +400,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 
 // TUN mode keeps the hijack-dns prelude rule directly after sniff, above the floor.
 func TestTUNHijackPrelude(t *testing.T) {
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"}, nil, nil, "s", t.TempDir())
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"}, nil, nil, "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,6 +413,119 @@ func TestTUNHijackPrelude(t *testing.T) {
 	}
 	if !(hijack < gate) {
 		t.Fatalf("hijack-dns(%d) must be in the prelude, above the gate(%d)", hijack, gate)
+	}
+}
+
+// --- proxy groups -----------------------------------------------------------
+
+func outbounds(t *testing.T, merged []byte) []map[string]any {
+	t.Helper()
+	var cfg map[string]json.RawMessage
+	_ = json.Unmarshal(merged, &cfg)
+	var outs []map[string]any
+	_ = json.Unmarshal(cfg["outbounds"], &outs)
+	return outs
+}
+
+func findOut(outs []map[string]any, tag string) map[string]any {
+	for _, o := range outs {
+		if o["tag"] == tag {
+			return o
+		}
+	}
+	return nil
+}
+
+func buildGrouped(t *testing.T, nodes []apitypes.Node, pg proxygroups.Config) []byte {
+	t.Helper()
+	merged, err := buildMergedConfig([]byte(baseCfg), nodes, whitelist.Rules{Domains: []string{"ok.com"}},
+		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, pg, ModeManual, ruleset.Sets{},
+		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "s", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return merged
+}
+
+func TestProxyGroups_AutoCountry(t *testing.T) {
+	nodes := []apitypes.Node{node("🇭🇰 HK-01"), node("🇭🇰 HK-02"), node("🇺🇸 US-01"), node("mystery")}
+	merged := buildGrouped(t, nodes, proxygroups.Config{AutoCountry: true})
+	parseValidate(t, merged)
+	outs := outbounds(t, merged)
+
+	// proxy is a selector over the groups, default = Auto.
+	proxy := findOut(outs, ProxyGroupTag)
+	if proxy == nil || proxy["type"] != "selector" || proxy["default"] != "Auto" {
+		t.Fatalf("proxy should be selector default=Auto, got %v", proxy)
+	}
+	if !containsStr(proxy["outbounds"], "Auto") || !containsStr(proxy["outbounds"], "🇭🇰 HK") || !containsStr(proxy["outbounds"], "🇺🇸 US") {
+		t.Fatalf("proxy selector missing group members: %v", proxy["outbounds"])
+	}
+	// Auto = urltest over all 4 nodes.
+	auto := findOut(outs, "Auto")
+	if auto == nil || auto["type"] != "urltest" {
+		t.Fatalf("Auto group missing/wrong: %v", auto)
+	}
+	if m, _ := auto["outbounds"].([]any); len(m) != 4 {
+		t.Fatalf("Auto should have all 4 nodes, got %v", auto["outbounds"])
+	}
+	// Country group HK has both HK nodes.
+	hk := findOut(outs, "🇭🇰 HK")
+	if hk == nil || hk["type"] != "urltest" {
+		t.Fatalf("HK group missing: %v", hk)
+	}
+	if m, _ := hk["outbounds"].([]any); len(m) != 2 {
+		t.Fatalf("HK group should have 2 nodes, got %v", hk["outbounds"])
+	}
+	// mystery (no country) => Other group present since real countries exist.
+	if findOut(outs, "Other") == nil {
+		t.Fatal("expected an Other group for the uncategorized node")
+	}
+}
+
+func TestProxyGroups_UserGroupsAndCollision(t *testing.T) {
+	// A node literally tagged "HK" must not collide with a country group.
+	nodes := []apitypes.Node{node("🇭🇰 HK"), node("🇯🇵 JP-01"), node("🇯🇵 JP-02")}
+	pg := proxygroups.Config{
+		AutoCountry: true,
+		Groups: []proxygroups.Group{
+			{Name: "JP-fast", Type: "urltest", Filter: "country", Value: "JP"},
+			{Name: "byName", Type: "select", Filter: "regex", Value: "JP-0"},
+			{Name: "pinned", Type: "select", Filter: "manual", Nodes: []string{"🇭🇰 HK"}},
+		},
+	}
+	merged := buildGrouped(t, nodes, pg)
+	parseValidate(t, merged)
+	outs := outbounds(t, merged)
+
+	// Node "HK" kept; the HK country group got a de-collided tag (not "HK").
+	if findOut(outs, "🇭🇰 HK") == nil {
+		t.Fatal("country group should be tagged by CountryName (🇭🇰 HK), distinct from node HK")
+	}
+	// user country group JP-fast has both JP nodes.
+	if g := findOut(outs, "JP-fast"); g == nil {
+		t.Fatal("JP-fast group missing")
+	} else if m, _ := g["outbounds"].([]any); len(m) != 2 {
+		t.Fatalf("JP-fast should have 2 JP nodes, got %v", g["outbounds"])
+	}
+	// regex group matches JP-0* (2), selector type.
+	if g := findOut(outs, "byName"); g == nil || g["type"] != "selector" {
+		t.Fatalf("byName should be a selector, got %v", g)
+	}
+	// manual group has the one pinned node.
+	if g := findOut(outs, "pinned"); g == nil {
+		t.Fatal("pinned group missing")
+	} else if m, _ := g["outbounds"].([]any); len(m) != 1 {
+		t.Fatalf("pinned should have 1 node, got %v", g["outbounds"])
+	}
+}
+
+func TestProxyGroups_NoNodes(t *testing.T) {
+	merged := buildGrouped(t, nil, proxygroups.Config{AutoCountry: true})
+	parseValidate(t, merged)
+	proxy := findOut(outbounds(t, merged), ProxyGroupTag)
+	if proxy == nil || proxy["type"] != "selector" || !containsStr(proxy["outbounds"], "direct") {
+		t.Fatalf("no nodes => proxy selector[direct], got %v", proxy)
 	}
 }
 
@@ -486,7 +600,7 @@ func TestEffectiveRules_MatchesMergedLayers(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			merged, err := buildMergedConfig([]byte(baseCfg), nil, tc.wl, tc.bl, tc.dl, tc.cr, ModeManual, tc.sets,
+			merged, err := buildMergedConfig([]byte(baseCfg), nil, tc.wl, tc.bl, tc.dl, tc.cr, proxygroups.Config{}, ModeManual, tc.sets,
 				apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, tc.mgmt, "s", t.TempDir())
 			if err != nil {
 				t.Fatal(err)

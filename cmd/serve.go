@@ -31,6 +31,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/inbound"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
+	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/threatfeed"
@@ -159,6 +160,11 @@ func runServe() error {
 		return err
 	}
 
+	pgStore, err := proxygroups.NewStore(serveDataDir + "/proxygroups.json")
+	if err != nil {
+		return err
+	}
+
 	engine := detect.New(2000)
 	engine.SetAutoBlock(serveAutoBlock)
 
@@ -232,6 +238,7 @@ func runServe() error {
 	mgr.SetInitialBlacklist(blStore.Get())
 	mgr.SetInitialDirectList(dlStore.Get())
 	mgr.SetInitialCustomRules(crStore.Get())
+	mgr.SetInitialProxyGroups(pgStore.Get())
 	mgr.SetInitialRuleSets(rsStore.Get())
 	mgr.SetInitialDNS(dnsStore.Get())
 	mgr.SetInitialInbound(inbStore.Get())
@@ -260,6 +267,8 @@ func runServe() error {
 		CustomRules: crStore,
 		CRApplier:   mgr,
 		RulesView:   mgr,
+		ProxyGroups: pgStore,
+		PGApplier:   mgr,
 		Detect:      engine,
 		Mode:        mgr,
 		RuleSets:    rsStore,

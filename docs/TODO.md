@@ -6,6 +6,7 @@
 > (`kill %1` 跨 Bash 调用无效,会残留孤儿进程;别动用户网关 pid)。
 
 ## 本会话已完成(勿重做)
+- **代理分组(✅)**:订阅按国家自动分组(解析节点名 旗/国码/国名)+ 自定义组(country/regex/manual,select|urltest)；`proxy` 改顶层 selector(default Auto);`internal/proxygroups`+`injectOutbounds` 重写+`GET/PUT /api/proxygroups`+Proxies 页分组设置。sing-box 无 load-balance(不造)。已端到端验(Auto/国家组/用户组/选组)。
 - **#5 TUN 权限 UX 友好化(✅)**:见下「~~#5~~」——友好报错 + 平台感知引导 Dialog + 自动回退。
 - **#10 Allow 包(✅)**:见下「~~#10~~」条目——`Pack` 命名标签 + 整组启停/删除 + 内置预设,零引擎改动。
 - **A/B/#11 Rules 页统一 + 规则集内容查看 + 生效策略来源标注(✅)**:见下「~~A~~/~~B~~」条目。
