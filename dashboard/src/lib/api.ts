@@ -113,6 +113,19 @@ export interface RuleView {
   values?: string[];
   note?: string;
 }
+export type PGType = 'select' | 'urltest';
+export type PGFilter = 'country' | 'regex' | 'manual';
+export interface ProxyGroup {
+  name: string;
+  type: PGType;
+  filter: PGFilter;
+  value?: string;
+  nodes?: string[];
+}
+export interface ProxyGroupsConfig {
+  auto_country: boolean;
+  groups: ProxyGroup[];
+}
 export interface TPNode {
   tag: string;
   protocol: string;
@@ -370,6 +383,8 @@ export const api = {
       `/rulesets/${encodeURIComponent(tag)}/rules?q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`,
     ),
   effectiveRules: () => get<RuleView[]>('/effective-rules'),
+  proxyGroups: () => get<ProxyGroupsConfig>('/proxygroups'),
+  setProxyGroups: (cfg: ProxyGroupsConfig) => put<ProxyGroupsConfig>('/proxygroups', cfg),
 
   proxies: () => get<{ proxies: Record<string, ProxyNode> }>('/proxies'),
   selectProxy: (group: string, name: string) => put<void>('/proxies/select', { group, name }),

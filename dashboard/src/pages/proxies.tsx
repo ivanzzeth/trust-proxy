@@ -1,15 +1,18 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Check, Gauge, Loader2, Zap } from 'lucide-react';
+import { Check, Gauge, Loader2, Plus, Trash2, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { api, ProxyNode } from '@/lib/api';
+import { api, PGFilter, PGType, ProxyGroup, ProxyGroupsConfig, ProxyNode } from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 function delayColor(ms?: number) {
   if (ms === undefined) return 'text-muted-foreground';
@@ -68,6 +71,7 @@ export default function Proxies() {
         title={t('pages.proxies.title')}
         description={t('pages.proxies.description')}
       />
+      <GroupSettings />
       {groups.length === 0 && (
         <Card>
           <CardContent className="py-16 text-center text-sm text-muted-foreground">
@@ -125,5 +129,105 @@ export default function Proxies() {
         <Gauge className="size-3.5" /> {t('pages.proxies.footerHint')}
       </p>
     </div>
+  );
+}
+
+const PG_TYPES: PGType[] = ['urltest', 'select'];
+const PG_FILTERS: PGFilter[] = ['country', 'regex', 'manual'];
+
+// GroupSettings edits the proxy-group config (auto-country + custom groups) as a
+// local draft, saved explicitly (each save rebuilds the data plane). The group
+// list/selection itself is rendered by the Proxies list below, from the Clash API.
+function GroupSettings() {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ['proxygroups'], queryFn: api.proxyGroups });
+  const [draft, setDraft] = useState<ProxyGroupsConfig | null>(null);
+  useEffect(() => {
+    if (data) setDraft((d) => d ?? structuredClone(data));
+  }, [data]);
+
+  const save = useMutation({
+    mutationFn: (cfg: ProxyGroupsConfig) => api.setProxyGroups(cfg),
+    onSuccess: (cfg) => {
+      setDraft(structuredClone(cfg));
+      qc.invalidateQueries({ queryKey: ['proxygroups'] });
+      qc.invalidateQueries({ queryKey: ['proxies'] });
+      toast.success(t('pages.proxies.groups.saved'));
+    },
+    onError: (e) => toast.error(String((e as Error).message)),
+  });
+
+  if (!draft) return null;
+  const patchGroup = (i: number, p: Partial<ProxyGroup>) =>
+    setDraft({ ...draft, groups: draft.groups.map((g, j) => (j === i ? { ...g, ...p } : g)) });
+  const addGroup = () =>
+    setDraft({ ...draft, groups: [...draft.groups, { name: '', type: 'urltest', filter: 'regex', value: '' }] });
+  const delGroup = (i: number) => setDraft({ ...draft, groups: draft.groups.filter((_, j) => j !== i) });
+  const dirty = JSON.stringify(draft) !== JSON.stringify(data);
+
+  return (
+    <Card className="mb-4">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm">{t('pages.proxies.groups.title')}</CardTitle>
+        <p className="text-xs leading-relaxed text-muted-foreground">{t('pages.proxies.groups.hint')}</p>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <label className="flex items-center gap-2 text-sm">
+          <Switch checked={draft.auto_country} onCheckedChange={(v) => setDraft({ ...draft, auto_country: v })} />
+          {t('pages.proxies.groups.autoCountry')}
+        </label>
+
+        <div className="space-y-2">
+          {draft.groups.map((g, i) => (
+            <div key={i} className="flex flex-wrap items-center gap-2 rounded-md border px-2 py-2">
+              <Input
+                className="w-36"
+                placeholder={t('pages.proxies.groups.namePh')}
+                value={g.name}
+                onChange={(e) => patchGroup(i, { name: e.target.value })}
+              />
+              <Select value={g.type} onValueChange={(v) => patchGroup(i, { type: v as PGType })}>
+                <SelectTrigger className="w-32"><SelectValue /></SelectTrigger>
+                <SelectContent>{PG_TYPES.map((x) => <SelectItem key={x} value={x}>{t(`pages.proxies.groups.type.${x}`)}</SelectItem>)}</SelectContent>
+              </Select>
+              <Select value={g.filter} onValueChange={(v) => patchGroup(i, { filter: v as PGFilter })}>
+                <SelectTrigger className="w-28"><SelectValue /></SelectTrigger>
+                <SelectContent>{PG_FILTERS.map((x) => <SelectItem key={x} value={x}>{t(`pages.proxies.groups.filter.${x}`)}</SelectItem>)}</SelectContent>
+              </Select>
+              {g.filter === 'manual' ? (
+                <Input
+                  className="min-w-[180px] flex-1"
+                  placeholder={t('pages.proxies.groups.nodesPh')}
+                  value={(g.nodes ?? []).join(', ')}
+                  onChange={(e) => patchGroup(i, { nodes: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) })}
+                />
+              ) : (
+                <Input
+                  className="min-w-[140px] flex-1"
+                  placeholder={g.filter === 'country' ? t('pages.proxies.groups.countryPh') : t('pages.proxies.groups.regexPh')}
+                  value={g.value ?? ''}
+                  onChange={(e) => patchGroup(i, { value: e.target.value })}
+                />
+              )}
+              <Button size="icon" variant="ghost" className="size-7 text-destructive" onClick={() => delGroup(i)}>
+                <Trash2 className="size-3.5" />
+              </Button>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Button size="sm" variant="secondary" onClick={addGroup}>
+            <Plus className="size-4" /> {t('pages.proxies.groups.add')}
+          </Button>
+          <Button size="sm" disabled={!dirty || save.isPending} onClick={() => save.mutate(draft)}>
+            {t('pages.proxies.groups.save')}
+          </Button>
+          {dirty && <span className="text-xs text-muted-foreground">{t('pages.proxies.groups.unsaved')}</span>}
+        </div>
+        <p className="text-xs text-muted-foreground">{t('pages.proxies.groups.lbNote')}</p>
+      </CardContent>
+    </Card>
   );
 }
