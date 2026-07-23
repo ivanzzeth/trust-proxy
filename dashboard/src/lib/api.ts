@@ -83,7 +83,13 @@ export interface CustomRule {
   value: string;
   action: CRAction;
   node?: string;
+  pack?: string;
   enabled: boolean;
+}
+export interface PackPreset {
+  name: string;
+  description: string;
+  rules: CustomRule[];
 }
 export interface RuleSetEntry {
   kind: string;
@@ -336,6 +342,11 @@ export const api = {
     patch<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}`, patchBody),
   delCR: (id: string) => del<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}`),
   moveCR: (id: string, dir: number) => post<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}/move`, { dir }),
+  packsCatalog: () => get<PackPreset[]>('/customrules/packs/catalog'),
+  applyPack: (catalog: string) => post<{ rules: CustomRule[] }>('/customrules/packs/apply', { catalog }),
+  setPackEnabled: (name: string, enabled: boolean) =>
+    patch<{ rules: CustomRule[] }>(`/customrules/packs/${encodeURIComponent(name)}`, { enabled }),
+  delPack: (name: string) => del<{ rules: CustomRule[] }>(`/customrules/packs/${encodeURIComponent(name)}`),
 
   subs: () => get<Subscription[]>('/subscriptions'),
   addSub: (name: string, url: string, userAgent?: string, via?: string) =>

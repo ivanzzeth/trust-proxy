@@ -107,7 +107,16 @@ type CustomRule struct {
 	Value   string `json:"value"`
 	Action  string `json:"action"`         // direct | proxy | block | node
 	Node    string `json:"node,omitempty"` // target outbound tag (required when action==node)
+	Pack    string `json:"pack,omitempty"` // optional named group (Allow pack); metadata only
 	Enabled bool   `json:"enabled"`
+}
+
+// PackPreset is a curated, one-click-importable group of custom rules (an Allow
+// pack): applying it Adds each rule tagged with Pack=Name, Enabled=true.
+type PackPreset struct {
+	Name        string       `json:"name"`
+	Description string       `json:"description"`
+	Rules       []CustomRule `json:"rules"`
 }
 
 // Custom-rule actions + match kinds.
@@ -131,6 +140,7 @@ type PatchCustomRuleRequest struct {
 	Value   *string `json:"value,omitempty"`
 	Action  *string `json:"action,omitempty"`
 	Node    *string `json:"node,omitempty"`
+	Pack    *string `json:"pack,omitempty"`
 }
 
 // RuleView is one entry in the effective-policy explain view: a human-readable

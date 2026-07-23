@@ -60,6 +60,7 @@ func validate(r *apitypes.CustomRule) error {
 	r.Value = strings.TrimSpace(r.Value)
 	r.Action = strings.TrimSpace(r.Action)
 	r.Node = strings.TrimSpace(r.Node)
+	r.Pack = strings.TrimSpace(r.Pack) // free-form group label, no validation
 	if _, ok := SingboxMatchKey(r.Match); !ok {
 		return fmt.Errorf("invalid match kind %q", r.Match)
 	}
@@ -230,6 +231,9 @@ func (s *Store) Update(id string, p apitypes.PatchCustomRuleRequest) (Rules, err
 	if p.Node != nil {
 		r.Node = *p.Node
 	}
+	if p.Pack != nil {
+		r.Pack = *p.Pack
+	}
 	if err := validate(&r); err != nil {
 		s.mu.Unlock()
 		return s.Get(), err
@@ -263,6 +267,30 @@ func (s *Store) SetEnabled(id string, enabled bool) (Rules, error) {
 				s.data.Rules[i].Enabled = enabled
 			}
 		}
+	})
+}
+
+// SetPackEnabled toggles every rule in the named Allow pack at once.
+func (s *Store) SetPackEnabled(pack string, enabled bool) (Rules, error) {
+	return s.mutate(func() {
+		for i := range s.data.Rules {
+			if s.data.Rules[i].Pack == pack {
+				s.data.Rules[i].Enabled = enabled
+			}
+		}
+	})
+}
+
+// RemovePack deletes every rule in the named Allow pack.
+func (s *Store) RemovePack(pack string) (Rules, error) {
+	return s.mutate(func() {
+		out := s.data.Rules[:0:0]
+		for _, x := range s.data.Rules {
+			if x.Pack != pack {
+				out = append(out, x)
+			}
+		}
+		s.data.Rules = out
 	})
 }
 

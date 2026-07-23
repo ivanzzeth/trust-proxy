@@ -103,6 +103,70 @@ func TestSanitize_DropsInvalidOnLoad(t *testing.T) {
 	}
 }
 
+func TestPacks(t *testing.T) {
+	s := newStore(t)
+	// Applying a preset = Add each rule (tagged + enabled).
+	apply := func(p apitypes.PackPreset) {
+		for _, r := range p.Rules {
+			if _, err := s.Add(r); err != nil {
+				t.Fatalf("apply %s: %v", p.Name, err)
+			}
+		}
+	}
+	var dev, google apitypes.PackPreset
+	for _, p := range Presets {
+		if p.Name == "Dev" {
+			dev = p
+		}
+		if p.Name == "Google" {
+			google = p
+		}
+	}
+	apply(dev)
+	apply(google)
+	count := func(pack string) (total, enabled int) {
+		for _, r := range s.Get().Rules {
+			if r.Pack == pack {
+				total++
+				if r.Enabled {
+					enabled++
+				}
+			}
+		}
+		return
+	}
+	if td, _ := count("Dev"); td != len(dev.Rules) {
+		t.Fatalf("Dev pack has %d rules, want %d", td, len(dev.Rules))
+	}
+	// Idempotent re-apply doesn't duplicate.
+	apply(dev)
+	if td, _ := count("Dev"); td != len(dev.Rules) {
+		t.Fatalf("re-apply duplicated Dev: %d", td)
+	}
+
+	// Disable the Dev pack only.
+	if _, err := s.SetPackEnabled("Dev", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, de := count("Dev"); de != 0 {
+		t.Fatalf("Dev should be all-disabled, %d still enabled", de)
+	}
+	if _, ge := count("Google"); ge != len(google.Rules) {
+		t.Fatalf("Google must be untouched, enabled=%d want %d", ge, len(google.Rules))
+	}
+
+	// Remove the Dev pack only.
+	if _, err := s.RemovePack("Dev"); err != nil {
+		t.Fatal(err)
+	}
+	if td, _ := count("Dev"); td != 0 {
+		t.Fatalf("Dev should be gone, %d remain", td)
+	}
+	if gt, _ := count("Google"); gt != len(google.Rules) {
+		t.Fatalf("Google must survive Dev removal, %d", gt)
+	}
+}
+
 func TestSingboxMatchKey(t *testing.T) {
 	for m, want := range map[string]string{
 		"domain": "domain", "domain_suffix": "domain_suffix", "keyword": "domain_keyword",

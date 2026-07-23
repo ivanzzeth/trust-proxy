@@ -6,6 +6,7 @@
 > (`kill %1` 跨 Bash 调用无效,会残留孤儿进程;别动用户网关 pid)。
 
 ## 本会话已完成(勿重做)
+- **#10 Allow 包(✅)**:见下「~~#10~~」条目——`Pack` 命名标签 + 整组启停/删除 + 内置预设,零引擎改动。
 - **A/B/#11 Rules 页统一 + 规则集内容查看 + 生效策略来源标注(✅)**:见下「~~A~~/~~B~~」条目。
 - **Task C 自定义路由规则(✅)**:见下「~~C~~」条目——有序 store + 引擎 L4 + API + dashboard + node 自愈。
 - **P0 分层 allow 闸重构 + no-proxy 路由层(✅)**:白名单=纯 ACL(允/拒),出口交给 routing。
@@ -38,8 +39,10 @@
 - 单测:store(校验/幂等/排序/sanitize)+ gateway(允许集成员、L4 顺序、node self-heal、parseValidate);端到端已验(block 覆盖白名单、启停、死节点自愈、400 校验)。
 - **剩余**:白名单域名的「直连/代理」快捷入口(其实=加一条自定义规则)可后续在白名单 UI 上加个便捷按钮。
 
-## #10 —— Allow 包(一键应用的命名规则组)【后续】
-- 白名单/自定义规则支持**命名分组(pack)**,一键启用/停用/应用整组;内置预设(China-direct、Google、Dev: github/npm、Apple)+ 用户自定义。构建在 C 之上(一个 pack = 一组带标签的 customrules/白名单条目)。
+## ~~#10 —— Allow 包(命名规则组)~~（✅ 已完成）
+- 自定义规则加可选 `Pack` 命名标签（纯元数据，**零引擎改动**）；`SetPackEnabled`/`RemovePack` 整组启停/删除;`presets.go` 内置预设 **Dev/Google/Apple/China-direct** 一键导入(`POST /api/customrules/packs/apply`)。
+- API:`GET packs/catalog`、`POST packs/apply`、`PATCH/DELETE packs/{name}`。dashboard Custom tab:预设导入卡 + 规则包管理条(整组启停/删除)+ 每行 pack badge。端到端已验(导入/整组停[规则留存但不注入]/删除)。
+- （用户自定义 pack:任意规则填 `pack` 字段即归组;命名分组的 UI 编辑可后续再加。）
 
 ## ~~A 前端 + #11 Rules 页统一~~（✅ 已完成）
 - 统一 **Rules 页**（`dashboard/src/pages/rules.tsx`，tab）：**Routing**(B 生效策略) / **Rule Sets**(现有 + A 点开看内容) / **Custom**(C)。`rulesets`/`custom-rules` 加 `embedded` 内嵌;`/rulesets`·`/custom-rules`→`/rules` 重定向;Policy 侧边栏合成单一 `/rules`。

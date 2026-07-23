@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Download, Package, Plus, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { api, CRAction, CRMatch, CustomRule } from '@/lib/api';
+import { api, CRAction, CRMatch, CustomRule, PackPreset } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -30,12 +30,21 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
 
   const { data: rules = [] } = useQuery({ queryKey: ['customrules'], queryFn: api.customRules });
   const { data: proxyData } = useQuery({ queryKey: ['proxies'], queryFn: api.proxies });
+  const { data: catalog = [] } = useQuery({ queryKey: ['packsCatalog'], queryFn: api.packsCatalog });
   const nodes = proxyData?.proxies?.['proxy']?.all ?? [];
 
   const add = useMutation({ mutationFn: api.addCR, onSuccess: invalidate, onError: err });
   const patch = useMutation({ mutationFn: (v: { id: string; patch: Partial<Omit<CustomRule, 'id'>> }) => api.patchCR(v.id, v.patch), onSuccess: invalidate, onError: err });
   const del = useMutation({ mutationFn: api.delCR, onSuccess: invalidate, onError: err });
   const move = useMutation({ mutationFn: (v: { id: string; dir: number }) => api.moveCR(v.id, v.dir), onSuccess: invalidate, onError: err });
+  const applyPack = useMutation({ mutationFn: api.applyPack, onSuccess: invalidate, onError: err });
+  const packEnable = useMutation({ mutationFn: (v: { name: string; enabled: boolean }) => api.setPackEnabled(v.name, v.enabled), onSuccess: invalidate, onError: err });
+  const packDel = useMutation({ mutationFn: api.delPack, onSuccess: invalidate, onError: err });
+
+  // Distinct packs present, with their all-enabled state (for the manage strip).
+  const packs = Array.from(new Set(rules.map((r) => r.pack).filter((p): p is string => !!p)));
+  const packAllOn = (name: string) => rules.filter((r) => r.pack === name).every((r) => r.enabled);
+  const importedPacks = new Set(packs);
 
   const [match, setMatch] = useState<CRMatch>('domain_suffix');
   const [value, setValue] = useState('');
@@ -104,6 +113,47 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
         </CardContent>
       </Card>
 
+      <Card className="mt-4">
+        <CardHeader className="pb-3"><CardTitle className="text-sm">{t('pages.customRules.presetsTitle')}</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          {catalog.map((p: PackPreset) => (
+            <div key={p.name} className="flex items-center gap-3 rounded-md border px-3 py-2">
+              <Package className="size-4 shrink-0 text-muted-foreground" />
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">{p.name}</div>
+                <div className="truncate text-xs text-muted-foreground">{p.description}</div>
+              </div>
+              <Badge variant="muted" className="tnum">{p.rules.length}</Badge>
+              {importedPacks.has(p.name) ? (
+                <Badge variant="muted">{t('pages.customRules.importedBadge')}</Badge>
+              ) : (
+                <Button size="xs" variant="secondary" disabled={applyPack.isPending} onClick={() => applyPack.mutate(p.name)}>
+                  <Download className="size-3.5" /> {t('pages.customRules.importButton')}
+                </Button>
+              )}
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      {packs.length > 0 && (
+        <Card className="mt-4">
+          <CardHeader className="pb-3"><CardTitle className="text-sm">{t('pages.customRules.packsTitle')}</CardTitle></CardHeader>
+          <CardContent className="flex flex-wrap gap-2">
+            {packs.map((name) => (
+              <div key={name} className="flex items-center gap-2 rounded-md border px-3 py-1.5">
+                <span className="text-sm font-medium">{name}</span>
+                <Badge variant="muted" className="tnum">{rules.filter((r) => r.pack === name).length}</Badge>
+                <Switch checked={packAllOn(name)} onCheckedChange={(v) => packEnable.mutate({ name, enabled: v })} title={t('pages.customRules.packToggle')} />
+                <Button size="icon" variant="ghost" className="size-6 text-destructive" onClick={() => packDel.mutate(name)} title={t('pages.customRules.packDelete')}>
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
       <Card className="mt-4 overflow-hidden">
         <CardHeader className="pb-2"><CardTitle className="text-sm">{t('pages.customRules.tableTitle')}</CardTitle></CardHeader>
         <CardContent className="px-0 pb-0">
@@ -142,7 +192,12 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
                       <Switch checked={r.enabled} onCheckedChange={(v) => patch.mutate({ id: r.id, patch: { enabled: v } })} />
                     </TableCell>
                     <TableCell><Badge variant="muted">{t(`pages.customRules.match.${r.match}`)}</Badge></TableCell>
-                    <TableCell className="tnum max-w-[260px] truncate">{r.value}</TableCell>
+                    <TableCell className="max-w-[260px]">
+                      <div className="flex items-center gap-2">
+                        <span className="tnum truncate">{r.value}</span>
+                        {r.pack && <Badge variant="outline" className="shrink-0 text-[10px]">{r.pack}</Badge>}
+                      </div>
+                    </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
                         <Select value={r.action} onValueChange={(v) => changeAction(r, v as CRAction)}>
