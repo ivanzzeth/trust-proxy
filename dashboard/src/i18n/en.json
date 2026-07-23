@@ -1,0 +1,39 @@
+{
+  "brand": { "subtitle": "gateway" },
+  "nav": {
+    "overview": "Overview",
+    "connections": "Connections",
+    "nodes": "Nodes",
+    "endpoints": "Endpoints",
+    "profiles": "Profiles",
+    "whitelist": "Whitelist",
+    "blacklist": "Blacklist",
+    "ruleSets": "Rule Sets",
+    "proxies": "Proxies",
+    "rules": "Rules",
+    "dns": "DNS",
+    "history": "History",
+    "logs": "Logs",
+    "fleet": "Fleet",
+    "settings": "Settings"
+  },
+  "top": {
+    "capture": "Capture",
+    "routing": "Routing",
+    "autoBlock": "Auto-block",
+    "live": "live",
+    "keepMode": "Keep current mode",
+    "guard": "Mode guard: reverting to {{to}} in {{sec}}s — confirm you still have access.",
+    "captureMode": "Capture mode: {{mode}}",
+    "tunNeedsRoot": "TUN needs elevated privileges (start with sudo)",
+    "routingRuleTip": "Rule: whitelist default-deny (safe)",
+    "routingGlobalTip": "Global: default-deny OFF — unlisted traffic egresses via proxy",
+    "globalBanner": "Global routing: whitelist default-deny is OFF — unlisted traffic egresses via proxy (blacklist / threat-intel / process·device gates still apply). Switch back to Rule to restore default-deny.",
+    "intel": "{{domains}}d / {{ips}}ip intel"
+  },
+  "settings": {
+    "pageDesc": "Gateway configuration.",
+    "language": "Language",
+    "languageDesc": "Console display language (saved in this browser)."
+  }
+}

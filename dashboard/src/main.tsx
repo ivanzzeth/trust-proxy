@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createHashRouter, RouterProvider } from 'react-router-dom';
 
 import './index.css';
+import '@/i18n';
 import { AppShell } from '@/components/app-shell';
 import { Toaster } from '@/components/ui/sonner';
 import Overview from '@/pages/overview';

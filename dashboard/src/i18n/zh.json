@@ -1,0 +1,39 @@
+{
+  "brand": { "subtitle": "网关" },
+  "nav": {
+    "overview": "概览",
+    "connections": "连接",
+    "nodes": "节点",
+    "endpoints": "出口端点",
+    "profiles": "配置档",
+    "whitelist": "白名单",
+    "blacklist": "黑名单",
+    "ruleSets": "规则集",
+    "proxies": "代理组",
+    "rules": "路由规则",
+    "dns": "DNS",
+    "history": "历史",
+    "logs": "日志",
+    "fleet": "多节点",
+    "settings": "设置"
+  },
+  "top": {
+    "capture": "抓取",
+    "routing": "路由",
+    "autoBlock": "自动阻断",
+    "live": "活动",
+    "keepMode": "保持当前模式",
+    "guard": "模式保护：{{sec}} 秒后回退到 {{to}} —— 请确认你仍能访问。",
+    "captureMode": "抓取模式：{{mode}}",
+    "tunNeedsRoot": "TUN 需要提升权限（用 sudo 启动）",
+    "routingRuleTip": "Rule：白名单默认拒绝（安全）",
+    "routingGlobalTip": "Global：默认拒绝关闭 —— 未列入流量走代理出网",
+    "globalBanner": "Global 路由：白名单默认拒绝已关闭 —— 未列入白名单的流量正走代理出网（黑名单 / 威胁情报 / 进程·设备闸仍生效）。切回 Rule 恢复默认拒绝。",
+    "intel": "{{domains}} 域 / {{ips}} IP 情报"
+  },
+  "settings": {
+    "pageDesc": "网关配置。",
+    "language": "语言",
+    "languageDesc": "控制台显示语言（保存在此浏览器）。"
+  }
+}

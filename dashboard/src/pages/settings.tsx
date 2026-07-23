@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Save } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { api, InboundAuth, TUNConfig } from '@/lib/api';
+import { LANGS } from '@/i18n';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -170,11 +172,38 @@ function TUNCard() {
   );
 }
 
+function LanguageCard() {
+  const { t, i18n } = useTranslation();
+  const cur = (i18n.resolvedLanguage ?? 'en').startsWith('zh') ? 'zh' : 'en';
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-sm">{t('settings.language')}</CardTitle>
+        <CardDescription>{t('settings.languageDesc')}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Select value={cur} onValueChange={(v) => void i18n.changeLanguage(v)}>
+          <SelectTrigger className="w-48"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            {LANGS.map((l) => (
+              <SelectItem key={l.code} value={l.code}>
+                {l.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Settings() {
+  const { t } = useTranslation();
   return (
     <div>
-      <PageHeader title="Settings" description="Gateway configuration." />
+      <PageHeader title={t('nav.settings')} description={t('settings.pageDesc')} />
       <div className="grid gap-4 lg:grid-cols-2">
+        <LanguageCard />
         <InboundCard />
         <TUNCard />
       </div>

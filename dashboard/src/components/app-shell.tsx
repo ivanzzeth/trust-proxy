@@ -24,6 +24,7 @@ import {
   Wifi,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { api, currentNode, setNode } from '@/lib/api';
 import { cn, fmtBytes } from '@/lib/utils';
@@ -34,21 +35,21 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 const NAV = [
-  { to: '/', label: 'Overview', icon: Activity, end: true },
-  { to: '/connections', label: 'Connections', icon: Waypoints },
-  { to: '/subscriptions', label: 'Nodes', icon: Wifi },
-  { to: '/endpoints', label: 'Endpoints', icon: Cable },
-  { to: '/profiles', label: 'Profiles', icon: Layers },
-  { to: '/whitelist', label: 'Whitelist', icon: ShieldCheck },
-  { to: '/blacklist', label: 'Blacklist', icon: Ban },
-  { to: '/rulesets', label: 'Rule Sets', icon: ListChecks },
-  { to: '/proxies', label: 'Proxies', icon: Globe },
-  { to: '/rules', label: 'Rules', icon: ListTree },
-  { to: '/dns', label: 'DNS', icon: Radar },
-  { to: '/history', label: 'History', icon: HistoryIcon },
-  { to: '/logs', label: 'Logs', icon: Terminal },
-  { to: '/fleet', label: 'Fleet', icon: Server },
-  { to: '/settings', label: 'Settings', icon: SettingsIcon },
+  { to: '/', label: 'nav.overview', icon: Activity, end: true },
+  { to: '/connections', label: 'nav.connections', icon: Waypoints },
+  { to: '/subscriptions', label: 'nav.nodes', icon: Wifi },
+  { to: '/endpoints', label: 'nav.endpoints', icon: Cable },
+  { to: '/profiles', label: 'nav.profiles', icon: Layers },
+  { to: '/whitelist', label: 'nav.whitelist', icon: ShieldCheck },
+  { to: '/blacklist', label: 'nav.blacklist', icon: Ban },
+  { to: '/rulesets', label: 'nav.ruleSets', icon: ListChecks },
+  { to: '/proxies', label: 'nav.proxies', icon: Globe },
+  { to: '/rules', label: 'nav.rules', icon: ListTree },
+  { to: '/dns', label: 'nav.dns', icon: Radar },
+  { to: '/history', label: 'nav.history', icon: HistoryIcon },
+  { to: '/logs', label: 'nav.logs', icon: Terminal },
+  { to: '/fleet', label: 'nav.fleet', icon: Server },
+  { to: '/settings', label: 'nav.settings', icon: SettingsIcon },
 ];
 
 const MODE_LABEL: Record<string, string> = { manual: 'Manual', system: 'System', tun: 'TUN' };
@@ -62,6 +63,7 @@ function useTheme() {
 }
 
 function ModeSwitcher() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 5000 });
   const m = useMutation({
@@ -75,7 +77,7 @@ function ModeSwitcher() {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex items-center gap-1 rounded-lg border bg-card p-0.5">
-        <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Capture</span>
+        <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{t('top.capture')}</span>
         {st.modes.map((mode) => {
           const active = mode === st.mode;
           const needRoot = mode === 'tun' && !st.root;
@@ -93,7 +95,7 @@ function ModeSwitcher() {
                   {MODE_LABEL[mode] ?? mode}
                 </button>
               </TooltipTrigger>
-              <TooltipContent>{needRoot ? 'TUN needs root (start with sudo)' : `Capture mode: ${mode}`}</TooltipContent>
+              <TooltipContent>{needRoot ? t('top.tunNeedsRoot') : t('top.captureMode', { mode })}</TooltipContent>
             </Tooltip>
           );
         })}
@@ -107,6 +109,7 @@ function ModeSwitcher() {
 // egresses via proxy; security floor stays on). Global is styled amber as a
 // standing warning. The switch is live (no data-plane rebuild), so no guard.
 function RoutingSwitcher() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['clash-mode'], queryFn: api.clashMode, refetchInterval: 5000 });
   const m = useMutation({
@@ -119,7 +122,7 @@ function RoutingSwitcher() {
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex items-center gap-1 rounded-lg border bg-card p-0.5">
-        <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">Routing</span>
+        <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{t('top.routing')}</span>
         {data.modes.map((mode) => {
           const active = mode.toLowerCase() === cur;
           const isGlobal = mode.toLowerCase() === 'global';
@@ -142,7 +145,7 @@ function RoutingSwitcher() {
                 </button>
               </TooltipTrigger>
               <TooltipContent>
-                {isGlobal ? 'Global: default-deny OFF — unlisted traffic egresses via proxy' : 'Rule: whitelist default-deny (safe)'}
+                {isGlobal ? t('top.routingGlobalTip') : t('top.routingRuleTip')}
               </TooltipContent>
             </Tooltip>
           );
@@ -155,20 +158,19 @@ function RoutingSwitcher() {
 // GlobalModeBanner is a standing amber warning shown whenever routing is in
 // Global mode, so "default-deny is off" is never a silent state.
 function GlobalModeBanner() {
+  const { t } = useTranslation();
   const { data } = useQuery({ queryKey: ['clash-mode'], queryFn: api.clashMode, refetchInterval: 5000 });
   if (data?.mode?.toLowerCase() !== 'global') return null;
   return (
     <div className="flex items-center gap-2 border-b border-amber-500/50 bg-amber-500/15 px-6 py-2 text-sm">
       <AlertTriangle className="size-4 shrink-0 text-amber-500" />
-      <span>
-        <b>Global routing</b>: whitelist default-deny is <b>OFF</b> — unlisted traffic egresses via proxy (blacklist / threat-intel /
-        process·device gates still apply). Switch back to <b>Rule</b> to restore default-deny.
-      </span>
+      <span>{t('top.globalBanner')}</span>
     </div>
   );
 }
 
 function AutoBlock() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status });
   const m = useMutation({
@@ -179,7 +181,7 @@ function AutoBlock() {
   return (
     <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
       <Switch checked={st.autoBlock} onCheckedChange={(v) => m.mutate(v)} />
-      Auto-block
+      {t('top.autoBlock')}
     </label>
   );
 }
@@ -213,6 +215,7 @@ function NodeSwitcher() {
 }
 
 function RevertBanner() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 1000 });
   const confirm = useMutation({
@@ -224,17 +227,17 @@ function RevertBanner() {
     <div className="flex items-center justify-between gap-3 border-b border-warning/50 bg-warning/15 px-6 py-2 text-sm">
       <span className="flex items-center gap-2">
         <AlertTriangle className="size-4 shrink-0 text-warning" />
-        Mode guard: reverting to <b>{st.revert.to}</b> in{' '}
-        <span className="tnum font-semibold text-warning">{st.revert.in_seconds}s</span> — confirm you still have access.
+        {t('top.guard', { to: st.revert.to, sec: st.revert.in_seconds })}
       </span>
       <Button size="sm" disabled={confirm.isPending} onClick={() => confirm.mutate()}>
-        Keep current mode
+        {t('top.keepMode')}
       </Button>
     </div>
   );
 }
 
 function TrafficPill() {
+  const { t } = useTranslation();
   const { data } = useQuery({ queryKey: ['conns'], queryFn: api.connections, refetchInterval: 2000 });
   const live = data?.connections?.length ?? 0;
   return (
@@ -242,7 +245,7 @@ function TrafficPill() {
       <span className="flex items-center gap-1.5">
         <span className={cn('size-1.5 rounded-full', live > 0 ? 'bg-primary animate-pulse' : 'bg-muted-foreground/40')} />
         <span className="tnum">{live}</span>
-        <span className="text-muted-foreground">live</span>
+        <span className="text-muted-foreground">{t('top.live')}</span>
       </span>
       <span className="flex items-center gap-1 text-muted-foreground">
         <ArrowDownUp className="size-3" />
@@ -255,6 +258,7 @@ function TrafficPill() {
 }
 
 export function AppShell() {
+  const { t } = useTranslation();
   const { dark, toggle } = useTheme();
   const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status });
 
@@ -268,7 +272,7 @@ export function AppShell() {
           </div>
           <div className="flex flex-col leading-none">
             <span className="text-sm font-bold tracking-tight">trust-proxy</span>
-            <span className="text-[10px] uppercase tracking-widest text-muted-foreground">gateway</span>
+            <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{t('brand.subtitle')}</span>
           </div>
         </div>
         <nav className="flex-1 space-y-0.5 px-3 py-3">
@@ -295,7 +299,7 @@ export function AppShell() {
                     )}
                   />
                   <Icon className="size-4" />
-                  {label}
+                  {t(label)}
                 </>
               )}
             </NavLink>
@@ -305,7 +309,7 @@ export function AppShell() {
           <div className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <ScrollText className="size-3.5" />
-              {st ? `${st.threats.domains}d / ${st.threats.ips}ip intel` : '—'}
+              {st ? t('top.intel', { domains: st.threats.domains, ips: st.threats.ips }) : '—'}
             </span>
             <button onClick={toggle} className="grid size-6 place-items-center rounded hover:bg-accent cursor-pointer">
               {dark ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
