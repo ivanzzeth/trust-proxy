@@ -35,5 +35,37 @@
     "pageDesc": "Gateway configuration.",
     "language": "Language",
     "languageDesc": "Console display language (saved in this browser)."
+  },
+  "common": { "empty": "empty" },
+  "pages": {
+    "whitelist": {
+      "desc": "Default-deny egress allow-list. Domains & IPs are destinations; Processes & Devices are opt-in source gates (empty = off).",
+      "domains": "Domains",
+      "domainsHint": "Suffix by default (example.com covers its subdomains). Wildcards: *.example.com (subdomains), foo* (prefix).",
+      "domainsPh": "example.com  /  *.example.com",
+      "ip": "IP / CIDR",
+      "ipPh": "1.2.3.4/32",
+      "processes": "Processes",
+      "processesHint": "When non-empty, unknown binaries can't egress at all — even to a whitelisted destination.",
+      "processesPh": "curl  /usr/bin/ssh",
+      "devices": "Devices (source)",
+      "devicesHint": "When non-empty, only these source IPs/CIDRs may egress. For gateway/router deployments.",
+      "devicesPh": "192.168.1.20"
+    },
+    "blacklist": {
+      "desc": "Explicit egress deny-list. These destinations are REJECTED even if a whitelist or allow rule-set would otherwise permit them — the reject rules sit above every allow.",
+      "domains": "Domains",
+      "domainsHint": "Suffix by default (evil.com blocks its subdomains). Wildcards: *.evil.com, ads-* (prefix).",
+      "domainsPh": "evil.com  /  *.evil.com",
+      "keywords": "Keywords",
+      "keywordsHint": "Matched as a substring anywhere in the domain.",
+      "keywordsPh": "tracker",
+      "regexes": "Regexes",
+      "regexesHint": "RE2 pattern matched against the domain (must compile).",
+      "regexesPh": ".*\\.onion$",
+      "ip": "IP / CIDR",
+      "ipHint": "Reject connections to these destination IPs/CIDRs.",
+      "ipPh": "6.6.6.6/32"
+    }
   }
 }

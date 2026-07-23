@@ -35,5 +35,37 @@
     "pageDesc": "网关配置。",
     "language": "语言",
     "languageDesc": "控制台显示语言（保存在此浏览器）。"
+  },
+  "common": { "empty": "空" },
+  "pages": {
+    "whitelist": {
+      "desc": "默认拒绝的出网放行清单。域名与 IP 是目的地；进程与设备是可选的来源闸（留空=关闭）。",
+      "domains": "域名",
+      "domainsHint": "默认后缀匹配（example.com 覆盖其子域）。通配符：*.example.com（子域）、foo*（前缀）。",
+      "domainsPh": "example.com  /  *.example.com",
+      "ip": "IP / CIDR",
+      "ipPh": "1.2.3.4/32",
+      "processes": "进程",
+      "processesHint": "非空时，未列入的程序完全无法出网——即便目标在白名单里。",
+      "processesPh": "curl  /usr/bin/ssh",
+      "devices": "设备（来源）",
+      "devicesHint": "非空时，只有这些来源 IP/CIDR 可出网。用于网关/路由部署。",
+      "devicesPh": "192.168.1.20"
+    },
+    "blacklist": {
+      "desc": "显式出网拒绝清单。即使白名单或放行规则集会放行，这些目的地也一律被拒——拒绝规则位于所有放行之上。",
+      "domains": "域名",
+      "domainsHint": "默认后缀匹配（evil.com 拦其子域）。通配符：*.evil.com、ads-*（前缀）。",
+      "domainsPh": "evil.com  /  *.evil.com",
+      "keywords": "关键字",
+      "keywordsHint": "作为子串在域名任意位置匹配。",
+      "keywordsPh": "tracker",
+      "regexes": "正则",
+      "regexesHint": "对域名做 RE2 正则匹配（须能编译）。",
+      "regexesPh": ".*\\.onion$",
+      "ip": "IP / CIDR",
+      "ipHint": "拒绝连接到这些目标 IP/CIDR。",
+      "ipPh": "6.6.6.6/32"
+    }
   }
 }

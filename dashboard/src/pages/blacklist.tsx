@@ -2,6 +2,7 @@ import { type ElementType, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Globe, Network, Plus, Regex, Tag, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { api, BLType } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
@@ -11,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
 export default function Blacklist() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data: bl } = useQuery({ queryKey: ['blacklist'], queryFn: api.blacklist });
   const invalidate = () => {
@@ -29,17 +31,14 @@ export default function Blacklist() {
 
   return (
     <div>
-      <PageHeader
-        title="Blacklist"
-        description="Explicit egress deny-list. These destinations are REJECTED even if a whitelist or allow rule-set would otherwise permit them — the reject rules sit above every allow."
-      />
+      <PageHeader title={t('nav.blacklist')} description={t('pages.blacklist.desc')} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <BLCard
           type="domain"
           icon={Globe}
-          title="Domains"
-          hint="Suffix by default (evil.com blocks its subdomains). Wildcards: *.evil.com, ads-* (prefix)."
-          placeholder="evil.com  /  *.evil.com"
+          title={t('pages.blacklist.domains')}
+          hint={t('pages.blacklist.domainsHint')}
+          placeholder={t('pages.blacklist.domainsPh')}
           items={bl?.domains ?? []}
           onAdd={(v) => add.mutate({ type: 'domain', value: v })}
           onDel={(v) => del.mutate({ type: 'domain', value: v })}
@@ -47,9 +46,9 @@ export default function Blacklist() {
         <BLCard
           type="keyword"
           icon={Tag}
-          title="Keywords"
-          hint="Matched as a substring anywhere in the domain."
-          placeholder="tracker"
+          title={t('pages.blacklist.keywords')}
+          hint={t('pages.blacklist.keywordsHint')}
+          placeholder={t('pages.blacklist.keywordsPh')}
           items={bl?.keywords ?? []}
           onAdd={(v) => add.mutate({ type: 'keyword', value: v })}
           onDel={(v) => del.mutate({ type: 'keyword', value: v })}
@@ -57,9 +56,9 @@ export default function Blacklist() {
         <BLCard
           type="regex"
           icon={Regex}
-          title="Regexes"
-          hint="RE2 pattern matched against the domain (must compile)."
-          placeholder=".*\.onion$"
+          title={t('pages.blacklist.regexes')}
+          hint={t('pages.blacklist.regexesHint')}
+          placeholder={t('pages.blacklist.regexesPh')}
           items={bl?.regexes ?? []}
           onAdd={(v) => add.mutate({ type: 'regex', value: v })}
           onDel={(v) => del.mutate({ type: 'regex', value: v })}
@@ -67,9 +66,9 @@ export default function Blacklist() {
         <BLCard
           type="ip"
           icon={Network}
-          title="IP / CIDR"
-          hint="Reject connections to these destination IPs/CIDRs."
-          placeholder="6.6.6.6/32"
+          title={t('pages.blacklist.ip')}
+          hint={t('pages.blacklist.ipHint')}
+          placeholder={t('pages.blacklist.ipPh')}
           items={bl?.ips ?? []}
           onAdd={(v) => add.mutate({ type: 'ip', value: v })}
           onDel={(v) => del.mutate({ type: 'ip', value: v })}
@@ -97,11 +96,12 @@ function BLCard({
   onAdd: (v: string) => void;
   onDel: (v: string) => void;
 }) {
+  const { t } = useTranslation();
   const [v, setV] = useState('');
   const submit = () => {
-    const t = v.trim();
-    if (t) {
-      onAdd(t);
+    const val = v.trim();
+    if (val) {
+      onAdd(val);
       setV('');
     }
   };
@@ -130,7 +130,7 @@ function BLCard({
           </Button>
         </div>
         <div className="min-h-24 space-y-1">
-          {items.length === 0 && <p className="py-4 text-center text-xs text-muted-foreground">empty</p>}
+          {items.length === 0 && <p className="py-4 text-center text-xs text-muted-foreground">{t('common.empty')}</p>}
           {items.map((it) => (
             <div
               key={it}

@@ -2,6 +2,7 @@ import { type ElementType, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Cpu, Globe, MonitorSmartphone, Network, Plus, X } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import { api, WLType } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
@@ -11,6 +12,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
 export default function Whitelist() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data: wl } = useQuery({ queryKey: ['whitelist'], queryFn: api.whitelist });
   const invalidate = () => {
@@ -29,17 +31,14 @@ export default function Whitelist() {
 
   return (
     <div>
-      <PageHeader
-        title="Whitelist"
-        description="Default-deny egress allow-list. Domains & IPs are destinations; Processes & Devices are opt-in source gates (empty = off)."
-      />
+      <PageHeader title={t('nav.whitelist')} description={t('pages.whitelist.desc')} />
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <WLCard
           type="domain"
           icon={Globe}
-          title="Domains"
-          hint="Suffix by default (example.com covers its subdomains). Wildcards: *.example.com (subdomains), foo* (prefix)."
-          placeholder="example.com  /  *.example.com"
+          title={t('pages.whitelist.domains')}
+          hint={t('pages.whitelist.domainsHint')}
+          placeholder={t('pages.whitelist.domainsPh')}
           items={wl?.domains ?? []}
           onAdd={(v) => add.mutate({ type: 'domain', value: v })}
           onDel={(v) => del.mutate({ type: 'domain', value: v })}
@@ -47,8 +46,8 @@ export default function Whitelist() {
         <WLCard
           type="ip"
           icon={Network}
-          title="IP / CIDR"
-          placeholder="1.2.3.4/32"
+          title={t('pages.whitelist.ip')}
+          placeholder={t('pages.whitelist.ipPh')}
           items={wl?.ips ?? []}
           onAdd={(v) => add.mutate({ type: 'ip', value: v })}
           onDel={(v) => del.mutate({ type: 'ip', value: v })}
@@ -56,9 +55,9 @@ export default function Whitelist() {
         <WLCard
           type="process"
           icon={Cpu}
-          title="Processes"
-          hint="When non-empty, unknown binaries can't egress at all — even to a whitelisted destination."
-          placeholder="curl  /usr/bin/ssh"
+          title={t('pages.whitelist.processes')}
+          hint={t('pages.whitelist.processesHint')}
+          placeholder={t('pages.whitelist.processesPh')}
           items={wl?.processes ?? []}
           onAdd={(v) => add.mutate({ type: 'process', value: v })}
           onDel={(v) => del.mutate({ type: 'process', value: v })}
@@ -66,9 +65,9 @@ export default function Whitelist() {
         <WLCard
           type="device"
           icon={MonitorSmartphone}
-          title="Devices (source)"
-          hint="When non-empty, only these source IPs/CIDRs may egress. For gateway/router deployments."
-          placeholder="192.168.1.20"
+          title={t('pages.whitelist.devices')}
+          hint={t('pages.whitelist.devicesHint')}
+          placeholder={t('pages.whitelist.devicesPh')}
           items={wl?.devices ?? []}
           onAdd={(v) => add.mutate({ type: 'device', value: v })}
           onDel={(v) => del.mutate({ type: 'device', value: v })}
@@ -96,11 +95,12 @@ function WLCard({
   onAdd: (v: string) => void;
   onDel: (v: string) => void;
 }) {
+  const { t } = useTranslation();
   const [v, setV] = useState('');
   const submit = () => {
-    const t = v.trim();
-    if (t) {
-      onAdd(t);
+    const val = v.trim();
+    if (val) {
+      onAdd(val);
       setV('');
     }
   };
@@ -129,7 +129,7 @@ function WLCard({
           </Button>
         </div>
         <div className="min-h-24 space-y-1">
-          {items.length === 0 && <p className="py-4 text-center text-xs text-muted-foreground">empty</p>}
+          {items.length === 0 && <p className="py-4 text-center text-xs text-muted-foreground">{t('common.empty')}</p>}
           {items.map((it) => (
             <div
               key={it}
