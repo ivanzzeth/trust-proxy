@@ -27,6 +27,7 @@ import { useEffect, useState } from 'react';
 
 import { api, currentNode, setNode } from '@/lib/api';
 import { cn, fmtBytes } from '@/lib/utils';
+import { Logo } from '@/components/logo';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -263,7 +264,7 @@ export function AppShell() {
       <aside className="flex w-60 shrink-0 flex-col border-r bg-card/40">
         <div className="flex h-14 items-center gap-2.5 px-5">
           <div className="grid size-7 place-items-center rounded-md bg-primary/15 text-primary">
-            <ShieldCheck className="size-4" />
+            <Logo className="size-5" />
           </div>
           <div className="flex flex-col leading-none">
             <span className="text-sm font-bold tracking-tight">trust-proxy</span>
