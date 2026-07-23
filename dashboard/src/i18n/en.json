@@ -28,6 +28,7 @@
     "capture": "Capture",
     "routing": "Routing",
     "autoBlock": "Auto-block",
+    "autoBlockTip": "Auto-block drops any connection whose destination matches a threat-intel indicator — malware/C2 domains & IPs from abuse.ch feeds + built-in ({{domains}} domain / {{ips}} IP loaded). Heuristic detections (beaconing / DGA / large upload) only raise alerts; they never auto-drop.",
     "live": "live",
     "keepMode": "Keep current mode",
     "guard": "Mode guard: reverting to {{to}} in {{sec}}s — confirm you still have access.",
@@ -52,7 +53,37 @@
   "settings": {
     "pageDesc": "Gateway configuration.",
     "language": "Language",
-    "languageDesc": "Console display language (saved in this browser)."
+    "languageDesc": "Console display language. Defaults to your system language; a choice here is saved in this browser.",
+    "inbound": {
+      "title": "Proxy inbound auth",
+      "desc": "Require a username + password on the local proxy inbound (SOCKS/HTTP at 127.0.0.1:17070). Leave both empty to keep it open (the default). Turn this on if other devices can reach the proxy port.",
+      "user": "Username",
+      "pass": "Password",
+      "ph": "(empty = open)",
+      "onHint": "Auth required for clients on :17070.",
+      "offHint": "Inbound is open — no auth required.",
+      "save": "Save",
+      "toastOn": "Proxy inbound auth enabled",
+      "toastOff": "Proxy inbound auth disabled (open)"
+    },
+    "tun": {
+      "title": "TUN options",
+      "desc": "Advanced tuning for TUN capture mode (full-device VPN that captures ALL traffic). Only applies when the capture mode is TUN; ignored in Manual/System.",
+      "stack": "Network stack",
+      "stackDesc": "gvisor = userspace, safe & portable · system = faster, needs privileges · mixed.",
+      "mtu": "MTU",
+      "mtuPh": "0 = auto",
+      "strict": "Strict route",
+      "strictDesc": "Force every packet through the TUN (recommended — prevents leaks).",
+      "exclude": "Exclude apps",
+      "excludePh": "one per line — routed AROUND the TUN",
+      "excludeDesc": "These apps bypass the TUN and go direct (Android package names).",
+      "include": "Include only",
+      "includePh": "one per line — ONLY these go INTO the TUN",
+      "includeDesc": "If set, ONLY these apps are captured (mutually exclusive with Exclude).",
+      "save": "Save",
+      "toast": "TUN options saved"
+    }
   },
   "common": { "empty": "empty", "loading": "Loading…" },
   "pages": {

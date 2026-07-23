@@ -25,6 +25,7 @@ const textToList = (t: string) =>
     .filter(Boolean);
 
 function InboundCard() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['inbound'], queryFn: api.inbound });
   const [auth, setAuth] = useState<InboundAuth | null>(null);
@@ -35,7 +36,7 @@ function InboundCard() {
   const save = useMutation({
     mutationFn: (a: InboundAuth) => api.setInbound(a),
     onSuccess: (a) => {
-      toast.success(a.username ? 'Proxy inbound auth enabled' : 'Proxy inbound auth disabled (open)');
+      toast.success(a.username ? t('settings.inbound.toastOn') : t('settings.inbound.toastOff'));
       setAuth({ username: a.username ?? '', password: a.password ?? '' });
       qc.invalidateQueries({ queryKey: ['inbound'] });
     },
@@ -48,39 +49,37 @@ function InboundCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm">Proxy inbound auth</CardTitle>
-        <CardDescription>
-          Require a username/password on the mixed proxy inbound (:17070). Leave both empty to keep it open.
-        </CardDescription>
+        <CardTitle className="text-sm">{t('settings.inbound.title')}</CardTitle>
+        <CardDescription>{t('settings.inbound.desc')}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="space-y-1.5">
-          <Label htmlFor="inbound-user">Username</Label>
+          <Label htmlFor="inbound-user">{t('settings.inbound.user')}</Label>
           <Input
             id="inbound-user"
             autoComplete="off"
-            placeholder="(empty = open)"
+            placeholder={t('settings.inbound.ph')}
             value={auth.username}
             onChange={(e) => setAuth({ ...auth, username: e.target.value })}
           />
         </div>
         <div className="space-y-1.5">
-          <Label htmlFor="inbound-pass">Password</Label>
+          <Label htmlFor="inbound-pass">{t('settings.inbound.pass')}</Label>
           <Input
             id="inbound-pass"
             type="password"
             autoComplete="new-password"
-            placeholder="(empty = open)"
+            placeholder={t('settings.inbound.ph')}
             value={auth.password}
             onChange={(e) => setAuth({ ...auth, password: e.target.value })}
           />
         </div>
         <div className="flex items-center justify-between">
           <p className="text-xs text-muted-foreground">
-            {enabled ? 'Auth required for clients on :17070.' : 'Inbound is open — no auth required.'}
+            {enabled ? t('settings.inbound.onHint') : t('settings.inbound.offHint')}
           </p>
           <Button disabled={save.isPending} onClick={() => save.mutate(auth)}>
-            <Save className="size-4" /> Save
+            <Save className="size-4" /> {t('settings.inbound.save')}
           </Button>
         </div>
       </CardContent>
@@ -89,6 +88,7 @@ function InboundCard() {
 }
 
 function TUNCard() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['tun'], queryFn: api.tun });
   const [cfg, setCfg] = useState<TUNConfig | null>(null);
@@ -99,7 +99,7 @@ function TUNCard() {
   const save = useMutation({
     mutationFn: (c: TUNConfig) => api.setTUN(c),
     onSuccess: (c) => {
-      toast.success('TUN options saved');
+      toast.success(t('settings.tun.toast'));
       setCfg({ ...c, stack: c.stack || 'gvisor' });
       qc.invalidateQueries({ queryKey: ['tun'] });
     },
@@ -111,60 +111,61 @@ function TUNCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-sm">TUN options</CardTitle>
-        <CardDescription>
-          Advanced tuning for the TUN inbound. Only takes effect in <code>tun</code> capture mode.
-        </CardDescription>
+        <CardTitle className="text-sm">{t('settings.tun.title')}</CardTitle>
+        <CardDescription>{t('settings.tun.desc')}</CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1.5">
-            <Label>Stack</Label>
+            <Label>{t('settings.tun.stack')}</Label>
             <Select value={cfg.stack || 'gvisor'} onValueChange={(v) => setCfg({ ...cfg, stack: v })}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>{STACKS.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)}</SelectContent>
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="tun-mtu">MTU</Label>
+            <Label htmlFor="tun-mtu">{t('settings.tun.mtu')}</Label>
             <Input
               id="tun-mtu"
               type="number"
               min={0}
-              placeholder="0 = auto"
+              placeholder={t('settings.tun.mtuPh')}
               value={cfg.mtu || 0}
               onChange={(e) => setCfg({ ...cfg, mtu: Number(e.target.value) || 0 })}
             />
           </div>
         </div>
+        <p className="text-xs text-muted-foreground">{t('settings.tun.stackDesc')}</p>
         <div className="flex items-center justify-between">
           <div>
-            <Label htmlFor="tun-strict">Strict route</Label>
-            <p className="text-xs text-muted-foreground">Enforce that all traffic goes through the tun (recommended).</p>
+            <Label htmlFor="tun-strict">{t('settings.tun.strict')}</Label>
+            <p className="text-xs text-muted-foreground">{t('settings.tun.strictDesc')}</p>
           </div>
           <Switch id="tun-strict" checked={cfg.strict_route} onCheckedChange={(v) => setCfg({ ...cfg, strict_route: v })} />
         </div>
         <div className="space-y-1.5">
-          <Label>Exclude packages / processes</Label>
+          <Label>{t('settings.tun.exclude')}</Label>
+          <p className="text-xs text-muted-foreground">{t('settings.tun.excludeDesc')}</p>
           <textarea
             className="min-h-16 w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-xs font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            placeholder="one per line — routed AROUND the tun (Android package names)"
+            placeholder={t('settings.tun.excludePh')}
             value={listToText(cfg.exclude_package)}
             onChange={(e) => setCfg({ ...cfg, exclude_package: textToList(e.target.value) })}
           />
         </div>
         <div className="space-y-1.5">
-          <Label>Include packages</Label>
+          <Label>{t('settings.tun.include')}</Label>
+          <p className="text-xs text-muted-foreground">{t('settings.tun.includeDesc')}</p>
           <textarea
             className="min-h-16 w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-xs font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-            placeholder="one per line — ONLY these are routed INTO the tun (mutually exclusive with exclude)"
+            placeholder={t('settings.tun.includePh')}
             value={listToText(cfg.include_package)}
             onChange={(e) => setCfg({ ...cfg, include_package: textToList(e.target.value) })}
           />
         </div>
         <div className="flex items-center justify-end">
           <Button disabled={save.isPending} onClick={() => save.mutate(cfg)}>
-            <Save className="size-4" /> Save
+            <Save className="size-4" /> {t('settings.tun.save')}
           </Button>
         </div>
       </CardContent>

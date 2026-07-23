@@ -28,6 +28,7 @@
     "capture": "抓取",
     "routing": "路由",
     "autoBlock": "自动阻断",
+    "autoBlockTip": "自动阻断会切断目标命中威胁情报的连接——恶意/C2 域名和 IP，来自 abuse.ch 情报源+内置（已加载 {{domains}} 域名 / {{ips}} IP）。启发式检测（beaconing / DGA / 大流量上传）只告警，绝不自动断。",
     "live": "活动",
     "keepMode": "保持当前模式",
     "guard": "模式保护：{{sec}} 秒后回退到 {{to}} —— 请确认你仍能访问。",
@@ -52,7 +53,37 @@
   "settings": {
     "pageDesc": "网关配置。",
     "language": "语言",
-    "languageDesc": "控制台显示语言（保存在此浏览器）。"
+    "languageDesc": "控制台显示语言。默认跟随系统语言；在此选择会保存在本浏览器。",
+    "inbound": {
+      "title": "入站代理鉴权",
+      "desc": "给本地代理入站（127.0.0.1:17070 的 SOCKS/HTTP）设置用户名+密码。两者留空则保持开放（默认）。若代理端口能被其他设备访问，建议开启。",
+      "user": "用户名",
+      "pass": "密码",
+      "ph": "（留空=开放）",
+      "onHint": "已要求 :17070 的客户端鉴权。",
+      "offHint": "入站开放——无需鉴权。",
+      "save": "保存",
+      "toastOn": "已开启入站鉴权",
+      "toastOff": "已关闭入站鉴权（开放）"
+    },
+    "tun": {
+      "title": "TUN 高级选项",
+      "desc": "TUN 捕获模式（接管全设备流量的 VPN）的高级调优。仅在捕获模式为 TUN 时生效；Manual/System 下忽略。",
+      "stack": "网络栈",
+      "stackDesc": "gvisor=用户态，安全通用 · system=更快，需权限 · mixed。",
+      "mtu": "MTU",
+      "mtuPh": "0 = 自动",
+      "strict": "严格路由",
+      "strictDesc": "强制所有包走 TUN（推荐——防泄漏）。",
+      "exclude": "排除应用",
+      "excludePh": "每行一个——绕过 TUN 走直连",
+      "excludeDesc": "这些应用绕过 TUN 直连（Android 包名）。",
+      "include": "仅包含",
+      "includePh": "每行一个——只有这些进入 TUN",
+      "includeDesc": "若填写，则仅捕获这些应用（与“排除”互斥）。",
+      "save": "保存",
+      "toast": "TUN 选项已保存"
+    }
   },
   "common": { "empty": "空", "loading": "加载中…" },
   "pages": {

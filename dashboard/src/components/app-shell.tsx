@@ -285,10 +285,19 @@ function AutoBlock() {
   });
   if (!st) return null;
   return (
-    <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
-      <Switch checked={st.autoBlock} onCheckedChange={(v) => m.mutate(v)} />
-      {t('top.autoBlock')}
-    </label>
+    <TooltipProvider delayDuration={200}>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
+            <Switch checked={st.autoBlock} onCheckedChange={(v) => m.mutate(v)} />
+            {t('top.autoBlock')}
+          </label>
+        </TooltipTrigger>
+        <TooltipContent className="max-w-xs">
+          {t('top.autoBlockTip', { domains: st.threats.domains, ips: st.threats.ips })}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
   );
 }
 

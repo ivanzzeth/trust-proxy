@@ -151,6 +151,7 @@ export default function Connections() {
               <TableHead className="w-20">{t('pages.connections.colTime')}</TableHead>
               <TableHead>{t('pages.connections.colDestination')}</TableHead>
               <TableHead>{t('pages.connections.colProcess')}</TableHead>
+              <TableHead>{t('pages.connections.colEgress')}</TableHead>
               <TableHead className="text-right">↑</TableHead>
               <TableHead className="text-right">↓</TableHead>
               <TableHead>{t('pages.connections.colDetail')}</TableHead>
@@ -160,7 +161,7 @@ export default function Connections() {
           <TableBody>
             {rows.length === 0 && (
               <TableRow className="hover:bg-transparent">
-                <TableCell colSpan={8} className="py-12 text-center text-muted-foreground">
+                <TableCell colSpan={9} className="py-12 text-center text-muted-foreground">
                   {t('pages.connections.empty')}
                 </TableCell>
               </TableRow>
@@ -178,13 +179,16 @@ export default function Connections() {
                 <TableCell className="max-w-[180px] truncate text-xs text-muted-foreground" title={r.process}>
                   {r.process || '—'}
                 </TableCell>
+                <TableCell className="max-w-[220px] truncate text-xs" title={r.chain}>
+                  {r.chain ? <span className="tnum">{r.chain}</span> : <span className="text-muted-foreground">—</span>}
+                </TableCell>
                 <TableCell className="tnum text-right text-xs">{fmtBytes(r.up)}</TableCell>
                 <TableCell className="tnum text-right text-xs">{fmtBytes(r.down)}</TableCell>
                 <TableCell className="max-w-[240px]">
                   {r.reasons && r.reasons.length > 0 ? (
                     <span className="text-xs text-destructive">{r.reasons.join('; ')}</span>
                   ) : (
-                    <span className="tnum text-xs text-muted-foreground">{r.chain}</span>
+                    <span className="text-xs text-muted-foreground">—</span>
                   )}
                 </TableCell>
                 <TableCell>
