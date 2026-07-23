@@ -75,6 +75,16 @@ export interface Directlist {
   ips: string[];
 }
 export type DLType = 'domain' | 'ip';
+export type CRMatch = 'domain' | 'domain_suffix' | 'keyword' | 'regex' | 'ip_cidr';
+export type CRAction = 'direct' | 'proxy' | 'block' | 'node';
+export interface CustomRule {
+  id: string;
+  match: CRMatch;
+  value: string;
+  action: CRAction;
+  node?: string;
+  enabled: boolean;
+}
 export interface TPNode {
   tag: string;
   protocol: string;
@@ -299,6 +309,13 @@ export const api = {
     })),
   addDL: (type: DLType, value: string) => post<Directlist>('/directlist', { type, value }),
   delDL: (type: DLType, value: string) => del<Directlist>('/directlist', { type, value }),
+
+  customRules: () => get<{ rules: CustomRule[] }>('/customrules').then((r) => r.rules ?? []),
+  addCR: (body: Omit<CustomRule, 'id'>) => post<{ rules: CustomRule[] }>('/customrules', body),
+  patchCR: (id: string, patchBody: Partial<Omit<CustomRule, 'id'>>) =>
+    patch<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}`, patchBody),
+  delCR: (id: string) => del<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}`),
+  moveCR: (id: string, dir: number) => post<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}/move`, { dir }),
 
   subs: () => get<Subscription[]>('/subscriptions'),
   addSub: (name: string, url: string, userAgent?: string, via?: string) =>

@@ -9,6 +9,7 @@
     "whitelist": "Whitelist",
     "blacklist": "Blacklist",
     "ruleSets": "Rule Sets",
+    "customRules": "Custom Routing",
     "proxies": "Proxies",
     "rules": "Rules",
     "dns": "DNS",

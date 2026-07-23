@@ -6,6 +6,7 @@
 > (`kill %1` 跨 Bash 调用无效,会残留孤儿进程;别动用户网关 pid)。
 
 ## 本会话已完成(勿重做)
+- **Task C 自定义路由规则(✅)**:见下「~~C~~」条目——有序 store + 引擎 L4 + API + dashboard + node 自愈。
 - **P0 分层 allow 闸重构 + no-proxy 路由层(✅)**:白名单=纯 ACL(允/拒),出口交给 routing。
   引擎按 L0 管理救援 / L1 安全地板(reject) / L2 Global 旁路 / **L3 ACL 闸**(一条 logical-or-invert `route→blocked`) / **L4 路由**(direct-bypass→direct、allow-proxy 集→proxy、兜底→proxy) 分层
   (`internal/gateway/gateway.go`:`injectAllow`+`injectProcessDeviceFloor`,拆自旧 `injectWhitelist`;`injectRuleSets` 只留描述符+block reject;`injectClashModeGlobal` 移到 `injectAllow` 前)。
@@ -29,13 +30,15 @@
 
 ---
 
-## C —— 自定义路由规则 CRUD（P0 的延伸,routing 层）
-- 新 store `internal/customrules`(或并入现有):每条 `{matcher(domain/domain_suffix/keyword/regex/ip_cidr/wildcard), action(direct|proxy|block|指定节点tag)}`,可增删改**排序**。
-- 注入到 routing 层(allow 闸之后、catch-all 之前);API CRUD + dashboard 编辑器。
-- 白名单域名可选「直连/代理」= 其实就是"允许"+"一条自定义 routing 规则"的组合(别再在白名单里塞出口)。
+## ~~C —— 自定义路由规则 CRUD~~（✅ 已完成）
+- `internal/customrules`(有序 store,`data/customrules.json`):每条 `{match(domain/domain_suffix/keyword/regex/ip_cidr), action(direct|proxy|block|node)}` + 启用 + **排序**。`SingboxMatchKey` 映射到 sing-box matcher。
+- 引擎:`injectAllow` L4 **最先**发射自定义规则(direct/proxy/blocked/`<node tag>`);direct/proxy/node 的 matcher 进 ACL 允许集(block 不进);**node self-heal**——tag 不在当前 outbound 成员集(`injectOutbounds` 现返回 memberTags)则跳过该规则,不 brick。
+- API:`GET/POST/PATCH/DELETE /api/customrules` + `POST /api/customrules/{id}/move`(失败回滚)。dashboard `custom-rules.tsx`(有序表 + match/value/action + node 下拉[源 `proxies.proxy.all`] + 失效 badge + ↑↓ 排序 + 增删),Policy 侧边栏入口,i18n 中英。
+- 单测:store(校验/幂等/排序/sanitize)+ gateway(允许集成员、L4 顺序、node self-heal、parseValidate);端到端已验(block 覆盖白名单、启停、死节点自愈、400 校验)。
+- **剩余**:白名单域名的「直连/代理」快捷入口(其实=加一条自定义规则)可后续在白名单 UI 上加个便捷按钮。
 
-## #10 —— Allow 包(一键应用的命名规则组)
-- 白名单/allow 规则支持**命名分组**,一键启用/停用/应用整组;内置预设(China-direct、Google、Dev: github/npm、Apple)+ 用户自定义。并入 C 的分组能力。
+## #10 —— Allow 包(一键应用的命名规则组)【后续】
+- 白名单/自定义规则支持**命名分组(pack)**,一键启用/停用/应用整组;内置预设(China-direct、Google、Dev: github/npm、Apple)+ 用户自定义。构建在 C 之上(一个 pack = 一组带标签的 customrules/白名单条目)。
 
 ## A 前端 + #11 Rules 页统一(IA 重构剩余部分)
 - 新建统一 **Rules 页**(tab):**Routing**(B 来源标注)/ **Rule Sets**(现有 + A 详情:点开规则集→搜索/分页看内容,调 `GET /api/rulesets/{tag}/rules`)/ **Custom**(C)。

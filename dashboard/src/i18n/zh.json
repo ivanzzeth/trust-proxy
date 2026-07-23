@@ -9,6 +9,7 @@
     "whitelist": "白名单",
     "blacklist": "黑名单",
     "ruleSets": "规则集",
+    "customRules": "自定义路由",
     "proxies": "代理组",
     "rules": "路由规则",
     "dns": "DNS",

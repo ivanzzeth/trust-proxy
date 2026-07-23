@@ -13,6 +13,7 @@ import {
   ListTree,
   Moon,
   Radar,
+  Route,
   ScrollText,
   Server,
   Settings as SettingsIcon,
@@ -50,6 +51,7 @@ const NAV_SECTIONS = [
     items: [
       { to: '/acls', label: 'nav.acls', icon: ShieldCheck },
       { to: '/rules', label: 'nav.rules', icon: ListTree },
+      { to: '/custom-rules', label: 'nav.customRules', icon: Route },
       { to: '/rulesets', label: 'nav.ruleSets', icon: ListChecks },
       { to: '/profiles', label: 'nav.profiles', icon: Layers },
     ],
