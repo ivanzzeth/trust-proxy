@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"time"
 
@@ -288,6 +289,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	st := map[string]any{
 		"modes": gateway.Modes,
 		"root":  os.Geteuid() == 0,
+		"os":    runtime.GOOS,
 	}
 	if s.mode != nil {
 		st["mode"] = s.mode.Mode()
@@ -328,18 +330,30 @@ func (s *Server) handleSetMode(w http.ResponseWriter, r *http.Request) {
 	if req.GuardSeconds > 0 {
 		to, err := s.mode.SetModeGuarded(req.Mode, time.Duration(req.GuardSeconds)*time.Second)
 		if err != nil {
-			writeErr(w, http.StatusBadRequest, err.Error())
+			writeErr(w, http.StatusBadRequest, modeError(req.Mode, err))
 			return
 		}
 		if to != "" && to != req.Mode {
 			resp["revert"] = map[string]any{"to": to, "in_seconds": req.GuardSeconds}
 		}
 	} else if err := s.mode.SetMode(req.Mode); err != nil {
-		writeErr(w, http.StatusBadRequest, err.Error())
+		writeErr(w, http.StatusBadRequest, modeError(req.Mode, err))
 		return
 	}
 	resp["mode"] = s.mode.Mode()
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// modeError turns a raw mode-switch failure into a friendly, actionable message.
+// A failed TUN switch is almost always a privilege problem (needs root /
+// CAP_NET_ADMIN) — the gateway has already reverted to the previous mode, so the
+// UI just needs to guide the user, not alarm them with a raw sing-box error.
+func modeError(mode string, err error) string {
+	if mode != gateway.ModeTUN {
+		return err.Error()
+	}
+	return "TUN mode needs elevated privileges (root / CAP_NET_ADMIN) and a free TUN device. " +
+		"The gateway stayed on its previous mode. Details: " + err.Error()
 }
 
 func (s *Server) handleConfirmMode(w http.ResponseWriter, r *http.Request) {

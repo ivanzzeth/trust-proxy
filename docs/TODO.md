@@ -6,6 +6,7 @@
 > (`kill %1` 跨 Bash 调用无效,会残留孤儿进程;别动用户网关 pid)。
 
 ## 本会话已完成(勿重做)
+- **#5 TUN 权限 UX 友好化(✅)**:见下「~~#5~~」——友好报错 + 平台感知引导 Dialog + 自动回退。
 - **#10 Allow 包(✅)**:见下「~~#10~~」条目——`Pack` 命名标签 + 整组启停/删除 + 内置预设,零引擎改动。
 - **A/B/#11 Rules 页统一 + 规则集内容查看 + 生效策略来源标注(✅)**:见下「~~A~~/~~B~~」条目。
 - **Task C 自定义路由规则(✅)**:见下「~~C~~」条目——有序 store + 引擎 L4 + API + dashboard + node 自愈。
@@ -51,10 +52,11 @@
 ## ~~B —— Rules 页规则来源标注~~（✅ 已完成）
 - `Manager.EffectiveRules()` 从各 store 推导**带 provenance 的生效规则列表**（按 L0..L4 + 来源 management/blacklist/rule-set:tag/process/device/global/acl-gate/no-proxy/private/custom/default-deny 标注），`GET /api/effective-rules`;Routing tab 分层渲染 + 彩色来源/动作 Badge。**防漂移测试**保证与真实 merged 配置层序一致。（非 Clash `/rules` 镜像;`/api/rules` 端点仍保留给 API 用户。）
 
-## #5 —— TUN 权限 UX 友好化
-- 非 root 点 TUN 别弹原始 `operation not permitted`,给友好提示 + 引导(sudo / setcap / 桌面端提权)。
-- 确认 TUN→manual 切换永远安全(纯重建、无需 root、不武装死亡开关)、UI 不阻塞。
-- 归入桌面端提权(#4)。
+## ~~#5 —— TUN 权限 UX 友好化~~（✅ 已完成）
+- 后端 `/api/status` 加 `os`(GOOS);`handleSetMode` 对 TUN 失败返回友好消息（需 root/CAP_NET_ADMIN + 已退回上一模式 + 附原始 details），不再裸抛 `operation not permitted`。
+- 前端 ModeSwitcher:非 root 点 TUN → 弹**平台感知引导 Dialog**(macOS sudo / Linux sudo|setcap / Windows 管理员 + 互斥提示 + 60s 自动回退安心话术)+「仍然尝试/取消」;TUN 切换失败也弹同一 Dialog 带 error。
+- 已验:非 root 切 TUN → 友好报错 + 自动退回 manual + 网关健康(TUN→manual 纯重建无需 root、UI 不阻塞)。
+- 桌面端**透明提权**仍归 #4。
 
 ## #6 —— 移动端:客户端配置导出
 - 导出可给 **SFA(Android)/ SFI(iOS)/ Clash Meta / Shadowrocket** 导入的配置/订阅:CN 直连 / 境外走自建出口。检测在出口/网关侧。**不做原生 App**(iOS NE 内存限制 + GPL 与 App Store 冲突)。附使用指引。

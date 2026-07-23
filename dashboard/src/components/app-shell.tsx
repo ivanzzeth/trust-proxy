@@ -31,6 +31,7 @@ import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 // Grouped by the user's mental model: what am I watching / what's my policy /
 // where does traffic exit / system.
@@ -83,15 +84,35 @@ function useTheme() {
 function ModeSwitcher() {
   const { t } = useTranslation();
   const qc = useQueryClient();
+  const [help, setHelp] = useState<{ error?: string } | null>(null);
   const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 5000 });
   const m = useMutation({
     // TUN / system capture can sever remote access — arm a 60s dead-man's switch
     // (auto-reverts unless confirmed). manual is safe, no guard.
     mutationFn: (mode: string) => api.setMode(mode, mode === 'manual' ? undefined : 60),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['status'] }),
-    onError: (e) => toast.error(String((e as Error).message)),
+    onSuccess: () => {
+      setHelp(null);
+      qc.invalidateQueries({ queryKey: ['status'] });
+    },
+    onError: (e, mode) => {
+      // A TUN failure is a privilege problem → show the guidance dialog, not a
+      // scary toast. The gateway has already reverted, so we're still up.
+      if (mode === 'tun') setHelp({ error: String((e as Error).message) });
+      else toast.error(String((e as Error).message));
+    },
   });
   if (!st) return null;
+
+  const clickMode = (mode: string) => {
+    // Non-root TUN almost always fails (macOS always; Linux unless setcap'd) —
+    // guide first instead of firing a doomed switch.
+    if (mode === 'tun' && !st.root) {
+      setHelp({});
+      return;
+    }
+    m.mutate(mode);
+  };
+
   return (
     <TooltipProvider delayDuration={200}>
       <div className="flex items-center gap-1 rounded-lg border bg-card p-0.5">
@@ -104,7 +125,7 @@ function ModeSwitcher() {
               <TooltipTrigger asChild>
                 <button
                   disabled={m.isPending}
-                  onClick={() => m.mutate(mode)}
+                  onClick={() => clickMode(mode)}
                   className={cn(
                     'rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer',
                     active ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
@@ -118,7 +139,74 @@ function ModeSwitcher() {
           );
         })}
       </div>
+      <TunHelpDialog
+        open={help !== null}
+        os={st.os}
+        error={help?.error}
+        pending={m.isPending}
+        onTry={() => m.mutate('tun')}
+        onClose={() => setHelp(null)}
+      />
     </TooltipProvider>
+  );
+}
+
+// TunHelpDialog explains why TUN needs elevated privileges and how to grant
+// them, per OS. Shown before a doomed non-root switch, or after a TUN failure.
+function TunHelpDialog({
+  open,
+  os,
+  error,
+  pending,
+  onTry,
+  onClose,
+}: {
+  open: boolean;
+  os?: string;
+  error?: string;
+  pending: boolean;
+  onTry: () => void;
+  onClose: () => void;
+}) {
+  const { t } = useTranslation();
+  const steps =
+    os === 'darwin'
+      ? [t('top.tunHelp.mac')]
+      : os === 'linux'
+        ? [t('top.tunHelp.linuxSudo'), t('top.tunHelp.linuxSetcap')]
+        : os === 'windows'
+          ? [t('top.tunHelp.win')]
+          : [t('top.tunHelp.mac'), t('top.tunHelp.linuxSetcap')];
+  return (
+    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{t('top.tunHelp.title')}</DialogTitle>
+          <DialogDescription>{t('top.tunHelp.intro')}</DialogDescription>
+        </DialogHeader>
+        {error && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+            {error}
+          </div>
+        )}
+        <ul className="space-y-2 text-sm">
+          {steps.map((s, i) => (
+            <li key={i} className="rounded-md bg-muted/60 px-3 py-2 font-mono text-xs leading-relaxed">
+              {s}
+            </li>
+          ))}
+        </ul>
+        <p className="text-xs text-muted-foreground">{t('top.tunHelp.guard')}</p>
+        <DialogFooter>
+          <Button variant="ghost" onClick={onClose}>
+            {t('top.tunHelp.cancel')}
+          </Button>
+          <Button variant="secondary" disabled={pending} onClick={onTry}>
+            {t('top.tunHelp.tryAnyway')}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

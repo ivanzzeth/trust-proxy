@@ -53,6 +53,7 @@ export interface Status {
   modes: string[];
   autoBlock: boolean;
   root: boolean;
+  os?: string; // runtime.GOOS: darwin | linux | windows
   threats: { domains: number; ips: number };
   revert?: { to: string; in_seconds: number };
 }

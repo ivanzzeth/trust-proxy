@@ -33,6 +33,17 @@
     "guard": "模式保护：{{sec}} 秒后回退到 {{to}} —— 请确认你仍能访问。",
     "captureMode": "抓取模式：{{mode}}",
     "tunNeedsRoot": "TUN 需要提升权限（用 sudo 启动）",
+    "tunHelp": {
+      "title": "TUN 模式需要提升权限",
+      "intro": "TUN 在网络层接管全部流量，需要创建虚拟网卡——这要 root / 管理员权限。且与其他 TUN 工具（Surge 增强模式、其他 VPN）互斥。",
+      "mac": "macOS：用 sudo 启动整个网关 —— sudo ./trust-proxy serve -c configs/config.tun.json（macOS 无 setcap）",
+      "linuxSudo": "Linux：用 sudo 启动，或",
+      "linuxSetcap": "Linux：给二进制授权一次，之后普通用户即可运行 —— sudo setcap cap_net_admin,cap_net_bind_service=+ep ./trust-proxy",
+      "win": "Windows：以管理员身份运行。",
+      "guard": "可放心尝试：切到 TUN 会武装 60 秒自动回退，若切断了你的访问，网关会自行退回上一个模式。切回 Manual 永远不需要权限。",
+      "cancel": "取消",
+      "tryAnyway": "仍然尝试"
+    },
     "routingRuleTip": "Rule：白名单默认拒绝（安全）",
     "routingGlobalTip": "Global：默认拒绝关闭 —— 未列入流量走代理出网",
     "globalBanner": "Global 路由：白名单默认拒绝已关闭 —— 未列入白名单的流量正走代理出网（黑名单 / 威胁情报 / 进程·设备闸仍生效）。切回 Rule 恢复默认拒绝。",

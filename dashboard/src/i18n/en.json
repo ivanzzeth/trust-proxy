@@ -33,6 +33,17 @@
     "guard": "Mode guard: reverting to {{to}} in {{sec}}s — confirm you still have access.",
     "captureMode": "Capture mode: {{mode}}",
     "tunNeedsRoot": "TUN needs elevated privileges (start with sudo)",
+    "tunHelp": {
+      "title": "TUN mode needs elevated privileges",
+      "intro": "TUN captures ALL traffic at the network layer, so it must create a virtual interface — that needs root / admin. It's also mutually exclusive with other TUN tools (Surge enhanced mode, other VPNs).",
+      "mac": "macOS: start the whole gateway with sudo — sudo ./trust-proxy serve -c configs/config.tun.json  (setcap isn't available on macOS)",
+      "linuxSudo": "Linux: start with sudo,  or",
+      "linuxSetcap": "Linux: grant the binary the capability once, then run as a normal user — sudo setcap cap_net_admin,cap_net_bind_service=+ep ./trust-proxy",
+      "win": "Windows: run the app as Administrator.",
+      "guard": "Safe to try: a TUN switch arms a 60s auto-revert, so if it severs your access the gateway falls back to the previous mode on its own. Switching back to Manual never needs privileges.",
+      "cancel": "Cancel",
+      "tryAnyway": "Try anyway"
+    },
     "routingRuleTip": "Rule: whitelist default-deny (safe)",
     "routingGlobalTip": "Global: default-deny OFF — unlisted traffic egresses via proxy",
     "globalBanner": "Global routing: whitelist default-deny is OFF — unlisted traffic egresses via proxy (blacklist / threat-intel / process·device gates still apply). Switch back to Rule to restore default-deny.",
