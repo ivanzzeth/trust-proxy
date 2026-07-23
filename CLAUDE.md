@@ -225,10 +225,11 @@ curl -x socks5h://127.0.0.1:17070 https://example.com            # 正常 -> 200
 - **里程碑 8（✅ 主体）** ✅**DGA / DNS 隧道检测**（`detect.analyzeDomain`：SLD 香农熵+数字/元音比→DGA C2；长高熵子域名标签→隧道；单父域 distinct 子域名计数→隧道/fast-flux。启发式=仅告警不自动断）。**坑**：proxy/socks 模式下 sing-box 直接按域名拨号（`outbound connection to <domain>`），**不经 DNS 路由**，故无 `lookup succeed` 日志——检测跑在 tracker 拿到的**连接域名**上（全模式可用）；基于日志观测 DNS 查询仅 TUN/hijack-dns 模式可行（后续再上）。
 - **里程碑 9（✅）** ✅**per-connection 流量历史持久化**（`internal/history`：detect finalize sink → append `data/history.jsonl` + 内存聚合 top talkers/24h 趋势，重启从 JSONL 重建；`/api/history{,/stats}` + History 页）。
 - **里程碑 10（✅ 主体）** ✅**多节点管理（探针+大脑）**：每个 `serve` 即探针（`--api-token` 给 `/api/*` 加 bearer 鉴权，`--api-addr 0.0.0.0` 暴露）；大脑 `internal/nodes` 注册表 + `internal/api` 反向代理 `/api/nodes/{id}/{rest...}`（注入各探针 token，SSE 透传）；控制台 Fleet 页 + 顶栏 NodeSwitcher（切换后 `queryClient.clear()` 全刷）。浏览器仍单 origin、不碰 token。
-- **里程碑 11（✅）** sing-box 功能对接批量补齐（workflow 顺序实现，各自 build+test 通过才 commit）：✅Clash 规则只读查看（`/api/rules`）、✅**入站鉴权**（mixed users + Settings 页）、✅**DNS fakeip/hosts**、✅**TUN 高级选项**、✅**出网黑名单**（reject 优先于白名单）。**未接**（故意）：`clash_mode`（Global/Direct 会绕过默认拒绝，需专门设计）。
+- **里程碑 11（✅）** sing-box 功能对接批量补齐（workflow 顺序实现，各自 build+test 通过才 commit）：✅Clash 规则只读查看（`/api/rules`）、✅**入站鉴权**（mixed users + Settings 页）、✅**DNS fakeip/hosts**、✅**TUN 高级选项**、✅**出网黑名单**（reject 优先于白名单）。（`clash_mode` 当时故意跳过——「Global/Direct 绕过默认拒绝」需专门设计；**已于里程碑 14 安全落地**，见下。）
 - **里程碑 12（✅ 主体）** ✅**WireGuard / Tailscale 出口端点**（`internal/endpoints` + `gateway.injectEndpoints`：wg-quick 粘贴解析、注入 sing-box `endpoints[]`、标签加入 `proxy` 组;secrets 服务端保存不回浏览器)。构建默认加 `with_wireguard with_tailscale`(二进制 ~75M,Tailscale 拉大依赖);已实测 WG 端点解析+注入+入组、box 接受配置。
 - **里程碑 13（✅）** ✅**远程防板砖**：管理端口豁免(`injectManagement`,`--management-ports`,API 口自动加)+ 模式切换死亡开关(`SetModeGuarded`/`ConfirmMode`/`PendingRevert`,`/api/mode` guard_seconds + `/api/mode/confirm`,控制台倒计时横幅,默认 60s)。
-- **后续** clash_mode（与默认拒绝调和）、DNS 查询级观测（TUN）、多节点聚合视图。
+- **里程碑 14（✅）** ✅**路由模式 Rule↔Global 开关**（`gateway.injectClashModeGlobal`：注入 `clash_mode:"Global"` 路由规则,位于**安全 floor 之下、默认拒绝兜底之上**——Global 时默认拒绝关闭、未列入流量走 `proxy` 组,黑名单/威胁/进程·设备闸仍生效;Rule 时该规则不匹配、默认拒绝照旧。sing-box 按 `EqualFold` 大小写不敏感匹配,并从规则里的 clash_mode 值自动生成 mode list）。**热切换不重建**（Clash `PATCH /configs`）;`default_mode=Rule` + `experimental.cache_file` 持久化选择;`/api/clash-mode` GET/PUT 只放行 **Rule/Global**（**拒 Direct** 防全直连泄漏,`internal/api/clashmode.go`）;`pkg/clash` 加 `Mode()/SetMode()`;控制台顶栏 Routing 分段控件 + Global 琥珀警告横幅。曾在里程碑 11「故意跳过」,现按「安全 floor 常在」原则安全落地。**注意**:cache_file 现恒开(为持久化模式),同目录勿并跑两实例(bolt 单写锁)。
+- **后续** DNS 查询级观测（TUN）、多节点聚合视图、**Segments**（按来源网段分层 split/strict 姿势,见 `docs/home-gateway-plan.md`）。
 
 ## 许可证
 - sing-box / 官方 dashboard 均 **GPLv3（+ 命名附加条款）**。
