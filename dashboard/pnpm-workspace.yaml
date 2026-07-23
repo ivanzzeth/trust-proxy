@@ -1,4 +1,7 @@
+# pnpm 11 gates dependency build scripts by default; a fresh `pnpm install`
+# otherwise fails with ERR_PNPM_IGNORED_BUILDS. Approve the ones that need their
+# install script. esbuild (Vite) ships its platform binary via an install script.
+# (@tailwindcss/oxide uses prebuilt platform packages — no build script — so it
+# isn't listed.) pnpm reads this from pnpm-workspace.yaml, not package.json#pnpm.
 allowBuilds:
-  esbuild: set this to true or false
-onlyBuiltDependencies:
-  - esbuild
+  esbuild: true
