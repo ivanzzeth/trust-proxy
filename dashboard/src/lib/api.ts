@@ -54,6 +54,7 @@ export interface Status {
   autoBlock: boolean;
   root: boolean;
   threats: { domains: number; ips: number };
+  revert?: { to: string; in_seconds: number };
 }
 export interface Whitelist {
   domains: string[];
@@ -252,7 +253,9 @@ export interface TUNConfig {
 
 export const api = {
   status: () => get<Status>('/status'),
-  setMode: (mode: string) => post<{ mode: string }>('/mode', { mode }),
+  setMode: (mode: string, guardSeconds?: number) =>
+    post<{ mode: string }>('/mode', { mode, guard_seconds: guardSeconds }),
+  confirmMode: () => post<{ ok: boolean }>('/mode/confirm'),
   setAutoBlock: (enabled: boolean) => post<{ autoBlock: boolean }>('/autoblock', { enabled }),
 
   connections: () => get<ConnSnapshot>('/connections'),

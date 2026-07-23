@@ -3,6 +3,7 @@ import { NavLink, Outlet } from 'react-router-dom';
 import { toast } from 'sonner';
 import {
   Activity,
+  AlertTriangle,
   ArrowDownUp,
   Cable,
   Ban,
@@ -26,6 +27,7 @@ import { useEffect, useState } from 'react';
 
 import { api, currentNode, setNode } from '@/lib/api';
 import { cn, fmtBytes } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -62,7 +64,9 @@ function ModeSwitcher() {
   const qc = useQueryClient();
   const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 5000 });
   const m = useMutation({
-    mutationFn: api.setMode,
+    // TUN / system capture can sever remote access — arm a 60s dead-man's switch
+    // (auto-reverts unless confirmed). manual is safe, no guard.
+    mutationFn: (mode: string) => api.setMode(mode, mode === 'manual' ? undefined : 60),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['status'] }),
     onError: (e) => toast.error(String((e as Error).message)),
   });
@@ -137,6 +141,28 @@ function NodeSwitcher() {
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+function RevertBanner() {
+  const qc = useQueryClient();
+  const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 1000 });
+  const confirm = useMutation({
+    mutationFn: api.confirmMode,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['status'] }),
+  });
+  if (!st?.revert) return null;
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-warning/50 bg-warning/15 px-6 py-2 text-sm">
+      <span className="flex items-center gap-2">
+        <AlertTriangle className="size-4 shrink-0 text-warning" />
+        Mode guard: reverting to <b>{st.revert.to}</b> in{' '}
+        <span className="tnum font-semibold text-warning">{st.revert.in_seconds}s</span> — confirm you still have access.
+      </span>
+      <Button size="sm" disabled={confirm.isPending} onClick={() => confirm.mutate()}>
+        Keep current mode
+      </Button>
+    </div>
   );
 }
 
@@ -228,6 +254,7 @@ export function AppShell() {
           <AutoBlock />
           <ModeSwitcher />
         </header>
+        <RevertBanner />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-[1400px] px-6 py-6">
             <Outlet />

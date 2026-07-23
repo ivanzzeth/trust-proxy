@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -44,6 +45,7 @@ var (
 	serveClashAddr     string
 	serveClashSecret   string
 	serveAPIToken      string
+	serveMgmtPorts     string
 	serveMode          string
 	serveAutoBlock     bool
 	serveThreatFeeds   string
@@ -76,6 +78,7 @@ func init() {
 	f.StringVar(&serveClashAddr, "clash-addr", "127.0.0.1:9090", "Clash API address (proxied to the console)")
 	f.StringVar(&serveClashSecret, "clash-secret", "", "Clash API secret (empty = load/generate a random one in the data dir)")
 	f.StringVar(&serveAPIToken, "api-token", "", "require this bearer token on /api/* (probe mode; set when exposing --api-addr on a non-loopback address)")
+	f.StringVar(&serveMgmtPorts, "management-ports", "22", "comma-separated ports whose local responses always bypass default-deny (SSH etc.), so TUN/system mode can't lock you out; the API port is added automatically")
 	f.StringVar(&serveMode, "mode", gateway.ModeManual, "capture mode: manual | system | tun (tun needs root)")
 	f.BoolVar(&serveAutoBlock, "auto-block", true, "auto-drop connections that hit a threat-intel indicator")
 	f.StringVar(&serveThreatFeeds, "threat-feeds", "", "comma-separated threat-intel feed URLs (empty = built-in abuse.ch defaults)")
@@ -175,6 +178,7 @@ func runServe() error {
 	mgr.SetInitialInbound(inbStore.Get())
 	mgr.SetInitialTUN(tunStore.Get())
 	mgr.SetInitialEndpoints(epStore.All())
+	mgr.SetInitialManagementPorts(managementPorts(serveMgmtPorts, serveAPIAddr))
 	if err := mgr.Start(); err != nil {
 		return err
 	}
@@ -251,6 +255,31 @@ func runServe() error {
 	close(stopSave)
 	saveEvents()
 	return nil
+}
+
+// managementPorts parses the --management-ports csv and always appends the API
+// port, so remote management (SSH + the console/API) survives a TUN/system-proxy
+// capture under default-deny.
+func managementPorts(csv, apiAddr string) []int {
+	seen := map[int]bool{}
+	var out []int
+	add := func(p int) {
+		if p > 0 && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, s := range strings.Split(csv, ",") {
+		if n, err := strconv.Atoi(strings.TrimSpace(s)); err == nil {
+			add(n)
+		}
+	}
+	if i := strings.LastIndex(apiAddr, ":"); i >= 0 {
+		if p, err := strconv.Atoi(apiAddr[i+1:]); err == nil {
+			add(p)
+		}
+	}
+	return out
 }
 
 // resolveClashSecret returns the --clash-secret flag if set, else a secret

@@ -51,6 +51,9 @@ type BlacklistApplier interface {
 type ModeController interface {
 	Mode() string
 	SetMode(string) error
+	SetModeGuarded(mode string, revertAfter time.Duration) (string, error)
+	ConfirmMode()
+	PendingRevert() (to string, secondsLeft int, ok bool)
 }
 
 // RuleSetApplier hot-reloads the imported rule sets (gateway.Manager).
@@ -153,6 +156,7 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/mode", s.handleGetMode)
 	mux.HandleFunc("POST /api/mode", s.handleSetMode)
+	mux.HandleFunc("POST /api/mode/confirm", s.handleConfirmMode)
 	mux.HandleFunc("POST /api/autoblock", s.handleAutoBlock)
 	mux.HandleFunc("GET /api/subscriptions", s.handleListSubs)
 	mux.HandleFunc("POST /api/subscriptions", s.handleAddSub)
@@ -243,6 +247,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.mode != nil {
 		st["mode"] = s.mode.Mode()
+		if to, left, ok := s.mode.PendingRevert(); ok {
+			st["revert"] = map[string]any{"to": to, "in_seconds": left}
+		}
 	}
 	if s.detect != nil {
 		d, ip := s.detect.ThreatCounts()
@@ -266,17 +273,38 @@ func (s *Server) handleSetMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Mode string `json:"mode"`
+		Mode         string `json:"mode"`
+		GuardSeconds int    `json:"guard_seconds"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Mode == "" {
 		writeErr(w, http.StatusBadRequest, "mode is required")
 		return
 	}
-	if err := s.mode.SetMode(req.Mode); err != nil {
+	resp := map[string]any{}
+	if req.GuardSeconds > 0 {
+		to, err := s.mode.SetModeGuarded(req.Mode, time.Duration(req.GuardSeconds)*time.Second)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if to != "" && to != req.Mode {
+			resp["revert"] = map[string]any{"to": to, "in_seconds": req.GuardSeconds}
+		}
+	} else if err := s.mode.SetMode(req.Mode); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"mode": s.mode.Mode()})
+	resp["mode"] = s.mode.Mode()
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleConfirmMode(w http.ResponseWriter, r *http.Request) {
+	if s.mode == nil {
+		writeErr(w, http.StatusServiceUnavailable, "mode controller not available")
+		return
+	}
+	s.mode.ConfirmMode()
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (s *Server) handleAutoBlock(w http.ResponseWriter, r *http.Request) {

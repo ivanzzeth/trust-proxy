@@ -227,6 +227,7 @@ curl -x socks5h://127.0.0.1:17070 https://example.com            # 正常 -> 200
 - **里程碑 10（✅ 主体）** ✅**多节点管理（探针+大脑）**：每个 `serve` 即探针（`--api-token` 给 `/api/*` 加 bearer 鉴权，`--api-addr 0.0.0.0` 暴露）；大脑 `internal/nodes` 注册表 + `internal/api` 反向代理 `/api/nodes/{id}/{rest...}`（注入各探针 token，SSE 透传）；控制台 Fleet 页 + 顶栏 NodeSwitcher（切换后 `queryClient.clear()` 全刷）。浏览器仍单 origin、不碰 token。
 - **里程碑 11（✅）** sing-box 功能对接批量补齐（workflow 顺序实现，各自 build+test 通过才 commit）：✅Clash 规则只读查看（`/api/rules`）、✅**入站鉴权**（mixed users + Settings 页）、✅**DNS fakeip/hosts**、✅**TUN 高级选项**、✅**出网黑名单**（reject 优先于白名单）。**未接**（故意）：`clash_mode`（Global/Direct 会绕过默认拒绝，需专门设计）。
 - **里程碑 12（✅ 主体）** ✅**WireGuard / Tailscale 出口端点**（`internal/endpoints` + `gateway.injectEndpoints`：wg-quick 粘贴解析、注入 sing-box `endpoints[]`、标签加入 `proxy` 组;secrets 服务端保存不回浏览器)。构建默认加 `with_wireguard with_tailscale`(二进制 ~75M,Tailscale 拉大依赖);已实测 WG 端点解析+注入+入组、box 接受配置。
+- **里程碑 13（✅）** ✅**远程防板砖**：管理端口豁免(`injectManagement`,`--management-ports`,API 口自动加)+ 模式切换死亡开关(`SetModeGuarded`/`ConfirmMode`/`PendingRevert`,`/api/mode` guard_seconds + `/api/mode/confirm`,控制台倒计时横幅,默认 60s)。
 - **后续** clash_mode（与默认拒绝调和）、DNS 查询级观测（TUN）、多节点聚合视图。
 
 ## 许可证

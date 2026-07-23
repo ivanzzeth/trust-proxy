@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	box "github.com/sagernet/sing-box"
 	"github.com/sagernet/sing-box/experimental/deprecated"
@@ -72,6 +73,22 @@ type Manager struct {
 	inbound   apitypes.InboundAuth
 	tun       apitypes.TUNConfig
 	endpoints []apitypes.Endpoint
+	mgmtPorts []int
+
+	// mode dead-man's switch (remote-safety): a guarded mode switch auto-reverts
+	// unless confirmed in time.
+	guardMu     sync.Mutex
+	revertTimer *time.Timer
+	revertTo    string
+	revertAt    time.Time
+}
+
+// SetInitialManagementPorts sets ports whose local responses always bypass
+// default-deny (SSH, the API port) so a remote capture can't lock you out.
+func (m *Manager) SetInitialManagementPorts(ports []int) {
+	m.mu.Lock()
+	m.mgmtPorts = ports
+	m.mu.Unlock()
 }
 
 // SetInitialEndpoints sets WireGuard/Tailscale exits used by the first Start().
@@ -145,6 +162,72 @@ func (m *Manager) SetMode(mode string) error {
 	m.logger.Info("gateway mode -> ", mode)
 	return nil
 }
+
+// SetModeGuarded switches mode and arms a dead-man's switch: unless ConfirmMode
+// is called within revertAfter, it reverts to the previous mode. This protects
+// remote boxes — a TUN/system-proxy switch that severs your own access will
+// auto-recover instead of bricking. Returns the previous mode (revert target).
+func (m *Manager) SetModeGuarded(mode string, revertAfter time.Duration) (string, error) {
+	m.mu.Lock()
+	prev := m.mode
+	m.mu.Unlock()
+	if err := m.SetMode(mode); err != nil {
+		return "", err
+	}
+	if prev == mode || revertAfter <= 0 {
+		return prev, nil // no-op switch or no guard requested
+	}
+	m.guardMu.Lock()
+	if m.revertTimer != nil {
+		m.revertTimer.Stop()
+	}
+	m.revertTo = prev
+	m.revertAt = m.nowUTC().Add(revertAfter)
+	m.revertTimer = time.AfterFunc(revertAfter, func() {
+		m.guardMu.Lock()
+		to := m.revertTo
+		armed := m.revertTimer != nil
+		m.revertTimer = nil
+		m.revertTo = ""
+		m.revertAt = time.Time{}
+		m.guardMu.Unlock()
+		if armed && to != "" {
+			m.logger.Warn("mode guard: not confirmed, reverting to ", to)
+			_ = m.SetMode(to)
+		}
+	})
+	m.guardMu.Unlock()
+	return prev, nil
+}
+
+// ConfirmMode cancels a pending guarded revert (you confirmed you still have
+// access).
+func (m *Manager) ConfirmMode() {
+	m.guardMu.Lock()
+	if m.revertTimer != nil {
+		m.revertTimer.Stop()
+	}
+	m.revertTimer = nil
+	m.revertTo = ""
+	m.revertAt = time.Time{}
+	m.guardMu.Unlock()
+}
+
+// PendingRevert reports a pending guarded revert, if any.
+func (m *Manager) PendingRevert() (to string, secondsLeft int, ok bool) {
+	m.guardMu.Lock()
+	defer m.guardMu.Unlock()
+	if m.revertTimer == nil || m.revertTo == "" {
+		return "", 0, false
+	}
+	left := int(time.Until(m.revertAt).Seconds())
+	if left < 0 {
+		left = 0
+	}
+	return m.revertTo, left, true
+}
+
+func (m *Manager) nowUTC() time.Time { return time.Now() }
 
 // Start builds and starts the box from the base config + current policy.
 func (m *Manager) Start() error { return m.rebuild() }
@@ -325,14 +408,14 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, bl, mode, sets, dns, inbound, tun, eps := m.nodes, m.wl, m.bl, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints
+	nodes, wl, bl, mode, sets, dns, inbound, tun, eps, mgmt := m.nodes, m.wl, m.bl, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, bl, mode, sets, dns, inbound, tun, eps, m.clashSecret)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, mode, sets, dns, inbound, tun, eps, mgmt, m.clashSecret)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -379,7 +462,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // buildMergedConfig injects (a) subscription node outbounds + the `proxy` group
 // and (b) whitelist allow rules into the route, at the JSON level so sing-box's
 // own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, clashSecret string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, clashSecret string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -410,6 +493,12 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	// Must run AFTER injectWhitelist: it anchors on the network-matcher catch-all
 	// reject, which is the only reject present at whitelist time.
 	if err := injectRuleSets(cfg, sets); err != nil {
+		return nil, err
+	}
+	// Management-port allow LAST => inserted right after the prelude, above every
+	// other rule (even the blacklist): SSH + the API port must never be cut, or a
+	// remote TUN/system switch would lock you out of the box.
+	if err := injectManagement(cfg, mgmtPorts); err != nil {
 		return nil, err
 	}
 	if err := injectClashSecret(cfg, clashSecret); err != nil {
@@ -933,6 +1022,60 @@ func injectClashSecret(cfg map[string]json.RawMessage, secret string) error {
 		return err
 	}
 	cfg["experimental"] = newExp
+	return nil
+}
+
+// injectManagement inserts a top-priority allow (right after the prelude, above
+// even the blacklist) that routes traffic whose SOURCE port is a management port
+// straight to direct. That is exactly the box's own SSH/API response traffic —
+// so a TUN/system-proxy capture + default-deny can't sever remote management.
+// Using source_port (not dest port) means it does NOT open arbitrary egress to
+// those ports; it only rescues locally-originated responses.
+func injectManagement(cfg map[string]json.RawMessage, ports []int) error {
+	if len(ports) == 0 {
+		return nil
+	}
+	routeRaw, ok := cfg["route"]
+	if !ok {
+		return nil
+	}
+	var route map[string]json.RawMessage
+	if err := json.Unmarshal(routeRaw, &route); err != nil {
+		return err
+	}
+	var rules []json.RawMessage
+	if raw, ok := route["rules"]; ok {
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return err
+		}
+	}
+	preludeEnd := 0
+	for preludeEnd < len(rules) {
+		var m struct {
+			Action string `json:"action"`
+		}
+		_ = json.Unmarshal(rules[preludeEnd], &m)
+		if m.Action == "sniff" || m.Action == "hijack-dns" {
+			preludeEnd++
+			continue
+		}
+		break
+	}
+	rule, _ := json.Marshal(map[string]any{"source_port": ports, "action": "route", "outbound": "direct"})
+	merged := make([]json.RawMessage, 0, len(rules)+1)
+	merged = append(merged, rules[:preludeEnd]...)
+	merged = append(merged, rule)
+	merged = append(merged, rules[preludeEnd:]...)
+	nr, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	route["rules"] = nr
+	nrt, err := json.Marshal(route)
+	if err != nil {
+		return err
+	}
+	cfg["route"] = nrt
 	return nil
 }
 
