@@ -12,8 +12,6 @@ import Connections from '@/pages/connections';
 import Subscriptions from '@/pages/subscriptions';
 import Profiles from '@/pages/profiles';
 import ACLs from '@/pages/acls';
-import RuleSets from '@/pages/rulesets';
-import CustomRules from '@/pages/custom-rules';
 import Proxies from '@/pages/proxies';
 import Rules from '@/pages/rules';
 import Logs from '@/pages/logs';
@@ -40,8 +38,8 @@ const router = createHashRouter([
       { path: 'acls', element: <ACLs /> },
       { path: 'whitelist', element: <Navigate to="/acls" replace /> },
       { path: 'blacklist', element: <Navigate to="/acls" replace /> },
-      { path: 'rulesets', element: <RuleSets /> },
-      { path: 'custom-rules', element: <CustomRules /> },
+      { path: 'rulesets', element: <Navigate to="/rules" replace /> },
+      { path: 'custom-rules', element: <Navigate to="/rules" replace /> },
       { path: 'proxies', element: <Proxies /> },
       { path: 'rules', element: <Rules /> },
       { path: 'dns', element: <DNS /> },

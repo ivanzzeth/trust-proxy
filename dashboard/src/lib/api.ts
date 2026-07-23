@@ -85,6 +85,26 @@ export interface CustomRule {
   node?: string;
   enabled: boolean;
 }
+export interface RuleSetEntry {
+  kind: string;
+  value: string;
+}
+export interface RuleSetContent {
+  tag: string;
+  count: number;
+  total: number;
+  offset: number;
+  limit: number;
+  entries: RuleSetEntry[];
+}
+export interface RuleView {
+  layer: string;
+  source: string;
+  action: string;
+  matcher?: string;
+  values?: string[];
+  note?: string;
+}
 export interface TPNode {
   tag: string;
   protocol: string;
@@ -331,6 +351,11 @@ export const api = {
   patchRuleSet: (tag: string, body: { enabled?: boolean; role?: string }) =>
     patch<{ sets: RuleSet[] }>(`/rulesets/${encodeURIComponent(tag)}`, body),
   delRuleSet: (tag: string) => del<{ sets: RuleSet[] }>(`/rulesets/${encodeURIComponent(tag)}`),
+  rulesetRules: (tag: string, q = '', offset = 0, limit = 200) =>
+    get<RuleSetContent>(
+      `/rulesets/${encodeURIComponent(tag)}/rules?q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`,
+    ),
+  effectiveRules: () => get<RuleView[]>('/effective-rules'),
 
   proxies: () => get<{ proxies: Record<string, ProxyNode> }>('/proxies'),
   selectProxy: (group: string, name: string) => put<void>('/proxies/select', { group, name }),

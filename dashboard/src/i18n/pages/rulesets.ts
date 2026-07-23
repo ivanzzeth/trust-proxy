@@ -18,6 +18,11 @@ export default {
     columnSource: 'Source',
     emptyImported: 'No rule sets imported',
     importSuccessToast: 'Imported',
+    viewButton: 'View contents',
+    viewerTitle: 'Contents of',
+    viewerSearch: 'Search domains / IPs…',
+    viewerEmpty: 'No matching entries',
+    viewerError: 'Failed to load — the .srs is fetched directly and may be blocked (GFW). Re-import via the jsdelivr mirror.',
   },
   zh: {
     title: '规则集',
@@ -38,5 +43,10 @@ export default {
     columnSource: '来源',
     emptyImported: '暂无已导入的规则集',
     importSuccessToast: '导入成功',
+    viewButton: '查看内容',
+    viewerTitle: '规则集内容：',
+    viewerSearch: '搜索域名 / IP…',
+    viewerEmpty: '无匹配条目',
+    viewerError: '加载失败——.srs 直连拉取可能被墙（GFW）。请改用 jsdelivr 镜像重新导入。',
   },
 };

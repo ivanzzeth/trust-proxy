@@ -43,7 +43,7 @@
     "language": "Language",
     "languageDesc": "Console display language (saved in this browser)."
   },
-  "common": { "empty": "empty" },
+  "common": { "empty": "empty", "loading": "Loading…" },
   "pages": {
     "acls": {
       "desc": "Access control: what egress is allowed (whitelist) and what is explicitly denied (blacklist). Deny always wins over allow. No-Proxy picks the egress (direct vs proxy) — it never grants access.",

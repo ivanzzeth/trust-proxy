@@ -1,53 +1,101 @@
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
-import { api } from '@/lib/api';
+import { api, RuleView } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import RuleSets from '@/pages/rulesets';
+import CustomRules from '@/pages/custom-rules';
 
+// Rules unifies the three policy views: Routing (the effective, layer-labeled
+// policy — "why is this allowed/blocked"), Rule Sets, and Custom routing rules.
 export default function Rules() {
   const { t } = useTranslation();
-  const { data } = useQuery({ queryKey: ['rules'], queryFn: api.rules, refetchInterval: 5000 });
-  const rules = data?.rules ?? [];
+  const [tab, setTab] = useState<'routing' | 'sets' | 'custom'>('routing');
+  return (
+    <div>
+      <PageHeader title={t('pages.rules.title')} description={t('pages.rules.description')} />
+      <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="mb-5">
+        <TabsList>
+          <TabsTrigger value="routing">{t('pages.rules.tabRouting')}</TabsTrigger>
+          <TabsTrigger value="sets">{t('pages.rules.tabSets')}</TabsTrigger>
+          <TabsTrigger value="custom">{t('pages.rules.tabCustom')}</TabsTrigger>
+        </TabsList>
+      </Tabs>
+      {tab === 'routing' && <Routing />}
+      {tab === 'sets' && <RuleSets embedded />}
+      {tab === 'custom' && <CustomRules embedded />}
+    </div>
+  );
+}
+
+// actionColor maps a route action to a Badge variant.
+const actionColor = (a: string): 'danger' | 'success' | 'muted' | 'warning' | 'default' => {
+  if (a === 'reject' || a === 'route:blocked') return 'danger';
+  if (a === 'route:direct') return 'muted';
+  if (a === 'route:proxy') return 'success';
+  return 'default'; // route:<node>
+};
+
+const layerColor = (l: string): 'danger' | 'warning' | 'default' | 'muted' | 'success' => {
+  switch (l) {
+    case 'L1':
+      return 'danger';
+    case 'L2':
+    case 'L3':
+      return 'warning';
+    case 'L0':
+      return 'success';
+    case 'catch-all':
+      return 'default';
+    default:
+      return 'muted';
+  }
+};
+
+function Routing() {
+  const { t } = useTranslation();
+  const { data: rules = [], isLoading } = useQuery({
+    queryKey: ['effectiveRules'],
+    queryFn: api.effectiveRules,
+    refetchInterval: 5000,
+  });
 
   return (
     <div>
-      <PageHeader
-        title={t('pages.rules.title')}
-        description={t('pages.rules.description')}
-      />
+      <p className="mb-3 text-sm text-muted-foreground">{t('pages.rules.routingHint')}</p>
       <Card>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow className="hover:bg-transparent">
-                <TableHead className="w-40">{t('pages.rules.columnType')}</TableHead>
-                <TableHead>{t('pages.rules.columnPayload')}</TableHead>
-                <TableHead className="w-48">{t('pages.rules.columnProxy')}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rules.length === 0 ? (
-                <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={3} className="py-10 text-center text-muted-foreground">{t('pages.rules.empty')}</TableCell>
-                </TableRow>
-              ) : (
-                rules.map((r, i) => (
-                  <TableRow key={i}>
-                    <TableCell>
-                      <Badge variant="outline" className="font-mono text-xs">{r.type}</Badge>
-                    </TableCell>
-                    <TableCell className="max-w-[520px] truncate font-mono text-xs" title={r.payload}>
-                      {r.payload || '—'}
-                    </TableCell>
-                    <TableCell className="text-xs text-muted-foreground">{r.proxy}</TableCell>
-                  </TableRow>
-                ))
+        <CardContent className="space-y-1.5 py-3">
+          {isLoading && <p className="py-6 text-center text-sm text-muted-foreground">{t('common.loading')}</p>}
+          {rules.map((r: RuleView, i: number) => (
+            <div
+              key={i}
+              className="flex flex-wrap items-center gap-2 rounded-md border px-3 py-2 text-sm"
+            >
+              <Badge variant={layerColor(r.layer)} className="w-14 justify-center tnum text-[10px]">
+                {r.layer}
+              </Badge>
+              <span className="min-w-[120px] font-medium">{t(`pages.rules.source.${r.source.split(':')[0]}`, r.source)}</span>
+              {r.source.startsWith('rule-set:') && (
+                <Badge variant="outline" className="tnum text-[10px]">
+                  {r.source.slice('rule-set:'.length)}
+                </Badge>
               )}
-            </TableBody>
-          </Table>
+              <Badge variant={actionColor(r.action)} className="font-mono text-[10px]">
+                {r.action}
+              </Badge>
+              {r.matcher && <span className="font-mono text-xs text-muted-foreground">{r.matcher}</span>}
+              {r.values && r.values.length > 0 && (
+                <span className="tnum max-w-full truncate text-xs text-muted-foreground" title={r.values.join(', ')}>
+                  {r.values.join(', ')}
+                </span>
+              )}
+              {r.note && <span className="ml-auto text-xs italic text-muted-foreground">{r.note}</span>}
+            </div>
+          ))}
         </CardContent>
       </Card>
     </div>

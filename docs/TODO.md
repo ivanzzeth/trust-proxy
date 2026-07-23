@@ -6,6 +6,7 @@
 > (`kill %1` 跨 Bash 调用无效,会残留孤儿进程;别动用户网关 pid)。
 
 ## 本会话已完成(勿重做)
+- **A/B/#11 Rules 页统一 + 规则集内容查看 + 生效策略来源标注(✅)**:见下「~~A~~/~~B~~」条目。
 - **Task C 自定义路由规则(✅)**:见下「~~C~~」条目——有序 store + 引擎 L4 + API + dashboard + node 自愈。
 - **P0 分层 allow 闸重构 + no-proxy 路由层(✅)**:白名单=纯 ACL(允/拒),出口交给 routing。
   引擎按 L0 管理救援 / L1 安全地板(reject) / L2 Global 旁路 / **L3 ACL 闸**(一条 logical-or-invert `route→blocked`) / **L4 路由**(direct-bypass→direct、allow-proxy 集→proxy、兜底→proxy) 分层
@@ -40,14 +41,12 @@
 ## #10 —— Allow 包(一键应用的命名规则组)【后续】
 - 白名单/自定义规则支持**命名分组(pack)**,一键启用/停用/应用整组;内置预设(China-direct、Google、Dev: github/npm、Apple)+ 用户自定义。构建在 C 之上(一个 pack = 一组带标签的 customrules/白名单条目)。
 
-## A 前端 + #11 Rules 页统一(IA 重构剩余部分)
-- 新建统一 **Rules 页**(tab):**Routing**(B 来源标注)/ **Rule Sets**(现有 + A 详情:点开规则集→搜索/分页看内容,调 `GET /api/rulesets/{tag}/rules`)/ **Custom**(C)。
-- 侧边栏 Policy 组现在还并列 `/rules` + `/rulesets`,统一后合成一个 `/rules`(tab),`/rulesets` 重定向。
-- A 后端已就绪,只差前端详情视图。
-- **GFW 注意**:A 的 `Decode` 目前 `directGet` 直连拉 .srs,国内 github 源会失败;需要时改成经网关代理拉取(fetch-via-proxy),或提示用 jsdelivr 镜像。
+## ~~A 前端 + #11 Rules 页统一~~（✅ 已完成）
+- 统一 **Rules 页**（`dashboard/src/pages/rules.tsx`，tab）：**Routing**(B 生效策略) / **Rule Sets**(现有 + A 点开看内容) / **Custom**(C)。`rulesets`/`custom-rules` 加 `embedded` 内嵌;`/rulesets`·`/custom-rules`→`/rules` 重定向;Policy 侧边栏合成单一 `/rules`。
+- A：`api.rulesetRules(tag,q,offset,limit)` + Rule Sets tab 每行「查看」→ 内联面板（搜索防抖 + 分页 + entries）。**GFW 提示**：直连拉取失败时提示换 jsdelivr 镜像（后端仍 `directGet`；如需彻底解决再上 fetch-via-proxy）。
 
-## B —— Rules 页规则来源标注
-- 后端给出**带 provenance** 的生效规则列表:每条标出来源(whitelist / blacklist / rule-set:tag / mode(Global) / management / default-deny)。从我们的注入逻辑生成视图(而非 Clash 只读 `/rules` 镜像)。前端分组/标注。
+## ~~B —— Rules 页规则来源标注~~（✅ 已完成）
+- `Manager.EffectiveRules()` 从各 store 推导**带 provenance 的生效规则列表**（按 L0..L4 + 来源 management/blacklist/rule-set:tag/process/device/global/acl-gate/no-proxy/private/custom/default-deny 标注），`GET /api/effective-rules`;Routing tab 分层渲染 + 彩色来源/动作 Badge。**防漂移测试**保证与真实 merged 配置层序一致。（非 Clash `/rules` 镜像;`/api/rules` 端点仍保留给 API 用户。）
 
 ## #5 —— TUN 权限 UX 友好化
 - 非 root 点 TUN 别弹原始 `operation not permitted`,给友好提示 + 引导(sudo / setcap / 桌面端提权)。

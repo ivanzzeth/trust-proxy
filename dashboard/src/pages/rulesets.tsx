@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Download, Plus, Trash2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Download, Eye, Plus, Trash2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api, CatalogEntry } from '@/lib/api';
@@ -18,9 +18,10 @@ const ROLES = ['block', 'allow-direct', 'allow-proxy'];
 const roleBadge = (r: string) =>
   r === 'block' ? 'danger' : r === 'allow-direct' ? 'muted' : 'success';
 
-export default function RuleSets() {
+export default function RuleSets({ embedded }: { embedded?: boolean }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
+  const [viewTag, setViewTag] = useState<string | null>(null);
   const invalidate = () => qc.invalidateQueries({ queryKey: ['rulesets'] });
   const { data: sets } = useQuery({ queryKey: ['rulesets'], queryFn: api.rulesets });
   const { data: catalog = [] } = useQuery({ queryKey: ['ruleCatalog'], queryFn: api.ruleCatalog });
@@ -38,7 +39,7 @@ export default function RuleSets() {
 
   return (
     <div>
-      <PageHeader title={t('pages.rulesets.title')} description={t('pages.rulesets.description')} />
+      {!embedded && <PageHeader title={t('pages.rulesets.title')} description={t('pages.rulesets.description')} />}
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
@@ -120,6 +121,9 @@ export default function RuleSets() {
                   </TableCell>
                   <TableCell className="tnum max-w-[280px] truncate text-xs text-muted-foreground">{rs.url || rs.path}</TableCell>
                   <TableCell className="text-right">
+                    <Button size="icon" variant="ghost" className="size-7" title={t('pages.rulesets.viewButton')} onClick={() => setViewTag(rs.tag)}>
+                      <Eye className="size-3.5" />
+                    </Button>
                     <Button size="icon" variant="ghost" className="size-7 text-destructive" onClick={() => del.mutate(rs.tag)}>
                       <Trash2 className="size-3.5" />
                     </Button>
@@ -130,6 +134,81 @@ export default function RuleSets() {
           </Table>
         </CardContent>
       </Card>
+
+      {viewTag && <RuleSetViewer tag={viewTag} onClose={() => setViewTag(null)} />}
     </div>
+  );
+}
+
+function RuleSetViewer({ tag, onClose }: { tag: string; onClose: () => void }) {
+  const { t } = useTranslation();
+  const [q, setQ] = useState('');
+  const [offset, setOffset] = useState(0);
+  const limit = 200;
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ['rulesetRules', tag, q, offset],
+    queryFn: () => api.rulesetRules(tag, q, offset, limit),
+  });
+  const total = data?.total ?? 0;
+
+  return (
+    <Card className="mt-4 overflow-hidden">
+      <CardHeader className="flex-row items-center gap-2 pb-3">
+        <CardTitle className="text-sm">
+          {t('pages.rulesets.viewerTitle')} <span className="tnum text-muted-foreground">{tag}</span>
+        </CardTitle>
+        {data && (
+          <Badge variant="muted" className="tnum">
+            {data.count}
+          </Badge>
+        )}
+        <Button size="icon" variant="ghost" className="ml-auto size-7" onClick={onClose}>
+          <X className="size-4" />
+        </Button>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <Input
+          placeholder={t('pages.rulesets.viewerSearch')}
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            setOffset(0);
+          }}
+        />
+        {isError && <p className="text-sm text-destructive">{t('pages.rulesets.viewerError')}</p>}
+        {isLoading && <p className="py-6 text-center text-sm text-muted-foreground">{t('common.loading')}</p>}
+        {data && (
+          <>
+            <div className="max-h-[420px] overflow-auto rounded-md border">
+              {data.entries.length === 0 ? (
+                <p className="py-8 text-center text-sm text-muted-foreground">{t('pages.rulesets.viewerEmpty')}</p>
+              ) : (
+                data.entries.map((e, i) => (
+                  <div key={i} className="flex items-center gap-2 border-b px-3 py-1 last:border-0">
+                    <Badge variant="outline" className="w-32 shrink-0 justify-center font-mono text-[10px]">
+                      {e.kind}
+                    </Badge>
+                    <span className="tnum truncate text-xs">{e.value}</span>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="tnum">
+                {total === 0 ? 0 : offset + 1}–{Math.min(offset + limit, total)} / {total}
+              </span>
+              <div className="flex gap-1">
+                <Button size="icon" variant="ghost" className="size-7" disabled={offset === 0} onClick={() => setOffset(Math.max(0, offset - limit))}>
+                  <ChevronLeft className="size-4" />
+                </Button>
+                <Button size="icon" variant="ghost" className="size-7" disabled={offset + limit >= total} onClick={() => setOffset(offset + limit)}>
+                  <ChevronRight className="size-4" />
+                </Button>
+              </div>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }

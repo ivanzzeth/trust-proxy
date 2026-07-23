@@ -19,7 +19,7 @@ const ACTIONS: CRAction[] = ['direct', 'proxy', 'block', 'node'];
 const actionBadge = (a: CRAction) =>
   a === 'block' ? 'danger' : a === 'proxy' ? 'success' : a === 'node' ? 'default' : 'muted';
 
-export default function CustomRules() {
+export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const invalidate = () => {
@@ -69,7 +69,7 @@ export default function CustomRules() {
 
   return (
     <div>
-      <PageHeader title={t('pages.customRules.title')} description={t('pages.customRules.desc')} />
+      {!embedded && <PageHeader title={t('pages.customRules.title')} description={t('pages.customRules.desc')} />}
 
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-sm">{t('pages.customRules.addTitle')}</CardTitle></CardHeader>
