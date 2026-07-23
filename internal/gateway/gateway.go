@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -496,7 +495,7 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	}
 	// Must run AFTER injectWhitelist: it anchors on the network-matcher catch-all
 	// reject, which is the only reject present at whitelist time.
-	if err := injectRuleSets(cfg, sets, dataDir); err != nil {
+	if err := injectRuleSets(cfg, sets, dataDir, len(nodes) > 0 || len(epTags) > 0); err != nil {
 		return nil, err
 	}
 	// Rule<->Global routing toggle. Runs after the whitelist/rule-sets so its rule
@@ -694,7 +693,7 @@ func setDefaultDomainResolver(cfg map[string]json.RawMessage, server string) err
 // weaves their match rules into route.rules preserving default-deny order:
 //   sniff -> hijack-dns -> [block sets: reject] -> whitelist allows ->
 //   [allow sets: route] -> reject catch-all
-func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir string) error {
+func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir string, hasExit bool) error {
 	var enabled []apitypes.RuleSet
 	for _, rs := range sets.Sets {
 		if rs.Enabled && rs.Tag != "" {
@@ -738,8 +737,20 @@ func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir s
 		if rs.Type == "local" {
 			desc["path"] = rs.Path
 		} else {
+			// The .srs fetch dials download_detour directly (it bypasses route.rules),
+			// so under default-deny it isn't the whitelist that blocks it — a direct
+			// dial to e.g. raw.githubusercontent.com is what fails behind the GFW.
+			// When an exit is configured, download THROUGH the proxy group so the
+			// fetch crosses the GFW; otherwise fall back to direct.
+			detour := rs.DownloadDetour
+			if detour == "" {
+				detour = "direct"
+			}
+			if detour == "direct" && hasExit {
+				detour = ProxyGroupTag
+			}
 			desc["url"] = rs.URL
-			desc["download_detour"] = rs.DownloadDetour // always "direct" under default-deny
+			desc["download_detour"] = detour
 			desc["update_interval"] = rs.UpdateInterval
 		}
 		raw, err := json.Marshal(desc)
@@ -814,29 +825,6 @@ func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir s
 	if len(proxyTags) > 0 {
 		r, _ := json.Marshal(map[string]any{"rule_set": proxyTags, "action": "route", "outbound": ProxyGroupTag})
 		allowRules = append(allowRules, r)
-	}
-
-	// Auto-allow the remote rule_set download hosts (exact domain -> direct) so the
-	// .srs fetch isn't dropped by default-deny. This matters in TUN mode, where
-	// auto_route re-captures the downloader's own dial back through the route; in
-	// non-TUN mode the fetch dials download_detour directly and bypasses the route,
-	// making this a harmless no-op. Prepended so it sits above the allow rule-sets.
-	var dlHosts []string
-	seenHost := map[string]bool{}
-	for _, rs := range enabled {
-		if rs.Type == "local" || rs.URL == "" {
-			continue
-		}
-		if u, err := url.Parse(rs.URL); err == nil {
-			if h := u.Hostname(); h != "" && !seenHost[h] {
-				seenHost[h] = true
-				dlHosts = append(dlHosts, h)
-			}
-		}
-	}
-	if len(dlHosts) > 0 {
-		r, _ := json.Marshal(map[string]any{"domain": dlHosts, "action": "route", "outbound": "direct"})
-		allowRules = append([]json.RawMessage{r}, allowRules...)
 	}
 
 	merged := make([]json.RawMessage, 0, len(rules)+len(blockRules)+len(allowRules))
