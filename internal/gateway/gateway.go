@@ -267,7 +267,7 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	// Valid custom `node` targets = individual nodes/endpoints ∪ group tags
 	// (mirrors injectOutbounds), so a rule pointing at a group isn't flagged stale.
 	nodeT := memberTags(nodes, epTags)
-	_, groupT := buildProxyGroups(nodeT, pg)
+	_, groupT := buildProxyGroups(nodeT, loopbackTags(nodes), pg)
 	members := map[string]bool{}
 	for _, t := range append(append([]string(nil), nodeT...), groupT...) {
 		members[t] = true
@@ -374,8 +374,10 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	allowBits = append(allowBits, "private-CIDRs")
 	add(apitypes.RuleView{Layer: "L3", Source: "acl-gate", Action: "route:blocked", Matcher: "logical (inverted)", Values: allowBits, Note: "anything NOT in the allow-set is blocked"})
 
-	// L4 routing egress, in injection order: custom → rule-set direct →
-	// no-proxy domains → no-proxy+private IPs → rule-set proxy.
+	// L4 routing egress, in injection order: custom → no-proxy →
+	// allow-proxy rule sets → allow-direct rule sets.
+	// Proxy sets must beat CN-direct for geosite overlaps (gvt2 etc. appear in
+	// both geosite-google and geosite-cn; Google pack must win).
 	for _, r := range cr.Rules {
 		if !r.Enabled {
 			continue
@@ -407,9 +409,6 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 		}
 		add(v)
 	}
-	for _, tag := range directSets {
-		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:direct", Matcher: "rule_set", Values: []string{tag}})
-	}
 	if len(dlSfx) > 0 {
 		add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "domain_suffix", Values: truncVals(dlSfx, 20)})
 	}
@@ -421,6 +420,9 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "ip_cidr", Values: truncVals(ipVals, 20), Note: "includes built-in LAN/private ranges"})
 	for _, tag := range proxySets {
 		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:proxy", Matcher: "rule_set", Values: []string{tag}})
+	}
+	for _, tag := range directSets {
+		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:direct", Matcher: "rule_set", Values: []string{tag}})
 	}
 
 	// catch-all default egress (gate present → proxy).
@@ -764,11 +766,12 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	}
 	// memberTags = proxy group members (node + endpoint outbounds); the valid
 	// targets for a custom rule's `node` action.
-	memberTags, err := injectOutbounds(cfg, nodes, epTags, pg)
+	memberTags, loopback, err := injectOutbounds(cfg, nodes, epTags, pg)
 	if err != nil {
 		return nil, err
 	}
-	// Before applyMode: a configured dns block wins over TUN's default resolver.
+	// Before applyMode: a configured dns block is installed first; applyMode's
+	// TUN path then runs sanitizeTunDNS so any type=local servers cannot loop.
 	if err := injectDNS(cfg, dns, dataDir); err != nil {
 		return nil, err
 	}
@@ -807,6 +810,11 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 		return nil, err
 	}
 	if err := injectClashSecret(cfg, clashSecret); err != nil {
+		return nil, err
+	}
+	// Safety contracts last: TUN DNS/hijack, no loopback in Auto when remotes
+	// exist. Never widens the ACL allow-set.
+	if err := applyInvariants(cfg, mode, loopback); err != nil {
 		return nil, err
 	}
 	return json.Marshal(cfg)
@@ -1334,67 +1342,111 @@ func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.Inboun
 }
 
 // ensureTunExtras adds the pieces TUN capture needs that the base client config
-// omits: a local DNS server, a hijack-dns route rule (before the reject), and
-// auto_detect_interface.
+// omits. DNS sanitization + hijack/auto_detect are owned by the shared
+// invariant helpers (also re-run at the end of buildMergedConfig).
 func ensureTunExtras(cfg map[string]json.RawMessage) error {
-	if _, ok := cfg["dns"]; !ok {
+	if err := sanitizeTunDNS(cfg); err != nil {
+		return err
+	}
+	return ensureTunHijackAndInterface(cfg)
+}
+
+// tunDNSFallback is the UDP resolver we substitute for dns type=local under TUN.
+// 223.5.5.5 is reachable on mainland networks without going through the proxy
+// group (download_detour/direct deadlock concern does not apply — this is the
+// DNS dial itself, and route.auto_detect_interface binds it to the physical NIC).
+const tunDNSFallbackTag = "tun-dns"
+const tunDNSFallbackAddr = "223.5.5.5"
+
+// sanitizeTunDNS ensures TUN mode never keeps a dns type=local server (or a
+// final/default_domain_resolver pointing at one). Missing dns → install the
+// UDP fallback; existing local servers are rewritten in place (same tag) so
+// user rules/final that reference the tag keep working.
+func sanitizeTunDNS(cfg map[string]json.RawMessage) error {
+	fallback := map[string]any{"type": "udp", "tag": tunDNSFallbackTag, "server": tunDNSFallbackAddr}
+
+	raw, ok := cfg["dns"]
+	if !ok {
 		dns, _ := json.Marshal(map[string]any{
-			"servers": []map[string]any{{"type": "udp", "tag": "dns-local", "server": "223.5.5.5"}},
+			"servers": []map[string]any{fallback},
+			"final":   tunDNSFallbackTag,
 		})
 		cfg["dns"] = dns
+		return setDefaultDomainResolver(cfg, tunDNSFallbackTag)
 	}
-	routeRaw, ok := cfg["route"]
-	if !ok {
+
+	var dns map[string]any
+	if err := json.Unmarshal(raw, &dns); err != nil {
+		return err
+	}
+	servers, _ := dns["servers"].([]any)
+	changed := false
+	firstReal := ""
+	out := make([]any, 0, len(servers)+1)
+	for _, s := range servers {
+		m, ok := s.(map[string]any)
+		if !ok {
+			out = append(out, s)
+			continue
+		}
+		typ, _ := m["type"].(string)
+		tag, _ := m["tag"].(string)
+		if typ == "local" {
+			if tag == "" {
+				tag = tunDNSFallbackTag
+			}
+			out = append(out, map[string]any{"type": "udp", "tag": tag, "server": tunDNSFallbackAddr})
+			if firstReal == "" {
+				firstReal = tag
+			}
+			changed = true
+			continue
+		}
+		if typ != "fakeip" && typ != "hosts" && tag != "" && firstReal == "" {
+			firstReal = tag
+		}
+		out = append(out, m)
+	}
+	if len(out) == 0 {
+		out = []any{fallback}
+		firstReal = tunDNSFallbackTag
+		changed = true
+	}
+	if firstReal == "" {
+		// Only synth servers left — append a real upstream the resolver can use.
+		out = append(out, fallback)
+		firstReal = tunDNSFallbackTag
+		changed = true
+	}
+	final, _ := dns["final"].(string)
+	finalType := ""
+	for _, s := range out {
+		if m, ok := s.(map[string]any); ok && m["tag"] == final {
+			finalType, _ = m["type"].(string)
+			break
+		}
+	}
+	// Under TUN, final must dial a real upstream. type=local loops; fakeip/hosts
+	// synthesize answers and can't back default_domain_resolver / hijack-dns.
+	if final == "" || finalType == "" || finalType == "local" || finalType == "fakeip" || finalType == "hosts" {
+		dns["final"] = firstReal
+		changed = true
+	}
+	if !changed {
+		// Still refresh default_domain_resolver in case it pointed at local.
+		if res, _ := dns["final"].(string); res != "" {
+			return setDefaultDomainResolver(cfg, res)
+		}
 		return nil
 	}
-	var route map[string]json.RawMessage
-	if err := json.Unmarshal(routeRaw, &route); err != nil {
-		return err
-	}
-	route["auto_detect_interface"] = json.RawMessage("true")
-
-	var rules []json.RawMessage
-	if raw, ok := route["rules"]; ok {
-		if err := json.Unmarshal(raw, &rules); err != nil {
-			return err
-		}
-	}
-	hasHijack, sniffIdx := false, -1
-	for i, r := range rules {
-		var meta struct {
-			Action string `json:"action"`
-		}
-		_ = json.Unmarshal(r, &meta)
-		if meta.Action == "hijack-dns" {
-			hasHijack = true
-		}
-		if meta.Action == "sniff" && sniffIdx < 0 {
-			sniffIdx = i
-		}
-	}
-	if !hasHijack {
-		hj, _ := json.Marshal(map[string]any{"protocol": "dns", "action": "hijack-dns"})
-		at := sniffIdx + 1 // after sniff (or at 0 if none)
-		if at < 0 {
-			at = 0
-		}
-		merged := make([]json.RawMessage, 0, len(rules)+1)
-		merged = append(merged, rules[:at]...)
-		merged = append(merged, hj)
-		merged = append(merged, rules[at:]...)
-		rules = merged
-	}
-	nr, err := json.Marshal(rules)
+	dns["servers"] = out
+	b, err := json.Marshal(dns)
 	if err != nil {
 		return err
 	}
-	route["rules"] = nr
-	nrt, err := json.Marshal(route)
-	if err != nil {
-		return err
-	}
-	cfg["route"] = nrt
-	return nil
+	cfg["dns"] = b
+	res, _ := dns["final"].(string)
+	return setDefaultDomainResolver(cfg, res)
 }
 
 // injectClashSecret sets experimental.clash_api.secret (so the secret isn't
@@ -1633,19 +1685,67 @@ func excludeSet(codes []string) map[string]bool {
 	return m
 }
 
+// loopbackTags returns the set of member tags whose outbound server is
+// loopback/localhost. Mirrors the classification injectOutbounds feeds into
+// buildProxyGroups so EffectiveRules stays in sync.
+func loopbackTags(nodes []apitypes.Node) map[string]bool {
+	out := map[string]bool{}
+	tags := memberTags(nodes, nil)
+	ti := 0
+	for _, n := range nodes {
+		if len(n.Outbound) == 0 {
+			continue
+		}
+		var ob map[string]any
+		if err := json.Unmarshal(n.Outbound, &ob); err != nil {
+			continue
+		}
+		tag := tags[ti]
+		ti++
+		if isLoopbackHost(stringOr(ob["server"], n.Server)) {
+			out[tag] = true
+		}
+	}
+	return out
+}
+
+// isLoopbackHost reports whether a node server address targets the local
+// machine (127.0.0.0/8, ::1, localhost). Those are fine as manual exits
+// (e.g. Cloudflare WARP's local SOCKS) but must not sit in Auto/urltest: when
+// the local agent is down, urltest still latches onto them and all proxied
+// traffic (Google, etc.) blackholes.
+func isLoopbackHost(server string) bool {
+	host := strings.TrimSpace(server)
+	if host == "" {
+		return false
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // buildProxyGroups turns the member pool (node + endpoint tags) into sing-box
 // group outbounds and the top-level `proxy` selector. It returns the outbound
 // JSON to append AND the group tags (Auto + per-country + user groups, NOT the
 // proxy selector) — those extend the valid `node`-action targets. Layering:
-//   - Auto: urltest over every member (the default the proxy selector points at,
-//     preserving the pre-grouping behavior).
+//   - Auto: urltest over non-loopback members (the default the proxy selector
+//     points at). Loopback-only pools fall back to the full tag list so a
+//     WARP-only setup still works.
+//   - Local: selector over loopback members (when any exist alongside remotes).
 //   - per-country urltest groups (when AutoCountry and ≥1 country is detected).
 //   - user groups (select|urltest) by country/regex/manual filter.
-//   - proxy: selector over [Auto, country…, user…], default = Auto.
+//   - proxy: selector over [Auto, Local?, country…, user…], default = Auto.
 //
 // Empty pool => proxy is selector[direct] and there are no groups.
 // It is pure (no cfg mutation) so EffectiveRules can reuse it for the member set.
-func buildProxyGroups(tags []string, pg proxygroups.Config) (outs []json.RawMessage, groupTags []string) {
+// loopback marks tags whose outbound server is localhost; nil/empty is fine.
+func buildProxyGroups(tags []string, loopback map[string]bool, pg proxygroups.Config) (outs []json.RawMessage, groupTags []string) {
 	if len(tags) == 0 {
 		sel, _ := json.Marshal(map[string]any{"type": "selector", "tag": ProxyGroupTag, "outbounds": []string{"direct"}})
 		return []json.RawMessage{sel}, nil
@@ -1676,23 +1776,39 @@ func buildProxyGroups(tags []string, pg proxygroups.Config) (outs []json.RawMess
 		groupTags = append(groupTags, tag)
 	}
 
-	autoTag := uniq("Auto")
-	add("urltest", autoTag, tags)
+	var remote, local []string
+	for _, t := range tags {
+		if loopback[t] {
+			local = append(local, t)
+		} else {
+			remote = append(remote, t)
+		}
+	}
+	autoMembers := remote
+	if len(autoMembers) == 0 {
+		autoMembers = tags // WARP-only / all-loopback: Auto must still have members
+	}
 
-	// Shared "Overseas" group: urltest over every node whose country is NOT
-	// excluded (default HK/MO/CN). Built ONLY when the exclusion actually removes
-	// ≥1 node — if nothing is excluded, Auto is already a safe superset and any
-	// rule targeting Overseas self-heals back to Auto. This gives geofenced
-	// services (Anthropic/OpenAI/Cursor) failover across allowed regions that can
-	// never land on a blocked one.
+	autoTag := uniq("Auto")
+	add("urltest", autoTag, autoMembers)
+	if len(local) > 0 && len(remote) > 0 {
+		add("selector", uniq("Local"), local)
+	}
+
+	// Shared "Overseas" group: urltest over every non-loopback node whose country
+	// is NOT excluded (default HK/MO/CN). Built ONLY when the exclusion actually
+	// removes ≥1 node — if nothing is excluded, Auto is already a safe superset
+	// and any rule targeting Overseas self-heals back to Auto. This gives
+	// geofenced services (Anthropic/OpenAI/Cursor) failover across allowed
+	// regions that can never land on a blocked one.
 	if ex := excludeSet(pg.ExcludeCountries); len(ex) > 0 {
 		var allowed []string
-		for _, t := range tags {
+		for _, t := range remote {
 			if !ex[proxygroups.Country(t)] {
 				allowed = append(allowed, t)
 			}
 		}
-		if len(allowed) > 0 && len(allowed) < len(tags) {
+		if len(allowed) > 0 && len(allowed) < len(remote) {
 			add("urltest", uniq(proxygroups.OverseasGroupTag), allowed)
 		}
 	}
@@ -1701,7 +1817,7 @@ func buildProxyGroups(tags []string, pg proxygroups.Config) (outs []json.RawMess
 		buckets := map[string][]string{}
 		var order []string
 		real := 0
-		for _, t := range tags {
+		for _, t := range remote {
 			c := proxygroups.Country(t)
 			if c == "" {
 				c = "Other"
@@ -1744,13 +1860,13 @@ func buildProxyGroups(tags []string, pg proxygroups.Config) (outs []json.RawMess
 
 // injectOutbounds rewrites outbounds from the subscription nodes + the proxy
 // group tree, and returns the valid `node`-action targets: node + endpoint
-// outbound tags PLUS the group tags (Auto / country / user groups). A custom
-// rule pinning any other tag is skipped at inject time (self-heal).
-func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extraTags []string, pg proxygroups.Config) ([]string, error) {
+// outbound tags PLUS the group tags (Auto / country / user groups), and the
+// set of tags whose server is loopback (for applyInvariants).
+func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extraTags []string, pg proxygroups.Config) ([]string, map[string]bool, error) {
 	var outs []json.RawMessage
 	if raw, ok := cfg["outbounds"]; ok {
 		if err := json.Unmarshal(raw, &outs); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	kept := outs[:0:0]
@@ -1769,6 +1885,7 @@ func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extr
 	// onto the (identically-skipped) nodes so outbound tags match the member set.
 	nodeTags := memberTags(nodes, nil)
 	var tags []string
+	loopback := map[string]bool{}
 	ti := 0
 	for _, n := range nodes {
 		if len(n.Outbound) == 0 {
@@ -1787,21 +1904,24 @@ func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extr
 		}
 		kept = append(kept, raw)
 		tags = append(tags, tag)
+		if isLoopbackHost(stringOr(ob["server"], n.Server)) {
+			loopback[tag] = true
+		}
 	}
 	// WireGuard/Tailscale endpoint tags (defined in endpoints[]) are valid group
 	// members — append so groups can urltest across nodes + exits.
 	tags = append(tags, extraTags...)
 
-	groupOuts, groupTags := buildProxyGroups(tags, pg)
+	groupOuts, groupTags := buildProxyGroups(tags, loopback, pg)
 	kept = append(kept, groupOuts...)
 
 	newOuts, err := json.Marshal(kept)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	cfg["outbounds"] = newOuts
 	// Valid node-action targets = individual nodes/endpoints ∪ the group tags.
-	return append(append([]string(nil), tags...), groupTags...), nil
+	return append(append([]string(nil), tags...), groupTags...), loopback, nil
 }
 
 // injectBlacklist inserts reject rules for explicitly denied destinations right
@@ -2091,14 +2211,11 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	})
 
 	// L4 egress: custom rules first (ordered, user's explicit per-rule intent),
-	// then direct-bypass (rule_sets, then no-proxy domains/ips), then allow-proxy
-	// sets. Allowed traffic matched by none falls to the catch-all default (proxy).
+	// then user no-proxy / private CIDRs, then allow-proxy rule sets, then
+	// allow-direct rule sets. Proxy-before-direct so geosite-google beats
+	// geosite-cn on overlaps (gvt2/beacons etc.).
 	var egress []json.RawMessage
 	egress = append(egress, customEgress...)
-	if len(directSetTags) > 0 {
-		r, _ := json.Marshal(map[string]any{"rule_set": directSetTags, "action": "route", "outbound": "direct"})
-		egress = append(egress, r)
-	}
 	if len(dlSfx) > 0 {
 		r, _ := json.Marshal(map[string]any{"domain_suffix": dlSfx, "action": "route", "outbound": "direct"})
 		egress = append(egress, r)
@@ -2113,6 +2230,10 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	}
 	if len(proxySetTags) > 0 {
 		r, _ := json.Marshal(map[string]any{"rule_set": proxySetTags, "action": "route", "outbound": ProxyGroupTag})
+		egress = append(egress, r)
+	}
+	if len(directSetTags) > 0 {
+		r, _ := json.Marshal(map[string]any{"rule_set": directSetTags, "action": "route", "outbound": "direct"})
 		egress = append(egress, r)
 	}
 

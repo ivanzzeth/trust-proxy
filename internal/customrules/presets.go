@@ -5,21 +5,16 @@ import (
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
-// Presets are curated Allow packs a user can import in one click. Applying a
-// preset Adds each rule tagged with Pack=<Name>, Enabled=true. Matches use
-// domain_suffix (covers subdomains). These are convenience bundles, not an
-// exhaustive list — users edit/extend them like any custom rule afterwards.
+// Presets are curated Allow packs a user can import in one click.
 //
-// Geofencing: several services block by the exit country's jurisdiction (a
-// commercial block, not the GFW). Anthropic/OpenAI refuse Hong Kong + mainland
-// China; Cursor refuses HK/TW/CN for its Claude models. Those packs egress via
-// the shared "Overseas" group (a urltest over every node whose country is NOT
-// excluded — default HK/MO/CN), so traffic fails over across allowed regions and
-// can NEVER land on a blocked one. It degrades gracefully: if the exclusion
-// removes no node (you have no HK/CN nodes) the Overseas group isn't built and
-// the rule falls back to the default proxy (Auto = fastest, already safe).
-// Services with no geofence stay on plain proxy (auto). Research behind these:
-// Anthropic/OpenAI block HK+CN; Gemini/Grok/Perplexity/Mistral/etc. have none.
+// Prefer RuleSets (geosite-*) for broad services — the community list covers
+// companions (gvt2, CDN hosts, …) so we stop hand-maintaining domain tables.
+// Keep custom Rules when egress must pin a group (Overseas) or when no clean
+// geosite category exists.
+//
+// Geofencing: Anthropic/OpenAI refuse HK+CN; Cursor refuses HK/TW/CN for Claude
+// models. Those packs keep domain Rules with Node=Overseas. Broad packs
+// (Google/Dev/…) bind catalog rule sets as allow-proxy / allow-direct.
 var Presets = []apitypes.PackPreset{
 	{
 		Name:        "Claude",
@@ -29,7 +24,7 @@ var Presets = []apitypes.PackPreset{
 	},
 	{
 		Name:        "OpenAI",
-		Description: "OpenAI ChatGPT / API / Sora via the Overseas group. OpenAI cut off Hong Kong + mainland China in 2024 and flags datacenter IPs — this keeps traffic on allowed overseas nodes (a clean residential one is best).",
+		Description: "OpenAI ChatGPT / API / Sora via the Overseas group. OpenAI cut off Hong Kong + mainland China in 2024 and flags datacenter IPs — this keeps traffic on allowed overseas nodes (a residential one is best).",
 		Exit:        apitypes.PackExitOverseas,
 		Rules:       overseasRules("OpenAI", "openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "sora.com"),
 	},
@@ -51,51 +46,73 @@ var Presets = []apitypes.PackPreset{
 	},
 	{
 		Name:        "Dev",
-		Description: "GitHub / Copilot / npm / PyPI / Go / Docker registries via the proxy (fastest). No region lock (trade-control embargoed regions aside).",
+		Description: "GitHub ecosystem via geosite-github (community-maintained). Covers github.com, raw/usercontent, ghcr, Copilot hosts, etc. without a hand-maintained domain list.",
 		Exit:        apitypes.PackExitAuto,
+		RuleSets:    catalogRS("geosite-github"),
+		// npm/pypi/go/docker stay as custom rules — no single clean geosite tag.
 		Rules: proxyRules("Dev",
-			"github.com", "githubusercontent.com", "githubassets.com", "ghcr.io", "githubcopilot.com",
 			"npmjs.org", "npmjs.com", "pypi.org", "pythonhosted.org",
 			"pkg.go.dev", "proxy.golang.org", "sum.golang.org",
 			"docker.io", "docker.com"),
 	},
 	{
 		Name:        "Telegram",
-		Description: "Telegram apps + media via the proxy (fastest).",
+		Description: "Telegram via geosite-telegram (apps + media CDN). Community list stays current.",
 		Exit:        apitypes.PackExitAuto,
-		Rules:       proxyRules("Telegram", "telegram.org", "t.me", "telegram.me", "telesco.pe", "tdesktop.com"),
+		RuleSets:    catalogRS("geosite-telegram"),
+		Rules:       []apitypes.CustomRule{}, // non-nil so JSON is [] not null (UI reads .length)
+	},
+	{
+		Name:        "X",
+		Description: "X (Twitter) via geosite-twitter — x.com, twitter.com, t.co, twimg CDN, API hosts, etc.",
+		Exit:        apitypes.PackExitAuto,
+		RuleSets:    catalogRS("geosite-twitter"),
+		Rules:       []apitypes.CustomRule{},
 	},
 	{
 		Name:        "Streaming",
-		Description: "Netflix / Disney+ / HBO / Spotify / Twitch via the proxy (fastest). Content library depends on the exit country; these services also block datacenter IPs — a residential node is best. Re-pin to your preferred library's country if needed.",
+		Description: "Netflix + Spotify via geosite rule sets. Disney+/HBO/Twitch stay as custom suffixes (no single clean geosite tag). Library depends on exit country; datacenter IPs are often blocked.",
 		Exit:        apitypes.PackExitAuto,
+		RuleSets:    catalogRS("geosite-netflix", "geosite-spotify"),
 		Rules: proxyRules("Streaming",
-			"netflix.com", "nflxvideo.net", "disneyplus.com", "disney-plus.net",
-			"hbomax.com", "max.com", "spotify.com", "scdn.co", "twitch.tv", "ttvnw.net"),
+			"disneyplus.com", "disney-plus.net",
+			"hbomax.com", "max.com",
+			"twitch.tv", "ttvnw.net"),
 	},
 	{
-		Name:        "Google",
-		Description: "Google services + YouTube via the proxy (fastest).",
-		Exit:        apitypes.PackExitAuto,
-		Rules: proxyRules("Google",
-			"google.com", "gstatic.com", "googleapis.com", "googleusercontent.com",
-			"ggpht.com", "youtube.com", "ytimg.com", "googlevideo.com"),
+		Name: "Google",
+		Description: "Google + YouTube via geosite-google / geosite-youtube (community-maintained). " +
+			"Covers companions (gvt2/gvt3, beacons, SafeBrowsing, …) so Chrome tabs stop stalling on ACL blocks. " +
+			"No hand-maintained domain table.",
+		Exit:     apitypes.PackExitAuto,
+		RuleSets: catalogRS("geosite-google", "geosite-youtube"),
+		Rules:    []apitypes.CustomRule{},
 	},
 	{
 		Name:        "Apple",
-		Description: "Apple / iCloud, routed direct (usually best from CN).",
+		Description: "Apple / iCloud via geosite-apple, routed direct (usually best from CN).",
 		Exit:        apitypes.PackExitDirect,
-		Rules: directRules("Apple",
-			"apple.com", "icloud.com", "mzstatic.com", "cdn-apple.com", "apple-cloudkit.com"),
+		RuleSets:    catalogRS("geosite-apple"),
+		Rules:       []apitypes.CustomRule{},
 	},
 	{
-		Name:        "China-direct",
-		Description: "Common mainland-China sites, routed direct. For full CN coverage prefer the geosite-cn rule set.",
-		Exit:        apitypes.PackExitDirect,
-		Rules: directRules("China-direct",
-			"qq.com", "weixin.qq.com", "taobao.com", "tmall.com", "jd.com",
-			"bilibili.com", "aliyun.com", "aliyuncs.com", "alicdn.com", "163.com", "baidu.com"),
+		Name: "China-direct",
+		Description: "Mainland China coverage via geosite-cn (community-maintained). " +
+			"Prefer this over a short domain list — geosite-cn includes baidu CDN hosts, etc.",
+		Exit:     apitypes.PackExitDirect,
+		RuleSets: catalogRS("geosite-cn"),
+		Rules:    []apitypes.CustomRule{},
 	},
+}
+
+// catalogRS builds PackRuleSet entries; role is taken from the catalog's
+// SuggestedRole at import time when left empty.
+func catalogRS(tags ...string) []apitypes.PackRuleSet {
+	out := make([]apitypes.PackRuleSet, 0, len(tags))
+	for _, t := range tags {
+		out = append(out, apitypes.PackRuleSet{CatalogTag: t})
+	}
+	return out
 }
 
 func packRules(pack, action, node string, domains ...string) []apitypes.CustomRule {

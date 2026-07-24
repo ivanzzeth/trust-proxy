@@ -24,6 +24,7 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const qc = useQueryClient();
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ['customrules'] });
+    qc.invalidateQueries({ queryKey: ['rulesets'] });
     qc.invalidateQueries({ queryKey: ['status'] });
   };
   const err = (e: unknown) => toast.error(String((e as Error).message));
@@ -31,7 +32,9 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const { data: rules = [] } = useQuery({ queryKey: ['customrules'], queryFn: api.customRules });
   const { data: proxyData } = useQuery({ queryKey: ['proxies'], queryFn: api.proxies });
   const { data: catalog = [] } = useQuery({ queryKey: ['packsCatalog'], queryFn: api.packsCatalog });
+  const { data: rsData } = useQuery({ queryKey: ['rulesets'], queryFn: api.rulesets });
   const nodes = proxyData?.proxies?.['proxy']?.all ?? [];
+  const ruleSets = rsData?.sets ?? [];
 
   const add = useMutation({ mutationFn: api.addCR, onSuccess: invalidate, onError: err });
   const patch = useMutation({ mutationFn: (v: { id: string; patch: Partial<Omit<CustomRule, 'id'>> }) => api.patchCR(v.id, v.patch), onSuccess: invalidate, onError: err });
@@ -42,9 +45,34 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const packDel = useMutation({ mutationFn: api.delPack, onSuccess: invalidate, onError: err });
 
   // Distinct packs present, with their all-enabled state (for the manage strip).
-  const packs = Array.from(new Set(rules.map((r) => r.pack).filter((p): p is string => !!p)));
-  const packAllOn = (name: string) => rules.filter((r) => r.pack === name).every((r) => r.enabled);
-  const importedPacks = new Set(packs);
+  // Rule-set-only packs (e.g. Google) are "imported" when their catalog tags are present.
+  const packsFromRules = Array.from(new Set(rules.map((r) => r.pack).filter((p): p is string => !!p)));
+  const packAllOn = (name: string) => {
+    const packRules = rules.filter((r) => r.pack === name);
+    if (packRules.length > 0) return packRules.every((r) => r.enabled);
+    const preset = catalog.find((p) => p.name === name);
+    if (!preset?.rule_sets?.length) return false;
+    return preset.rule_sets.every((rs) => ruleSets.some((s) => s.tag === rs.catalog_tag && s.enabled));
+  };
+  const importedPacks = (() => {
+    const s = new Set(packsFromRules);
+    for (const p of catalog) {
+      if (!p.rule_sets?.length) continue;
+      if (p.rule_sets.every((rs) => ruleSets.some((x) => x.tag === rs.catalog_tag))) {
+        s.add(p.name);
+      }
+    }
+    return s;
+  })();
+  const managedPacks = Array.from(importedPacks).sort();
+  const packItemCount = (name: string) => {
+    const nRules = rules.filter((r) => r.pack === name).length;
+    const preset = catalog.find((p) => p.name === name);
+    const nRS = preset?.rule_sets?.length ?? 0;
+    // Only count rule_sets that are actually present (imported).
+    const presentRS = preset?.rule_sets?.filter((rs) => ruleSets.some((x) => x.tag === rs.catalog_tag)).length ?? 0;
+    return nRules + (nRS > 0 ? presentRS : 0);
+  };
 
   const [match, setMatch] = useState<CRMatch>('domain_suffix');
   const [value, setValue] = useState('');
@@ -143,7 +171,9 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
                 </div>
                 <div className="truncate text-xs text-muted-foreground" title={p.description}>{p.description}</div>
               </div>
-              <Badge variant="muted" className="tnum">{p.rules.length}</Badge>
+              <Badge variant="muted" className="tnum">
+                {(p.rules?.length ?? 0) + (p.rule_sets?.length ?? 0)}
+              </Badge>
               {importedPacks.has(p.name) ? (
                 <Badge variant="muted">{t('pages.customRules.importedBadge')}</Badge>
               ) : (
@@ -156,14 +186,14 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
         </CardContent>
       </Card>
 
-      {packs.length > 0 && (
+      {managedPacks.length > 0 && (
         <Card className="mt-4">
           <CardHeader className="pb-3"><CardTitle className="text-sm">{t('pages.customRules.packsTitle')}</CardTitle></CardHeader>
           <CardContent className="flex flex-wrap gap-2">
-            {packs.map((name) => (
+            {managedPacks.map((name) => (
               <div key={name} className="flex items-center gap-2 rounded-md border px-3 py-1.5">
                 <span className="text-sm font-medium">{name}</span>
-                <Badge variant="muted" className="tnum">{rules.filter((r) => r.pack === name).length}</Badge>
+                <Badge variant="muted" className="tnum">{packItemCount(name)}</Badge>
                 <Switch checked={packAllOn(name)} onCheckedChange={(v) => packEnable.mutate({ name, enabled: v })} title={t('pages.customRules.packToggle')} />
                 <Button size="icon" variant="ghost" className="size-6 text-destructive" onClick={() => packDel.mutate(name)} title={t('pages.customRules.packDelete')}>
                   <Trash2 className="size-3.5" />

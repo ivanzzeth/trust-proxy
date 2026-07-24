@@ -43,11 +43,69 @@ var Catalog = []apitypes.RuleSetCatalogEntry{
 		SuggestedRole: apitypes.RuleRoleAllowProxy,
 	},
 	{
+		Tag: "geosite-google", Name: "Google (proxy)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-google.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-google.srs",
+		SuggestedRole: apitypes.RuleRoleAllowProxy,
+	},
+	{
+		Tag: "geosite-youtube", Name: "YouTube (proxy)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-youtube.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-youtube.srs",
+		SuggestedRole: apitypes.RuleRoleAllowProxy,
+	},
+	{
+		Tag: "geosite-github", Name: "GitHub (proxy)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-github.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-github.srs",
+		SuggestedRole: apitypes.RuleRoleAllowProxy,
+	},
+	{
+		Tag: "geosite-telegram", Name: "Telegram (proxy)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-telegram.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-telegram.srs",
+		SuggestedRole: apitypes.RuleRoleAllowProxy,
+	},
+	{
+		Tag: "geosite-twitter", Name: "X / Twitter (proxy)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-twitter.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-twitter.srs",
+		SuggestedRole: apitypes.RuleRoleAllowProxy,
+	},
+	{
+		Tag: "geosite-netflix", Name: "Netflix (proxy)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-netflix.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-netflix.srs",
+		SuggestedRole: apitypes.RuleRoleAllowProxy,
+	},
+	{
+		Tag: "geosite-spotify", Name: "Spotify (proxy)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-spotify.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-spotify.srs",
+		SuggestedRole: apitypes.RuleRoleAllowProxy,
+	},
+	{
+		Tag: "geosite-apple", Name: "Apple (direct)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-apple.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-apple.srs",
+		SuggestedRole: apitypes.RuleRoleAllowDirect,
+	},
+	{
 		Tag: "geosite-category-ads-all", Name: "广告 / 追踪拦截 (block)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-category-ads-all.srs",
 		SuggestedRole: apitypes.RuleRoleBlock,
 	},
+}
+
+// CatalogByTag returns a catalog entry by tag, or false if unknown.
+func CatalogByTag(tag string) (apitypes.RuleSetCatalogEntry, bool) {
+	for _, e := range Catalog {
+		if e.Tag == tag {
+			return e, true
+		}
+	}
+	return apitypes.RuleSetCatalogEntry{}, false
 }
 
 // Store is a file-backed rule-set collection, safe for concurrent use.

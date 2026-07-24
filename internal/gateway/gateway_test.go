@@ -483,6 +483,42 @@ func TestProxyGroups_AutoCountry(t *testing.T) {
 	}
 }
 
+func TestProxyGroups_ExcludesLoopbackFromAuto(t *testing.T) {
+	warpOB, _ := json.Marshal(map[string]any{"type": "socks", "tag": "CloudflareWarp", "server": "127.0.0.1", "server_port": 40000, "version": "5"})
+	nodes := []apitypes.Node{
+		{Tag: "CloudflareWarp", Protocol: "socks", Server: "127.0.0.1", Port: 40000, Outbound: warpOB},
+		node("🇯🇵 JP-01"),
+		node("🇰🇷 KR-01"),
+	}
+	merged := buildGrouped(t, nodes, proxygroups.Config{AutoCountry: true})
+	outs := outbounds(t, merged)
+
+	auto := findOut(outs, "Auto")
+	if auto == nil {
+		t.Fatal("Auto missing")
+	}
+	members, _ := auto["outbounds"].([]any)
+	for _, m := range members {
+		if m == "CloudflareWarp" {
+			t.Fatalf("Auto must not include loopback Warp node: %v", members)
+		}
+	}
+	if len(members) != 2 {
+		t.Fatalf("Auto should be the 2 remote nodes, got %v", members)
+	}
+	local := findOut(outs, "Local")
+	if local == nil || local["type"] != "selector" {
+		t.Fatalf("Local selector missing: %v", local)
+	}
+	if lm, _ := local["outbounds"].([]any); len(lm) != 1 || lm[0] != "CloudflareWarp" {
+		t.Fatalf("Local should be [CloudflareWarp], got %v", local["outbounds"])
+	}
+	proxy := findOut(outs, ProxyGroupTag)
+	if !containsStr(proxy["outbounds"], "Local") {
+		t.Fatalf("proxy selector should expose Local: %v", proxy["outbounds"])
+	}
+}
+
 func TestProxyGroups_UserGroupsAndCollision(t *testing.T) {
 	// A node literally tagged "HK" must not collide with a country group.
 	nodes := []apitypes.Node{node("🇭🇰 HK"), node("🇯🇵 JP-01"), node("🇯🇵 JP-02")}
@@ -823,5 +859,396 @@ func TestPresets_OverseasGroupRoutesOrFallsBack(t *testing.T) {
 	}
 	if !claudeAllowed(rulesB) {
 		t.Fatal("overseas-routed domain must still be allowed when the group is absent (B)")
+	}
+}
+
+// TUN + dns type=local is a classic blackhole: hijack-dns feeds queries into
+// sing-box DNS, which then asks the system resolver, which is itself captured
+// by TUN. ensureTunExtras must neutralize `local` servers in TUN mode.
+func TestTUNNeutralizesLocalDNS(t *testing.T) {
+	dns := apitypes.DNSConfig{
+		Servers: []apitypes.DNSServer{{Tag: "local", Type: "local"}},
+		Final:   "local",
+	}
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
+		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
+		ModeTUN, ruleset.Sets{}, dns, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true},
+		nil, nil, "s", t.TempDir())
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	assertNoLocalDNS(t, merged)
+}
+
+// Manual/system must leave dns type=local alone — rewriting is TUN-only.
+func TestManualKeepsLocalDNS(t *testing.T) {
+	dns := apitypes.DNSConfig{
+		Servers: []apitypes.DNSServer{{Tag: "local", Type: "local"}},
+		Final:   "local",
+	}
+	for _, mode := range []string{ModeManual, ModeSystem} {
+		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
+			blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
+			mode, ruleset.Sets{}, dns, apitypes.InboundAuth{}, apitypes.TUNConfig{},
+			nil, nil, "s", t.TempDir())
+		if err != nil {
+			t.Fatalf("%s: %v", mode, err)
+		}
+		block := dnsBlock(t, merged)
+		found := false
+		for _, s := range block["servers"].([]any) {
+			m := s.(map[string]any)
+			if m["tag"] == "local" && m["type"] == "local" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("%s must keep dns type=local: %+v", mode, block)
+		}
+	}
+}
+
+// TUN with no dns block at all still gets a real upstream (not a silent void).
+func TestTUNInjectsDNSWhenMissing(t *testing.T) {
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
+		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
+		ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{},
+		apitypes.TUNConfig{Stack: "gvisor"}, nil, nil, "s", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoLocalDNS(t, merged)
+	block := dnsBlock(t, merged)
+	if block["final"] == nil || block["final"] == "" {
+		t.Fatalf("TUN with empty dns must set final: %+v", block)
+	}
+}
+
+// fakeip/hosts alone can't back default_domain_resolver — TUN must append a
+// real upstream so outbound dials don't stall after hijack-dns.
+func TestTUNAppendsRealUpstreamBesideFakeIP(t *testing.T) {
+	dns := apitypes.DNSConfig{
+		Servers: []apitypes.DNSServer{{Tag: "fakeip", Type: "fakeip"}},
+		Final:   "fakeip",
+	}
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
+		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
+		ModeTUN, ruleset.Sets{}, dns, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"},
+		nil, nil, "s", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoLocalDNS(t, merged)
+	block := dnsBlock(t, merged)
+	final, _ := block["final"].(string)
+	tags := map[string]string{}
+	for _, s := range block["servers"].([]any) {
+		m := s.(map[string]any)
+		tags[m["tag"].(string)] = m["type"].(string)
+	}
+	if typ := tags[final]; typ == "fakeip" || typ == "hosts" || typ == "" {
+		t.Fatalf("TUN final must be a real upstream, got final=%q types=%v", final, tags)
+	}
+	if _, ok := tags["fakeip"]; !ok {
+		t.Fatal("fakeip server must be preserved alongside the real upstream")
+	}
+}
+
+// Mixed local+udp: rewrite only the local entry; keep the user's UDP server.
+func TestTUNRewritesLocalKeepsUDP(t *testing.T) {
+	dns := apitypes.DNSConfig{
+		Servers: []apitypes.DNSServer{
+			{Tag: "local", Type: "local"},
+			{Tag: "ali", Type: "udp", Server: "223.5.5.5"},
+		},
+		Final: "ali",
+	}
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
+		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
+		ModeTUN, ruleset.Sets{}, dns, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"},
+		nil, nil, "s", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNoLocalDNS(t, merged)
+	block := dnsBlock(t, merged)
+	if block["final"] != "ali" {
+		t.Fatalf("final should stay ali, got %v", block["final"])
+	}
+	var sawAli, sawRewrittenLocal bool
+	for _, s := range block["servers"].([]any) {
+		m := s.(map[string]any)
+		switch m["tag"] {
+		case "ali":
+			if m["type"] == "udp" && m["server"] == "223.5.5.5" {
+				sawAli = true
+			}
+		case "local":
+			if m["type"] == "udp" {
+				sawRewrittenLocal = true
+			}
+		}
+	}
+	if !sawAli || !sawRewrittenLocal {
+		t.Fatalf("expected rewritten local + kept ali: %+v", block)
+	}
+}
+
+// TUN must point route.default_domain_resolver at a real (non-local) server.
+func TestTUNSetsDefaultDomainResolver(t *testing.T) {
+	dns := apitypes.DNSConfig{
+		Servers: []apitypes.DNSServer{{Tag: "local", Type: "local"}},
+		Final:   "local",
+	}
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
+		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
+		ModeTUN, ruleset.Sets{}, dns, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"},
+		nil, nil, "s", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]json.RawMessage
+	_ = json.Unmarshal(merged, &cfg)
+	var route map[string]json.RawMessage
+	_ = json.Unmarshal(cfg["route"], &route)
+	var resolver string
+	_ = json.Unmarshal(route["default_domain_resolver"], &resolver)
+	if resolver == "" {
+		t.Fatal("default_domain_resolver missing under TUN")
+	}
+	block := dnsBlock(t, merged)
+	tags := map[string]string{}
+	for _, s := range block["servers"].([]any) {
+		m := s.(map[string]any)
+		tags[m["tag"].(string)] = m["type"].(string)
+	}
+	if typ := tags[resolver]; typ == "" || typ == "local" || typ == "fakeip" || typ == "hosts" {
+		t.Fatalf("default_domain_resolver=%q type=%q (need real upstream)", resolver, typ)
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"127.0.0.1:40000", true}, // SplitHostPort path isn't used by callers, but be robust
+		{"::1", true},
+		{"[::1]", true},
+		{"localhost", true},
+		{"LOCALHOST", true},
+		{"1.1.1.1", false},
+		{"isp.decodo.com", false},
+		{"", false},
+		{"0.0.0.0", false},
+	} {
+		// isLoopbackHost expects a bare host (outbound "server" field), except we
+		// also accept host:port via SplitHostPort.
+		got := isLoopbackHost(tc.in)
+		if got != tc.want {
+			t.Fatalf("isLoopbackHost(%q)=%v want %v", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestProxyGroups_LocalhostAndV6Loopback(t *testing.T) {
+	mk := func(tag, server string) apitypes.Node {
+		ob, _ := json.Marshal(map[string]any{"type": "socks", "tag": tag, "server": server, "server_port": 1080})
+		return apitypes.Node{Tag: tag, Protocol: "socks", Server: server, Port: 1080, Outbound: ob}
+	}
+	nodes := []apitypes.Node{
+		mk("by-name", "localhost"),
+		mk("by-v6", "::1"),
+		node("🇯🇵 JP-01"),
+	}
+	merged := buildGrouped(t, nodes, proxygroups.Config{})
+	outs := outbounds(t, merged)
+	auto := findOut(outs, "Auto")
+	members, _ := auto["outbounds"].([]any)
+	for _, m := range members {
+		if m == "by-name" || m == "by-v6" {
+			t.Fatalf("Auto must exclude loopback hosts: %v", members)
+		}
+	}
+	local := findOut(outs, "Local")
+	if local == nil {
+		t.Fatal("Local group missing")
+	}
+	lm, _ := local["outbounds"].([]any)
+	if len(lm) != 2 {
+		t.Fatalf("Local should hold both loopback nodes, got %v", lm)
+	}
+}
+
+// All-loopback pool: Auto must still have members (WARP-only setups), and no
+// separate Local group (everything is already "local").
+func TestProxyGroups_AllLoopbackStaysInAuto(t *testing.T) {
+	warpOB, _ := json.Marshal(map[string]any{"type": "socks", "tag": "Warp", "server": "127.0.0.1", "server_port": 40000})
+	nodes := []apitypes.Node{
+		{Tag: "Warp", Protocol: "socks", Server: "127.0.0.1", Port: 40000, Outbound: warpOB},
+	}
+	merged := buildGrouped(t, nodes, proxygroups.Config{})
+	outs := outbounds(t, merged)
+	auto := findOut(outs, "Auto")
+	if m, _ := auto["outbounds"].([]any); len(m) != 1 || m[0] != "Warp" {
+		t.Fatalf("all-loopback Auto should keep Warp, got %v", auto["outbounds"])
+	}
+	if findOut(outs, "Local") != nil {
+		t.Fatal("Local group must not appear when every node is loopback")
+	}
+}
+
+// Overseas / country groups must also skip loopback — otherwise a dead Warp
+// node can still win geofenced packs via the Overseas urltest.
+func TestProxyGroups_OverseasSkipsLoopback(t *testing.T) {
+	warpOB, _ := json.Marshal(map[string]any{"type": "socks", "tag": "CloudflareWarp", "server": "127.0.0.1", "server_port": 40000})
+	nodes := []apitypes.Node{
+		{Tag: "CloudflareWarp", Protocol: "socks", Server: "127.0.0.1", Port: 40000, Outbound: warpOB},
+		node("🇭🇰 HK-01"),
+		node("🇯🇵 JP-01"),
+	}
+	merged := buildGrouped(t, nodes, proxygroups.Config{
+		AutoCountry:      true,
+		ExcludeCountries: []string{"HK", "MO", "CN"},
+	})
+	outs := outbounds(t, merged)
+	og := findOut(outs, proxygroups.OverseasGroupTag)
+	if og == nil {
+		t.Fatal("Overseas group missing")
+	}
+	for _, m := range og["outbounds"].([]any) {
+		if m == "CloudflareWarp" || m == "🇭🇰 HK-01" {
+			t.Fatalf("Overseas must skip loopback + excluded countries, got %v", og["outbounds"])
+		}
+	}
+	hk := findOut(outs, "🇭🇰 HK")
+	if hk != nil {
+		for _, m := range hk["outbounds"].([]any) {
+			if m == "CloudflareWarp" {
+				t.Fatal("country groups must not absorb loopback nodes")
+			}
+		}
+	}
+}
+
+// Google companion domains (gvt2) must be allowed + routed to proxy ABOVE the
+// allow-direct geosite-cn rule — otherwise they get ACL-blocked or wrongly
+// forced direct (the exact failure mode from live events).
+func TestGoogleCompanionBeatsAllowDirectRuleset(t *testing.T) {
+	cr := customrules.Rules{Rules: []apitypes.CustomRule{
+		{Match: "domain_suffix", Value: "google.com", Action: "proxy", Pack: "Google", Enabled: true},
+		{Match: "domain_suffix", Value: "gvt2.com", Action: "proxy", Pack: "Google", Enabled: true},
+		{Match: "domain_suffix", Value: "gvt3.com", Action: "proxy", Pack: "Google", Enabled: true},
+		{Match: "domain_suffix", Value: "baidu.com", Action: "direct", Pack: "China-direct", Enabled: true},
+	}}
+	sets := ruleset.Sets{Sets: []apitypes.RuleSet{
+		{Tag: "geosite-cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+		{Tag: "geoip-cn", Type: "remote", Format: "binary", URL: "https://x/ip.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+	}}
+	merged := buildCR(t, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, cr, sets, []apitypes.Node{node("🇯🇵 JP")})
+	parseValidate(t, merged)
+	rules := routeRules(t, merged)
+
+	gate := rules[firstIdx(rules, isGate)]
+	inAllow := func(dom string) bool {
+		for _, s := range gate["rules"].([]any) {
+			m := s.(map[string]any)
+			if containsStr(m["domain_suffix"], dom) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, d := range []string{"gvt2.com", "gvt3.com", "google.com", "baidu.com"} {
+		if !inAllow(d) {
+			t.Fatalf("%s must join the ACL allow-set (else companion requests get blocked)", d)
+		}
+	}
+
+	gvtIdx := firstIdx(rules, func(r map[string]any) bool {
+		return containsStr(r["domain_suffix"], "gvt2.com") && r["outbound"] == ProxyGroupTag
+	})
+	cnIdx := firstIdx(rules, func(r map[string]any) bool {
+		return containsStr(r["rule_set"], "geosite-cn") && r["outbound"] == "direct"
+	})
+	if gvtIdx == -1 || cnIdx == -1 {
+		t.Fatalf("missing rules: gvt=%d cn=%d", gvtIdx, cnIdx)
+	}
+	if !(gvtIdx < cnIdx) {
+		t.Fatalf("gvt2 proxy rule (%d) must sit above geosite-cn direct (%d)", gvtIdx, cnIdx)
+	}
+}
+
+// Rule-set-only Google pack: geosite-google (allow-proxy) must be injected
+// ABOVE geosite-cn (allow-direct). Overlaps like beacons.gvt2.com live in both
+// community lists; proxy-before-direct is what stops companions going CN-direct.
+func TestAllowProxyRulesetBeatsAllowDirectRuleset(t *testing.T) {
+	sets := ruleset.Sets{Sets: []apitypes.RuleSet{
+		{Tag: "geosite-cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+		{Tag: "geosite-google", Type: "remote", Format: "binary", URL: "https://x/g.srs", Role: apitypes.RuleRoleAllowProxy, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+		{Tag: "geosite-youtube", Type: "remote", Format: "binary", URL: "https://x/y.srs", Role: apitypes.RuleRoleAllowProxy, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+	}}
+	merged := buildCR(t, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, sets, []apitypes.Node{node("🇯🇵 JP")})
+	parseValidate(t, merged)
+	rules := routeRules(t, merged)
+
+	proxyIdx := firstIdx(rules, func(r map[string]any) bool {
+		return (containsStr(r["rule_set"], "geosite-google") || containsStr(r["rule_set"], "geosite-youtube")) &&
+			r["outbound"] == ProxyGroupTag
+	})
+	cnIdx := firstIdx(rules, func(r map[string]any) bool {
+		return containsStr(r["rule_set"], "geosite-cn") && r["outbound"] == "direct"
+	})
+	if proxyIdx == -1 || cnIdx == -1 {
+		t.Fatalf("missing rules: proxySets=%d cn=%d", proxyIdx, cnIdx)
+	}
+	if !(proxyIdx < cnIdx) {
+		t.Fatalf("allow-proxy rule sets (%d) must sit above allow-direct (%d)", proxyIdx, cnIdx)
+	}
+}
+
+func dnsBlock(t *testing.T, merged []byte) map[string]any {
+	t.Helper()
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(merged, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	raw, ok := cfg["dns"]
+	if !ok {
+		t.Fatal("dns block missing")
+	}
+	var block map[string]any
+	if err := json.Unmarshal(raw, &block); err != nil {
+		t.Fatal(err)
+	}
+	return block
+}
+
+func assertNoLocalDNS(t *testing.T, merged []byte) {
+	t.Helper()
+	block := dnsBlock(t, merged)
+	servers, _ := block["servers"].([]any)
+	if len(servers) == 0 {
+		t.Fatal("expected dns servers")
+	}
+	final, _ := block["final"].(string)
+	tags := map[string]string{}
+	for _, s := range servers {
+		m := s.(map[string]any)
+		typ, _ := m["type"].(string)
+		tag, _ := m["tag"].(string)
+		if typ == "local" {
+			t.Fatalf("left dns type=local (loop risk): %+v final=%v", m, final)
+		}
+		if tag != "" {
+			tags[tag] = typ
+		}
+	}
+	if final == "" {
+		t.Fatal("dns final empty")
+	}
+	if typ := tags[final]; typ == "" || typ == "local" || typ == "fakeip" || typ == "hosts" {
+		t.Fatalf("final %q resolves to type=%q: %+v", final, typ, block)
 	}
 }

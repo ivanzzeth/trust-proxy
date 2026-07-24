@@ -162,8 +162,8 @@ export default function DNS() {
             </Button>
           </CardHeader>
           <CardContent className="space-y-2">
-            {cfg.rules.length === 0 && <p className="py-2 text-xs text-muted-foreground">{t('pages.dns.noSplitRules')}</p>}
-            {cfg.rules.map((r, i) => (
+            {(cfg.rules?.length ?? 0) === 0 && <p className="py-2 text-xs text-muted-foreground">{t('pages.dns.noSplitRules')}</p>}
+            {(cfg.rules ?? []).map((r, i) => (
               <div key={i} className="grid grid-cols-[1fr_1fr_6rem_auto] items-center gap-1.5">
                 <Input className="h-8" placeholder="domain_suffix (csv)" value={(r.domain_suffix ?? []).join(',')} onChange={(e) => patch({ rules: cfg.rules.map((x, j) => (j === i ? { ...x, domain_suffix: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) } : x)) })} />
                 <Input className="h-8" placeholder="rule_set (csv)" value={(r.rule_set ?? []).join(',')} onChange={(e) => patch({ rules: cfg.rules.map((x, j) => (j === i ? { ...x, rule_set: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) } : x)) })} />

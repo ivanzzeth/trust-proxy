@@ -88,10 +88,15 @@ export interface CustomRule {
   pack?: string;
   enabled: boolean;
 }
+export interface PackRuleSet {
+  catalog_tag: string;
+  role?: string;
+}
 export interface PackPreset {
   name: string;
   description: string;
   exit?: 'overseas' | 'auto' | 'direct'; // how the pack egresses (display hint)
+  rule_sets?: PackRuleSet[];
   rules: CustomRule[];
 }
 export interface RuleSetEntry {
@@ -361,7 +366,8 @@ export const api = {
   delCR: (id: string) => del<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}`),
   moveCR: (id: string, dir: number) => post<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}/move`, { dir }),
   packsCatalog: () => get<PackPreset[]>('/customrules/packs/catalog'),
-  applyPack: (catalog: string) => post<{ rules: CustomRule[] }>('/customrules/packs/apply', { catalog }),
+  applyPack: (catalog: string) =>
+    post<{ rules: CustomRule[]; rule_sets?: PackRuleSet[] }>('/customrules/packs/apply', { catalog }),
   setPackEnabled: (name: string, enabled: boolean) =>
     patch<{ rules: CustomRule[] }>(`/customrules/packs/${encodeURIComponent(name)}`, { enabled }),
   delPack: (name: string) => del<{ rules: CustomRule[] }>(`/customrules/packs/${encodeURIComponent(name)}`),

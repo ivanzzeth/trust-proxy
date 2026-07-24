@@ -111,13 +111,25 @@ type CustomRule struct {
 	Enabled bool   `json:"enabled"`
 }
 
-// PackPreset is a curated, one-click-importable group of custom rules (an Allow
-// pack): applying it Adds each rule tagged with Pack=Name, Enabled=true.
+// PackPreset is a curated, one-click-importable Allow pack. Applying it:
+//   - imports each RuleSets entry from the public rule-set catalog (community-
+//     maintained coverage — prefer this over hand-maintained domain lists);
+//   - Adds each Rules entry tagged Pack=Name, Enabled=true.
+// Either RuleSets or Rules (or both) may be non-empty. Geofenced packs that
+// must pin the Overseas group keep custom Rules; broad services use RuleSets.
 type PackPreset struct {
-	Name        string       `json:"name"`
-	Description string       `json:"description"`
-	Exit        string       `json:"exit,omitempty"` // how the pack egresses: PackExit* (display hint)
-	Rules       []CustomRule `json:"rules"`
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Exit        string        `json:"exit,omitempty"` // how the pack egresses: PackExit* (display hint)
+	RuleSets    []PackRuleSet `json:"rule_sets,omitempty"`
+	Rules       []CustomRule  `json:"rules"` // always a JSON array (never null); may be empty when RuleSets-only
+}
+
+// PackRuleSet binds a pack to a public rule-set catalog tag. Role defaults to
+// the catalog entry's SuggestedRole when empty.
+type PackRuleSet struct {
+	CatalogTag string `json:"catalog_tag"`
+	Role       string `json:"role,omitempty"` // block | allow-direct | allow-proxy
 }
 
 // PackExit* describe how a preset's traffic leaves — a display hint for the UI.

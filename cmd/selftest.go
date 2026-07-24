@@ -151,6 +151,11 @@ func runSelftest() error {
 		"track-me.tp", "reblock.tp", "sub.wild.tp",
 		"cdirect.tp", "cproxy.tp", "cblock.tp", "cnode.tp", "kw-host.tp", "rex.tp", "ord.tp",
 		"www.gstatic.com",
+		// node-exit.tp is the dial address of our mock upstream. It resolves to
+		// 127.0.0.1 via hosts, but must NOT be a literal loopback IP — otherwise
+		// Auto treats the live node as a local agent (WARP-style) and the
+		// loopback-exclusion regression can't tell dead-local from NODE.
+		"node-exit.tp",
 	} {
 		hostRecords[d] = []string{"127.0.0.1"}
 	}
@@ -163,8 +168,8 @@ func runSelftest() error {
 	mgr := gateway.NewManager(cfgPath, dataDir, whitelist.Rules{}, engine, "")
 	mgr.SetInitialDNS(dns)
 	// The exit node: an http outbound at our tagging upstream.
-	nodeOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "NODE", "server": "127.0.0.1", "server_port": nodePort})
-	mgr.SetInitialNodes([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "127.0.0.1", Port: nodePort, Outbound: nodeOB}})
+	nodeOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "NODE", "server": "node-exit.tp", "server_port": nodePort})
+	mgr.SetInitialNodes([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: nodeOB}})
 	// A manual selector group over the node so `proxy` egress is deterministic
 	// (no urltest health-check dependency on real internet).
 	mgr.SetInitialProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{
@@ -302,16 +307,16 @@ func runSelftest() error {
 
 	fmt.Println("== proxy grouping (auto-country) ==")
 	// Re-apply a country-named node so an auto-country group forms, and route via it.
-	hkOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "🇭🇰 HK", "server": "127.0.0.1", "server_port": nodePort})
+	hkOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "🇭🇰 HK", "server": "node-exit.tp", "server_port": nodePort})
 	_ = mgr.SetProxyGroups(proxygroups.Config{AutoCountry: true})
-	_ = mgr.Apply([]apitypes.Node{{Tag: "🇭🇰 HK", Protocol: "http", Server: "127.0.0.1", Port: nodePort, Outbound: hkOB}})
+	_ = mgr.Apply([]apitypes.Node{{Tag: "🇭🇰 HK", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: hkOB}})
 	_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}})
 	selectProxyGroup(clashPort, "🇭🇰 HK")
 	time.Sleep(250 * time.Millisecond)
 	check("auto-country group routes via node", "node", get("allow.tp"))
 	// restore the plain node + manual group for the mode tests.
 	_ = mgr.SetProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{{Name: "g", Type: "select", Filter: "manual", Nodes: []string{"NODE"}}}})
-	_ = mgr.Apply([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "127.0.0.1", Port: nodePort, Outbound: nodeOB}})
+	_ = mgr.Apply([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: nodeOB}})
 
 	fmt.Println("== system mode ==")
 	reset()
@@ -327,16 +332,62 @@ func runSelftest() error {
 
 	// tun mode: needs root; loopback traffic isn't captured by TUN, so we can
 	// only assert the gateway builds + starts in TUN mode (config accepted).
+	fmt.Println("== loopback excluded from Auto ==")
+	// Dead local SOCKS (like a stopped Cloudflare WARP) must not sit in Auto —
+	// otherwise urltest latches onto it and every proxied site blackholes.
+	deadOB, _ := json.Marshal(map[string]any{"type": "socks", "tag": "dead-local", "server": "127.0.0.1", "server_port": 1, "version": "5"})
+	_ = mgr.SetProxyGroups(proxygroups.Config{}) // default Auto over members
+	_ = mgr.Apply([]apitypes.Node{
+		{Tag: "dead-local", Protocol: "socks", Server: "127.0.0.1", Port: 1, Outbound: deadOB},
+		{Tag: "NODE", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: nodeOB},
+	})
+	time.Sleep(300 * time.Millisecond)
+	autoMembers, _ := proxyGroupMembers(clashPort, "Auto")
+	localMembers, localOK := proxyGroupMembers(clashPort, "Local")
+	if contains(autoMembers, "dead-local") {
+		fail++
+		fmt.Printf("  FAIL  Auto must not include dead-local, got %v\n", autoMembers)
+	} else {
+		pass++
+		fmt.Println("  PASS  Auto excludes loopback node")
+	}
+	if !localOK || !contains(localMembers, "dead-local") {
+		fail++
+		fmt.Printf("  FAIL  Local group should hold dead-local, got ok=%v %v\n", localOK, localMembers)
+	} else {
+		pass++
+		fmt.Println("  PASS  Local group holds loopback node")
+	}
+	_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}})
+	selectProxyGroup(clashPort, "Auto")
+	time.Sleep(200 * time.Millisecond)
+	check("proxy via Auto still hits live node", "node", get("allow.tp"))
+	// restore for TUN / later sections
+	_ = mgr.SetProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{{Name: "g", Type: "select", Filter: "manual", Nodes: []string{"NODE"}}}})
+	_ = mgr.Apply([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: nodeOB}})
+
 	fmt.Println("== tun mode ==")
 	if os.Geteuid() != 0 {
 		fmt.Println("  SKIP  tun mode (needs root)")
-	} else if err := mgr.SetMode(gateway.ModeTUN); err != nil {
-		fail++
-		fmt.Printf("  FAIL  tun mode start: %v\n", err)
 	} else {
-		pass++
-		fmt.Println("  PASS  tun mode: gateway built + started")
-		_ = mgr.SetMode(gateway.ModeManual)
+		// Regression: dns type=local + hijack-dns used to feedback-loop under
+		// TUN ("nothing works"). sanitizeTunDNS must rewrite local so SetMode
+		// succeeds and the box stays up.
+		if err := mgr.SetDNS(apitypes.DNSConfig{
+			Servers: []apitypes.DNSServer{{Tag: "local", Type: "local"}},
+			Final:   "local",
+		}); err != nil {
+			fail++
+			fmt.Printf("  FAIL  set dns local: %v\n", err)
+		} else if err := mgr.SetMode(gateway.ModeTUN); err != nil {
+			fail++
+			fmt.Printf("  FAIL  tun mode start with dns local: %v\n", err)
+		} else {
+			pass++
+			fmt.Println("  PASS  tun mode: gateway built + started (dns local sanitized)")
+			_ = mgr.SetMode(gateway.ModeManual)
+		}
+		_ = mgr.SetDNS(dns) // restore hosts resolver for any later live section
 	}
 
 	// Live section (opt-in): apply REAL node(s) and fetch REAL sites through them,
@@ -526,6 +577,11 @@ func geoCountry(c *http.Client, text func(*http.Client, string) string) (cc, ip 
 
 // overseasMembers reads the Overseas group's member tags from the Clash API.
 func overseasMembers(clashPort int) ([]string, bool) {
+	return proxyGroupMembers(clashPort, proxygroups.OverseasGroupTag)
+}
+
+// proxyGroupMembers returns the member tags of a Clash proxy group.
+func proxyGroupMembers(clashPort int, name string) ([]string, bool) {
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/proxies", clashPort))
 	if err != nil {
 		return nil, false
@@ -539,8 +595,17 @@ func overseasMembers(clashPort int) ([]string, bool) {
 	if json.NewDecoder(resp.Body).Decode(&d) != nil {
 		return nil, false
 	}
-	p, ok := d.Proxies[proxygroups.OverseasGroupTag]
+	p, ok := d.Proxies[name]
 	return p.All, ok
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // setClashMode switches the live Clash routing mode (Rule/Global) via the API.

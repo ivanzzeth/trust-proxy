@@ -105,7 +105,8 @@ func TestSanitize_DropsInvalidOnLoad(t *testing.T) {
 
 func TestPacks(t *testing.T) {
 	s := newStore(t)
-	// Applying a preset = Add each rule (tagged + enabled).
+	// Applying a preset = Add each custom rule (tagged + enabled). Rule-set-only
+	// packs (Google) are exercised via the API layer, not the CR store.
 	apply := func(p apitypes.PackPreset) {
 		for _, r := range p.Rules {
 			if _, err := s.Add(r); err != nil {
@@ -113,17 +114,20 @@ func TestPacks(t *testing.T) {
 			}
 		}
 	}
-	var dev, google apitypes.PackPreset
+	var dev, claude apitypes.PackPreset
 	for _, p := range Presets {
 		if p.Name == "Dev" {
 			dev = p
 		}
-		if p.Name == "Google" {
-			google = p
+		if p.Name == "Claude" {
+			claude = p
 		}
 	}
+	if len(dev.Rules) == 0 || len(claude.Rules) == 0 {
+		t.Fatal("Dev/Claude presets must still ship custom rules for this store test")
+	}
 	apply(dev)
-	apply(google)
+	apply(claude)
 	count := func(pack string) (total, enabled int) {
 		for _, r := range s.Get().Rules {
 			if r.Pack == pack {
@@ -151,8 +155,8 @@ func TestPacks(t *testing.T) {
 	if _, de := count("Dev"); de != 0 {
 		t.Fatalf("Dev should be all-disabled, %d still enabled", de)
 	}
-	if _, ge := count("Google"); ge != len(google.Rules) {
-		t.Fatalf("Google must be untouched, enabled=%d want %d", ge, len(google.Rules))
+	if _, ce := count("Claude"); ce != len(claude.Rules) {
+		t.Fatalf("Claude must be untouched, enabled=%d want %d", ce, len(claude.Rules))
 	}
 
 	// Remove the Dev pack only.
@@ -162,8 +166,8 @@ func TestPacks(t *testing.T) {
 	if td, _ := count("Dev"); td != 0 {
 		t.Fatalf("Dev should be gone, %d remain", td)
 	}
-	if gt, _ := count("Google"); gt != len(google.Rules) {
-		t.Fatalf("Google must survive Dev removal, %d", gt)
+	if ct, _ := count("Claude"); ct != len(claude.Rules) {
+		t.Fatalf("Claude must survive Dev removal, %d", ct)
 	}
 }
 
