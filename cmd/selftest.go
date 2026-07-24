@@ -390,23 +390,38 @@ func liveTest(subFile string) (pass, fail int) {
 	_ = os.WriteFile(cfgPath, []byte(baseCfg), 0o644)
 
 	engine := detect.New(200)
-	mgr := gateway.NewManager(cfgPath, dir, whitelist.Rules{Domains: []string{"example.com", "api.ipify.org", "www.gstatic.com"}}, engine, "")
+	mgr := gateway.NewManager(cfgPath, dir, whitelist.Rules{Domains: []string{"example.com", "api.ipify.org", "www.gstatic.com", "ip-api.com"}}, engine, "")
 	mgr.SetInitialNodes(nodes)
-	// A manual select group over all nodes so egress is deterministic (picks the
-	// first node; no urltest health-check dependency).
-	mgr.SetInitialProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{{Name: "g", Type: "select", Filter: "regex", Value: ".*"}}})
+	// Auto (urltest over all nodes) so egress uses a HEALTHY node: a real sub can
+	// mix live and dead nodes (e.g. a host-local Warp endpoint that isn't
+	// reachable here); urltest's health check drops the dead ones and picks the
+	// fastest that actually connects.
+	mgr.SetInitialProxyGroups(proxygroups.Config{AutoCountry: true})
 	if err := mgr.Start(); err != nil {
 		ck("gateway start with real node", false, err.Error())
 		return
 	}
 	defer mgr.Close()
-	time.Sleep(500 * time.Millisecond)
-	selectProxyGroup(clashPort, "g")
-	time.Sleep(300 * time.Millisecond)
+	selectProxyGroup(clashPort, "Auto")
+	time.Sleep(3 * time.Second) // let urltest health-check the members and settle
 
 	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", mixedPort))
-	viaNode := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 20 * time.Second}
+	viaNode := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 25 * time.Second}
 	direct := &http.Client{Timeout: 12 * time.Second}
+	// text fetches a URL's body, retrying briefly to absorb urltest warm-up.
+	text := func(c *http.Client, u string) string {
+		for attempt := 0; attempt < 3; attempt++ {
+			resp, err := c.Get(u)
+			if err != nil {
+				time.Sleep(time.Second)
+				continue
+			}
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			resp.Body.Close()
+			return strings.TrimSpace(string(b))
+		}
+		return ""
+	}
 	status := func(c *http.Client, u string) int {
 		resp, err := c.Get(u)
 		if err != nil {
@@ -415,15 +430,6 @@ func liveTest(subFile string) (pass, fail int) {
 		defer resp.Body.Close()
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return resp.StatusCode
-	}
-	text := func(c *http.Client, u string) string {
-		resp, err := c.Get(u)
-		if err != nil {
-			return ""
-		}
-		defer resp.Body.Close()
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-		return strings.TrimSpace(string(b))
 	}
 
 	// 1) a 204 connectivity probe through the node (real TLS + real response).
@@ -436,7 +442,105 @@ func liveTest(subFile string) (pass, fail int) {
 	// 3) real website content through the node (the actual page bytes).
 	page := text(viaNode, "https://example.com")
 	ck("example.com real content via node", strings.Contains(page, "Example Domain"), fmt.Sprintf("%d bytes", len(page)))
+
+	liveOverseas(nodes, mgr, clashPort, viaNode, text, &pass, &fail)
 	return
+}
+
+// liveOverseas exercises the shared Overseas group with the REAL nodes: it
+// reconfigures the exclusion to drop one country the nodes actually have, then
+// verifies (a) the group materializes excluding that region's node(s), and
+// (b) real data fetched through the group exits from an allowed region (geoip
+// via ip-api.com), never the excluded one — the core geofence-failover promise.
+func liveOverseas(nodes []apitypes.Node, mgr *gateway.Manager, clashPort int, viaNode *http.Client, text func(*http.Client, string) string, pass, fail *int) {
+	ck := func(name string, ok bool, detail string) {
+		if ok {
+			*pass++
+			fmt.Printf("  PASS  %-42s %s\n", name, detail)
+		} else {
+			*fail++
+			fmt.Printf("  FAIL  %-42s %s\n", name, detail)
+		}
+	}
+	fmt.Println("== live: Overseas group (geofenced failover) ==")
+
+	// Pick a country the nodes actually have, such that excluding it still leaves
+	// ≥1 node for the group. If none qualifies (all nodes share one country, or
+	// none carries a country), the group can't materialize — skip honestly.
+	var excluded string
+	for _, n := range nodes {
+		c := proxygroups.Country(n.Tag)
+		if c == "" {
+			continue
+		}
+		remaining := 0
+		for _, m := range nodes {
+			if proxygroups.Country(m.Tag) != c {
+				remaining++
+			}
+		}
+		if remaining > 0 {
+			excluded = c
+			break
+		}
+	}
+	if excluded == "" {
+		ck("overseas: needs ≥2 node countries (SKIP)", true, "not enough distinct countries in the sub")
+		return
+	}
+
+	if err := mgr.SetProxyGroups(proxygroups.Config{AutoCountry: true, ExcludeCountries: []string{excluded}}); err != nil {
+		ck("overseas: reconfigure gateway", false, err.Error())
+		return
+	}
+	time.Sleep(time.Second)
+
+	// Structural: the Overseas group is built and excludes the excluded region.
+	members, ok := overseasMembers(clashPort)
+	badMember := false
+	for _, m := range members {
+		if proxygroups.Country(m) == excluded {
+			badMember = true
+		}
+	}
+	ck("overseas: group built, excludes "+excluded, ok && !badMember, fmt.Sprintf("members=%v", members))
+
+	// Real data: route via Overseas and confirm the exit region is NOT the
+	// excluded one (proves failover stays within allowed regions).
+	selectProxyGroup(clashPort, proxygroups.OverseasGroupTag)
+	time.Sleep(3 * time.Second) // urltest health-check within the allowed set
+	cc, exitIP := geoCountry(viaNode, text)
+	ck("overseas: real data exits allowed region (not "+excluded+")", cc != "" && cc != excluded, fmt.Sprintf("exit=%s ip=%s", cc, exitIP))
+}
+
+// geoCountry fetches the exit IP's country code via ip-api.com through the given
+// client (i.e. through whatever proxy group it points at).
+func geoCountry(c *http.Client, text func(*http.Client, string) string) (cc, ip string) {
+	var g struct {
+		CountryCode string `json:"countryCode"`
+		Query       string `json:"query"`
+	}
+	_ = json.Unmarshal([]byte(text(c, "http://ip-api.com/json/")), &g)
+	return g.CountryCode, g.Query
+}
+
+// overseasMembers reads the Overseas group's member tags from the Clash API.
+func overseasMembers(clashPort int) ([]string, bool) {
+	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/proxies", clashPort))
+	if err != nil {
+		return nil, false
+	}
+	defer resp.Body.Close()
+	var d struct {
+		Proxies map[string]struct {
+			All []string `json:"all"`
+		} `json:"proxies"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&d) != nil {
+		return nil, false
+	}
+	p, ok := d.Proxies[proxygroups.OverseasGroupTag]
+	return p.All, ok
 }
 
 // setClashMode switches the live Clash routing mode (Rule/Global) via the API.

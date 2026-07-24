@@ -12,3 +12,6 @@ data/
 # shadcn dashboard (our console) — regenerable artifacts
 /dashboard/dist
 /dashboard/node_modules
+
+# local test fixtures with real node credentials — NEVER tracked
+/testdata-local/
