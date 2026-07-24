@@ -441,6 +441,15 @@ func (m *Manager) Close() error {
 	return m.instance.Close()
 }
 
+// SetInitialNodes sets the subscription nodes used by the first Start() (before
+// the box runs), so a restart re-applies the previously-applied subscription
+// instead of dropping to a direct-only proxy group.
+func (m *Manager) SetInitialNodes(nodes []apitypes.Node) {
+	m.mu.Lock()
+	m.nodes = nodes
+	m.mu.Unlock()
+}
+
 // Apply sets the subscription nodes and hot-reloads (empty resets the proxy
 // group to direct-only).
 func (m *Manager) Apply(nodes []apitypes.Node) error {

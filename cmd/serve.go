@@ -233,6 +233,11 @@ func runServe() error {
 		return err
 	}
 
+	store, err := subscription.NewStore(serveDataDir + "/subscriptions.json")
+	if err != nil {
+		return err
+	}
+
 	mgr := gateway.NewManager(serveConfig, serveDataDir, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
 	mgr.SetInitialBlacklist(blStore.Get())
@@ -245,15 +250,20 @@ func runServe() error {
 	mgr.SetInitialTUN(tunStore.Get())
 	mgr.SetInitialEndpoints(epStore.All())
 	mgr.SetInitialManagementPorts(managementPorts(serveMgmtPorts, serveAPIAddr))
+	// Re-apply the previously-applied subscription so a restart/upgrade keeps the
+	// exit node instead of dropping to a direct-only proxy group (which is "no
+	// net" on a box whose only egress is the node).
+	for _, sub := range store.List() {
+		if sub.Applied && len(sub.Nodes) > 0 {
+			mgr.SetInitialNodes(sub.Nodes)
+			log.Printf("re-applying subscription %q (%d node(s)) on startup", sub.Name, len(sub.Nodes))
+			break
+		}
+	}
 	if err := mgr.Start(); err != nil {
 		return err
 	}
 	defer mgr.Close()
-
-	store, err := subscription.NewStore(serveDataDir + "/subscriptions.json")
-	if err != nil {
-		return err
-	}
 	apiSrv := api.NewServer(api.Options{
 		Addr:        serveAPIAddr,
 		Store:       store,
