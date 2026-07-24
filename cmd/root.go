@@ -21,5 +21,5 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.AddCommand(serveCmd, subCmd, connCmd, proxyCmd)
+	rootCmd.AddCommand(serveCmd, subCmd, connCmd, proxyCmd, selftestCmd)
 }

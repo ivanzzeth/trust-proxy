@@ -6,6 +6,8 @@
 > (`kill %1` 跨 Bash 调用无效,会残留孤儿进程;别动用户网关 pid)。
 
 ## 本会话已完成(勿重做)
+- **内嵌端到端自测 `trust-proxy selftest`(✅)**:离线确定性、VM 可跑,覆盖 默认拒绝/白名单→node/no-proxy→direct/黑名单/自定义规则(direct·proxy·block·node)/system,`sudo` 加 tun。`cmd/selftest.go`。改引擎必跑。
+- **修复:重启/升级后自动重新 Apply 已应用订阅(✅)**(`789d585`,`SetInitialNodes`)——修的就是「升级后节点没接上=完全没网」。
 - **代理分组(✅)**:订阅按国家自动分组(解析节点名 旗/国码/国名)+ 自定义组(country/regex/manual,select|urltest)；`proxy` 改顶层 selector(default Auto);`internal/proxygroups`+`injectOutbounds` 重写+`GET/PUT /api/proxygroups`+Proxies 页分组设置。sing-box 无 load-balance(不造)。已端到端验(Auto/国家组/用户组/选组)。
 - **#5 TUN 权限 UX 友好化(✅)**:见下「~~#5~~」——友好报错 + 平台感知引导 Dialog + 自动回退。
 - **#10 Allow 包(✅)**:见下「~~#10~~」条目——`Pack` 命名标签 + 整组启停/删除 + 内置预设,零引擎改动。
