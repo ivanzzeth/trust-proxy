@@ -231,7 +231,13 @@ export interface Profile {
   name: string;
   subscription_id?: string;
   whitelist: Whitelist;
+  blacklist?: { domains?: string[]; keywords?: string[]; regexes?: string[]; ips?: string[] };
+  directlist?: { domains?: string[]; ips?: string[] };
+  custom_rules?: CustomRule[];
+  rule_sets?: RuleSet[];
   ruleset_tags?: string[];
+  proxy_groups?: ProxyGroupsConfig;
+  dns?: DNSConfig;
   mode?: string;
   active?: boolean;
 }
@@ -287,6 +293,12 @@ export interface HistoryRecord {
   dn: number;
   x?: boolean;
   l?: string;
+}
+export interface HistoryPage {
+  items: HistoryRecord[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 export interface Gateway {
   id: string;
@@ -391,6 +403,8 @@ export const api = {
       `/rulesets/${encodeURIComponent(tag)}/rules?q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`,
     ),
   effectiveRules: () => get<RuleView[]>('/effective-rules'),
+  final: () => get<{ outbound: string }>('/final'),
+  setFinal: (outbound: string) => put<{ outbound: string }>('/final', { outbound }),
   proxyGroups: () =>
     get<ProxyGroupsConfig>('/proxygroups').then((c) => ({
       auto_country: !!c.auto_country,
@@ -427,7 +441,8 @@ export const api = {
   delEndpoint: (tag: string) => del<void>(`/endpoints/${encodeURIComponent(tag)}`),
 
   historyStats: () => get<HistoryStats>('/history/stats'),
-  history: (limit = 200, host = '') => get<HistoryRecord[]>(`/history?limit=${limit}&host=${encodeURIComponent(host)}`),
+  history: (limit = 50, q = '', offset = 0) =>
+    get<HistoryPage>(`/history?page=1&limit=${limit}&offset=${offset}&q=${encodeURIComponent(q)}`),
 
   // Node registry — always the local brain (never node-scoped).
   gateways: () => fetch('/api/nodes').then(unwrap<Gateway[]>),

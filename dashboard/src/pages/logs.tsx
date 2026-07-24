@@ -1,10 +1,12 @@
-import { useEffect, useRef, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Pause, Play, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { logsURL } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { matchesQuery, usePagedList } from '@/hooks/use-paged-list';
 import { PageHeader } from '@/components/page-header';
+import { ListSearch, PaginationBar } from '@/components/pagination-bar';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -29,6 +31,8 @@ export default function Logs() {
   const { t } = useTranslation();
   const [level, setLevel] = useState('info');
   const [paused, setPaused] = useState(false);
+  const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
   const [lines, setLines] = useState<LogLine[]>([]);
   const seq = useRef(0);
 
@@ -49,6 +53,12 @@ export default function Logs() {
     return () => es.close();
   }, [level, paused]);
 
+  const filtered = useMemo(
+    () => lines.filter((l) => matchesQuery(deferredSearch, l.type, l.payload)),
+    [lines, deferredSearch],
+  );
+  const page = usePagedList(filtered, deferredSearch.trim().toLowerCase(), 100);
+
   return (
     <div>
       <PageHeader
@@ -56,6 +66,7 @@ export default function Logs() {
         description={t('pages.logs.description')}
         actions={
           <>
+            <ListSearch value={search} onChange={setSearch} placeholder={t('pages.logs.searchPlaceholder')} />
             <Select value={level} onValueChange={setLevel}>
               <SelectTrigger className="w-32">
                 <SelectValue />
@@ -78,13 +89,17 @@ export default function Logs() {
         }
       />
       <Card className="overflow-hidden">
-        <div className="max-h-[calc(100dvh-13rem)] overflow-y-auto font-mono text-xs">
-          {lines.length === 0 ? (
+        <div className="max-h-[calc(100dvh-15rem)] overflow-y-auto font-mono text-xs">
+          {page.total === 0 ? (
             <div className="py-16 text-center text-sm text-muted-foreground">
-              {paused ? t('pages.logs.paused') : t('pages.logs.waitingForLogs')}
+              {lines.length === 0
+                ? paused
+                  ? t('pages.logs.paused')
+                  : t('pages.logs.waitingForLogs')
+                : t('pages.logs.noMatch')}
             </div>
           ) : (
-            lines.map((l) => (
+            page.pageItems.map((l) => (
               <div key={l.id} className="flex items-start gap-2 border-b border-border/40 px-4 py-1.5 last:border-0 hover:bg-muted/30">
                 <Badge variant={typeColor(l.type)} className="mt-px shrink-0 uppercase">
                   {l.type}
@@ -96,6 +111,14 @@ export default function Logs() {
             ))
           )}
         </div>
+        <PaginationBar
+          page={page.page}
+          totalPages={page.totalPages}
+          total={page.total}
+          from={page.from}
+          to={page.to}
+          onPageChange={page.setPage}
+        />
       </Card>
     </div>
   );

@@ -6,6 +6,16 @@ export default {
     tabSets: 'Rule Sets',
     tabCustom: 'Custom',
     routingHint: 'Effective policy, evaluated top-to-bottom (first match wins). Derived from your whitelist, blacklist, rule sets, no-proxy list, and custom rules — this is exactly what the data plane runs.',
+    searchPlaceholder: 'Search layer, source, matcher…',
+    empty: 'No matching rules',
+    finalLabel: 'Final (catch-all egress)',
+    finalHint:
+      'After floors + ACL allow-gate: unmatched allowed traffic uses Final. Empty allow-list still denies everything — Final never opens the gate.',
+    final: {
+      proxy: 'Proxy',
+      direct: 'Direct',
+      blocked: 'Blocked',
+    },
     source: {
       management: 'Management',
       blacklist: 'Blacklist',
@@ -30,6 +40,16 @@ export default {
     tabSets: '规则集',
     tabCustom: '自定义',
     routingHint: '当前生效策略，从上到下求值（先匹配先生效）。由白名单/黑名单/规则集/免代理/自定义规则综合推导——就是数据面实际运行的规则。',
+    searchPlaceholder: '搜索层级、来源、匹配器…',
+    empty: '没有匹配的规则',
+    finalLabel: 'Final（兜底出口）',
+    finalHint:
+      '过完安全地板与 ACL 闸后：未命中显式路由的已允许流量走 Final。允许集为空时仍全拒——Final 不会单独开闸。',
+    final: {
+      proxy: '代理',
+      direct: '直连',
+      blocked: '阻断',
+    },
     source: {
       management: '管理救援',
       blacklist: '黑名单',

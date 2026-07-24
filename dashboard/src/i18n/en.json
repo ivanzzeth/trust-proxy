@@ -85,7 +85,15 @@
       "toast": "TUN options saved"
     }
   },
-  "common": { "empty": "empty", "loading": "Loading…" },
+  "common": {
+    "empty": "empty",
+    "loading": "Loading…",
+    "searchPlaceholder": "Search…",
+    "prevPage": "Previous page",
+    "nextPage": "Next page",
+    "paginationRange": "{{from}}–{{to}} of {{total}}",
+    "paginationPage": "{{page}} / {{pages}}"
+  },
   "pages": {
     "acls": {
       "desc": "Access control: what egress is allowed (whitelist) and what is explicitly denied (blacklist). Deny always wins over allow. No-Proxy picks the egress (direct vs proxy) — it never grants access.",

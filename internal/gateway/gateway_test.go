@@ -38,7 +38,7 @@ func build(t *testing.T, wl whitelist.Rules, bl blacklist.Rules, dl directlist.R
 func buildCR(t *testing.T, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, sets ruleset.Sets, nodes []apitypes.Node) []byte {
 	t.Helper()
 	merged, err := buildMergedConfig([]byte(baseCfg), nodes, wl, bl, dl, cr, proxygroups.Config{}, ModeManual, sets,
-		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "sekret", t.TempDir())
+		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "proxy", "sekret", t.TempDir())
 	if err != nil {
 		t.Fatalf("buildMergedConfig: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestLayerOrder(t *testing.T) {
 		{Tag: "gg", Type: "remote", Format: "binary", URL: "https://x/gg.srs", Role: apitypes.RuleRoleAllowProxy, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 	}}
 	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, bl, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeManual, sets,
-		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, []int{22, 9096}, "s", t.TempDir())
+		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, []int{22, 9096}, "proxy", "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,6 +325,49 @@ func TestRuleSetOnlyGeneratesGate(t *testing.T) {
 	}
 }
 
+// Final=direct flips catch-all when the ACL gate is open; empty allow-set still
+// stays blocked (Final never opens the gate). Missing node tags self-heal to proxy.
+func TestFinal_CatchAllEgress(t *testing.T) {
+	wl := whitelist.Rules{Domains: []string{"ok.com"}}
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{},
+		proxygroups.Config{}, ModeManual, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{},
+		nil, nil, "direct", "s", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := routeRules(t, merged)
+	ci := firstIdx(rules, isCatchAll)
+	if rules[ci]["outbound"] != "direct" {
+		t.Fatalf("Final=direct should flip catch-all to direct, got %v", rules[ci]["outbound"])
+	}
+
+	// Empty allow-set: Final ignored, catch-all stays blocked.
+	empty, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{},
+		proxygroups.Config{}, ModeManual, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{},
+		nil, nil, "direct", "s", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	er := routeRules(t, empty)
+	eci := firstIdx(er, isCatchAll)
+	if er[eci]["outbound"] != "blocked" {
+		t.Fatalf("empty allow-set must stay blocked even with Final=direct, got %v", er[eci]["outbound"])
+	}
+
+	// Unknown node tag → self-heal to proxy when gate is open.
+	healed, err := buildMergedConfig([]byte(baseCfg), nil, wl, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{},
+		proxygroups.Config{}, ModeManual, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{},
+		nil, nil, "no-such-node", "s", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hr := routeRules(t, healed)
+	hci := firstIdx(hr, isCatchAll)
+	if hr[hci]["outbound"] != ProxyGroupTag {
+		t.Fatalf("missing Final tag should self-heal to proxy, got %v", hr[hci]["outbound"])
+	}
+}
+
 func TestApplyMode_Inbounds(t *testing.T) {
 	for _, tc := range []struct {
 		mode      string
@@ -334,7 +377,7 @@ func TestApplyMode_Inbounds(t *testing.T) {
 		{ModeSystem, []string{"mixed"}},
 		{ModeTUN, []string{"tun", "mixed"}},
 	} {
-		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "s", t.TempDir())
+		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, tc.mode, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "proxy", "s", t.TempDir())
 		if err != nil {
 			t.Fatalf("%s: %v", tc.mode, err)
 		}
@@ -363,7 +406,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 		StrictRoute:    false,
 		ExcludePackage: []string{"com.example.app"},
 	}
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, nil, nil, "s", t.TempDir())
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, nil, nil, "proxy", "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +428,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 	if !ok || len(ep) != 1 || ep[0] != "com.example.app" {
 		t.Fatalf("exclude_package=%v want [com.example.app]", tunIn["exclude_package"])
 	}
-	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "s", t.TempDir())
+	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "proxy", "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +443,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 
 // TUN mode keeps the hijack-dns prelude rule directly after sniff, above the floor.
 func TestTUNHijackPrelude(t *testing.T) {
-	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"}, nil, nil, "s", t.TempDir())
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}}, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"}, nil, nil, "proxy", "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +483,7 @@ func buildGrouped(t *testing.T, nodes []apitypes.Node, pg proxygroups.Config) []
 	t.Helper()
 	merged, err := buildMergedConfig([]byte(baseCfg), nodes, whitelist.Rules{Domains: []string{"ok.com"}},
 		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, pg, ModeManual, ruleset.Sets{},
-		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "s", t.TempDir())
+		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "proxy", "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -603,7 +646,7 @@ func collapse(tokens []string) []string {
 func mgrWith(t *testing.T, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, sets ruleset.Sets, mgmt []int) *Manager {
 	t.Helper()
 	m := &Manager{}
-	m.wl, m.bl, m.dl, m.cr, m.rulesets, m.mode, m.mgmtPorts = wl, bl, dl, cr, sets, ModeManual, mgmt
+	m.wl, m.bl, m.dl, m.cr, m.rulesets, m.mode, m.mgmtPorts, m.final = wl, bl, dl, cr, sets, ModeManual, mgmt, "proxy"
 	return m
 }
 
@@ -637,7 +680,7 @@ func TestEffectiveRules_MatchesMergedLayers(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			merged, err := buildMergedConfig([]byte(baseCfg), nil, tc.wl, tc.bl, tc.dl, tc.cr, proxygroups.Config{}, ModeManual, tc.sets,
-				apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, tc.mgmt, "s", t.TempDir())
+				apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, tc.mgmt, "proxy", "s", t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -804,7 +847,7 @@ func TestPresets_OverseasGroupRoutesOrFallsBack(t *testing.T) {
 		t.Helper()
 		merged, err := buildMergedConfig([]byte(baseCfg), nodes, whitelist.Rules{}, blacklist.Rules{},
 			directlist.Rules{}, cr, proxygroups.Config{AutoCountry: true, ExcludeCountries: exclude}, ModeManual,
-			ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "s", t.TempDir())
+			ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "proxy", "s", t.TempDir())
 		if err != nil {
 			t.Fatalf("buildMergedConfig: %v", err)
 		}
@@ -873,7 +916,7 @@ func TestTUNNeutralizesLocalDNS(t *testing.T) {
 	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
 		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
 		ModeTUN, ruleset.Sets{}, dns, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true},
-		nil, nil, "s", t.TempDir())
+		nil, nil, "proxy", "s", t.TempDir())
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -890,7 +933,7 @@ func TestManualKeepsLocalDNS(t *testing.T) {
 		merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
 			blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
 			mode, ruleset.Sets{}, dns, apitypes.InboundAuth{}, apitypes.TUNConfig{},
-			nil, nil, "s", t.TempDir())
+			nil, nil, "proxy", "s", t.TempDir())
 		if err != nil {
 			t.Fatalf("%s: %v", mode, err)
 		}
@@ -913,7 +956,7 @@ func TestTUNInjectsDNSWhenMissing(t *testing.T) {
 	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
 		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
 		ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{},
-		apitypes.TUNConfig{Stack: "gvisor"}, nil, nil, "s", t.TempDir())
+		apitypes.TUNConfig{Stack: "gvisor"}, nil, nil, "proxy", "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -934,7 +977,7 @@ func TestTUNAppendsRealUpstreamBesideFakeIP(t *testing.T) {
 	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
 		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
 		ModeTUN, ruleset.Sets{}, dns, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"},
-		nil, nil, "s", t.TempDir())
+		nil, nil, "proxy", "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -966,7 +1009,7 @@ func TestTUNRewritesLocalKeepsUDP(t *testing.T) {
 	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
 		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
 		ModeTUN, ruleset.Sets{}, dns, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"},
-		nil, nil, "s", t.TempDir())
+		nil, nil, "proxy", "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1003,7 +1046,7 @@ func TestTUNSetsDefaultDomainResolver(t *testing.T) {
 	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"ok.com"}},
 		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{},
 		ModeTUN, ruleset.Sets{}, dns, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor"},
-		nil, nil, "s", t.TempDir())
+		nil, nil, "proxy", "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

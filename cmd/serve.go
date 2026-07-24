@@ -26,6 +26,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/endpoints"
+	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/inbound"
@@ -232,6 +233,10 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	finalStore, err := finalroute.NewStore(serveDataDir + "/final.json")
+	if err != nil {
+		return err
+	}
 
 	store, err := subscription.NewStore(serveDataDir + "/subscriptions.json")
 	if err != nil {
@@ -240,6 +245,7 @@ func runServe() error {
 
 	mgr := gateway.NewManager(serveConfig, serveDataDir, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
+	mgr.SetInitialFinal(finalStore.Get().Outbound)
 	mgr.SetInitialBlacklist(blStore.Get())
 	mgr.SetInitialDirectList(dlStore.Get())
 	mgr.SetInitialCustomRules(crStore.Get())
@@ -285,6 +291,8 @@ func runServe() error {
 		RSApplier:   mgr,
 		Profiles:    profStore,
 		ProfApplier: mgr,
+		Final:       finalStore,
+		FinalApplier: mgr,
 		DNS:         dnsStore,
 		DNSApplier:  mgr,
 		Inbound:     inbStore,

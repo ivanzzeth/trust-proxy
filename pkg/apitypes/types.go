@@ -176,16 +176,26 @@ type RuleView struct {
 	Note    string   `json:"note,omitempty"`    // e.g. a custom node target that is currently missing
 }
 
-// Profile bundles a named policy set (applied subscription + whitelist snapshot
-// + enabled rule-set tags + optional capture mode) for one-click switching.
+// Profile bundles a named full-policy snapshot for one-click switching: applied
+// subscription, ACL lists, rule sets, custom rules (Allow packs), proxy-group
+// config, DNS, and capture mode. Environment knobs (TUN/inbound auth/VPN
+// endpoints) are intentionally excluded so activating a profile can't brick a
+// remote probe's capture path.
 type Profile struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	SubID       string   `json:"subscription_id,omitempty"`
-	Whitelist   Rules    `json:"whitelist"`
-	RuleSetTags []string `json:"ruleset_tags,omitempty"`
-	Mode        string   `json:"mode,omitempty"`
-	Active      bool     `json:"active,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	SubID          string            `json:"subscription_id,omitempty"`
+	Whitelist      Rules             `json:"whitelist"`
+	Blacklist      Blacklist         `json:"blacklist,omitempty"`
+	Directlist     DirectList        `json:"directlist,omitempty"`
+	CustomRules    []CustomRule      `json:"custom_rules,omitempty"`
+	RuleSets       []RuleSet         `json:"rule_sets,omitempty"`       // full descriptors (preferred)
+	RuleSetTags    []string          `json:"ruleset_tags,omitempty"`    // legacy: enable-only tags
+	ProxyGroups    *ProxyGroupsConfig `json:"proxy_groups,omitempty"`
+	DNS            *DNSConfig        `json:"dns,omitempty"`
+	Final          string            `json:"final,omitempty"` // catch-all egress: proxy|direct|blocked|<tag>
+	Mode           string            `json:"mode,omitempty"`
+	Active         bool              `json:"active,omitempty"`
 }
 
 // Rules is the egress allow-list snapshot (mirrors whitelist.Rules) embedded in
@@ -195,6 +205,28 @@ type Rules struct {
 	IPs       []string `json:"ips"`
 	Processes []string `json:"processes"`
 	Devices   []string `json:"devices"`
+}
+
+// DirectList is the no-proxy / bypass snapshot (mirrors directlist.Rules).
+type DirectList struct {
+	Domains []string `json:"domains"`
+	IPs     []string `json:"ips"`
+}
+
+// ProxyGroup is one user-defined group in a Profile / proxygroups config.
+type ProxyGroup struct {
+	Name   string   `json:"name"`
+	Type   string   `json:"type"` // select | urltest
+	Filter string   `json:"filter"` // country | regex | manual
+	Value  string   `json:"value,omitempty"`
+	Nodes  []string `json:"nodes,omitempty"`
+}
+
+// ProxyGroupsConfig mirrors internal/proxygroups.Config for wire/profile use.
+type ProxyGroupsConfig struct {
+	AutoCountry      bool         `json:"auto_country"`
+	ExcludeCountries []string     `json:"exclude_countries"`
+	Groups           []ProxyGroup `json:"groups"`
 }
 
 // Blacklist is the egress deny-list snapshot: destinations that are REJECTED

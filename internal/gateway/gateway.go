@@ -29,6 +29,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
+	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
@@ -83,6 +84,7 @@ type Manager struct {
 	tun       apitypes.TUNConfig
 	endpoints []apitypes.Endpoint
 	mgmtPorts []int
+	final     string // catch-all egress when ACL gate is open (default proxy)
 
 	// mode dead-man's switch (remote-safety): a guarded mode switch auto-reverts
 	// unless confirmed in time.
@@ -126,7 +128,54 @@ func (m *Manager) SetEndpoints(eps []apitypes.Endpoint) error {
 // NewManager returns a manager seeded with the initial whitelist, the detection
 // engine, and the Clash API secret to inject into the config.
 func NewManager(configPath, dataDir string, wl whitelist.Rules, engine *detect.Engine, clashSecret string) *Manager {
-	return &Manager{configPath: configPath, dataDir: dataDir, logger: log.StdLogger(), wl: wl, engine: engine, clashSecret: clashSecret, mode: ModeManual}
+	return &Manager{
+		configPath: configPath, dataDir: dataDir, logger: log.StdLogger(),
+		wl: wl, engine: engine, clashSecret: clashSecret, mode: ModeManual,
+		final: "proxy",
+	}
+}
+
+// SetInitialFinal sets the catch-all egress used by the first Start().
+func (m *Manager) SetInitialFinal(outbound string) {
+	if outbound == "" {
+		outbound = "proxy"
+	}
+	m.mu.Lock()
+	m.final = outbound
+	m.mu.Unlock()
+}
+
+// Final returns the configured catch-all egress (before live self-heal).
+func (m *Manager) Final() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.final == "" {
+		return "proxy"
+	}
+	return m.final
+}
+
+// SetFinal sets the catch-all egress for allowed-but-unrouted traffic and
+// hot-reloads. Empty allow-set still denies all — Final never opens the gate.
+func (m *Manager) SetFinal(outbound string) error {
+	if outbound == "" {
+		outbound = "proxy"
+	}
+	if err := finalroute.Validate(outbound); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	prev := m.final
+	m.final = outbound
+	m.mu.Unlock()
+	if err := m.rebuild(); err != nil {
+		m.mu.Lock()
+		m.final = prev
+		m.mu.Unlock()
+		_ = m.rebuild()
+		return fmt.Errorf("apply final failed (reverted): %w", err)
+	}
+	return nil
 }
 
 // SetInitialMode sets the mode used by the first Start() (before the box runs).
@@ -255,7 +304,8 @@ func truncVals(vals []string, n int) []string {
 // asserts the layer sequence here matches a freshly built merged config.
 func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	m.mu.Lock()
-	wl, bl, dl, cr, pg, sets, mode, mgmt, nodes, eps := m.wl, m.bl, m.dl, m.cr, m.pg, m.rulesets, m.mode, m.mgmtPorts, m.nodes, m.endpoints
+	wl, bl, dl, cr, pg, sets, mode, mgmt, nodes, eps, final :=
+		m.wl, m.bl, m.dl, m.cr, m.pg, m.rulesets, m.mode, m.mgmtPorts, m.nodes, m.endpoints, m.final
 	m.mu.Unlock()
 
 	var epTags []string
@@ -425,8 +475,14 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:direct", Matcher: "rule_set", Values: []string{tag}})
 	}
 
-	// catch-all default egress (gate present → proxy).
-	add(apitypes.RuleView{Layer: "catch-all", Source: "default", Action: "route:proxy", Matcher: "network", Note: "allowed traffic with no explicit egress"})
+	// catch-all Final egress (gate present). Self-heal unknown tags → proxy.
+	allTags := append(append([]string(nil), nodeT...), groupT...)
+	egress := resolveFinal(final, allTags)
+	note := "Final — allowed traffic with no explicit egress"
+	if egress != final && final != "" {
+		note = "Final " + final + " missing — via " + egress
+	}
+	add(apitypes.RuleView{Layer: "catch-all", Source: "default", Action: "route:" + egress, Matcher: "network", Note: note})
 	return out
 }
 
@@ -660,23 +716,45 @@ func (m *Manager) SetTUN(t apitypes.TUNConfig) error {
 	return nil
 }
 
-// ApplyProfile atomically sets nodes + whitelist + rule sets + (optionally) mode
-// and rebuilds ONCE, so a one-click profile switch is a single reload rather
-// than four. mode=="" keeps the current mode.
-func (m *Manager) ApplyProfile(nodes []apitypes.Node, wl whitelist.Rules, sets ruleset.Sets, mode string) error {
+// ApplyProfile atomically applies a full policy snapshot (nodes + ACL lists +
+// custom rules + rule sets + proxy groups + DNS + optional mode) and rebuilds
+// ONCE. mode=="" keeps the current capture mode. On failure the previous
+// manager state is restored and rebuild is attempted.
+func (m *Manager) ApplyProfile(
+	nodes []apitypes.Node,
+	wl whitelist.Rules,
+	bl blacklist.Rules,
+	dl directlist.Rules,
+	cr customrules.Rules,
+	sets ruleset.Sets,
+	pg proxygroups.Config,
+	dns apitypes.DNSConfig,
+	mode string,
+	final string,
+) error {
 	m.mu.Lock()
-	prevNodes, prevWL, prevSets, prevMode := m.nodes, m.wl, m.rulesets, m.mode
+	prevNodes, prevWL, prevBL, prevDL, prevCR := m.nodes, m.wl, m.bl, m.dl, m.cr
+	prevSets, prevPG, prevDNS, prevMode, prevFinal := m.rulesets, m.pg, m.dns, m.mode, m.final
 	m.nodes = nodes
 	m.wl = wl
+	m.bl = bl
+	m.dl = dl
+	m.cr = cr
 	m.rulesets = sets
+	m.pg = pg
+	m.dns = dns
 	if mode != "" && validMode(mode) {
 		m.mode = mode
+	}
+	if final != "" {
+		m.final = final
 	}
 	m.mu.Unlock()
 
 	if err := m.rebuild(); err != nil {
 		m.mu.Lock()
-		m.nodes, m.wl, m.rulesets, m.mode = prevNodes, prevWL, prevSets, prevMode
+		m.nodes, m.wl, m.bl, m.dl, m.cr = prevNodes, prevWL, prevBL, prevDL, prevCR
+		m.rulesets, m.pg, m.dns, m.mode, m.final = prevSets, prevPG, prevDNS, prevMode, prevFinal
 		m.mu.Unlock()
 		_ = m.rebuild() // best-effort restore of the working policy
 		return fmt.Errorf("apply profile failed (reverted): %w", err)
@@ -689,14 +767,15 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt := m.nodes, m.wl, m.bl, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts
+	nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final :=
+		m.nodes, m.wl, m.bl, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts, m.final
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, m.clashSecret, m.dataDir)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, m.clashSecret, m.dataDir)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -748,13 +827,13 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 //	                       process+device invert -> reject
 //	L2 Global bypass       clash_mode=Global -> proxy   (injectClashModeGlobal)
 //	L3 ACL gate            NOT(allow-set) -> blocked     (injectAllow)
-//	L4 routing egress      direct-bypass -> direct; else -> proxy (injectAllow)
-//	   catch-all           network matcher -> proxy (gate present) / blocked
+//	L4 routing egress      custom / direct-bypass / allow-proxy rule_sets
+//	   catch-all           network matcher -> Final (gate present) / blocked
 //
 // The split keeps two orthogonal concerns apart: the whitelist decides only
 // allow/deny (L3), the no-proxy list + rule-sets decide only egress (L4). All
 // injection is at the JSON level so sing-box's own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, clashSecret, dataDir string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, final, clashSecret, dataDir string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -797,10 +876,10 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	if err := injectClashModeGlobal(cfg, dataDir); err != nil {
 		return nil, err
 	}
-	// L3 ACL gate + L4 routing egress + catch-all flip. Needs whitelist +
+	// L3 ACL gate + L4 routing egress + catch-all Final flip. Needs whitelist +
 	// allow-rule-set tags + no-proxy list + custom rules together (they form one
-	// allow-set); memberTags validates custom `node` targets.
-	if err := injectAllow(cfg, wl, sets, dl, cr, memberTags); err != nil {
+	// allow-set); memberTags validates custom `node` targets and Final tags.
+	if err := injectAllow(cfg, wl, sets, dl, cr, memberTags, final); err != nil {
 		return nil, err
 	}
 	// L0: management-port allow LAST => inserted right after the prelude, above
@@ -2082,7 +2161,8 @@ func injectProcessDeviceFloor(cfg map[string]json.RawMessage, wl whitelist.Rules
 //	                 no-proxy domains+ips ∪ built-in private CIDRs
 //	direct (L4)    = allow-direct rule_sets + no-proxy domains+ips + private CIDRs
 //	proxy  (L4)    = allow-proxy rule_sets
-//	catch-all      = proxy (gate present) — the egress for allowed-but-unrouted
+//	catch-all      = Final (gate present) — egress for allowed-but-unrouted
+//	                 traffic; default proxy. Final never opens an empty gate.
 //
 // The gate is ONE logical-or-invert rule that routes anything NOT in the
 // allow-set to the `blocked` outbound (NOT action:reject) so blocked
@@ -2097,7 +2177,7 @@ func injectProcessDeviceFloor(cfg map[string]json.RawMessage, wl whitelist.Rules
 // allow-set (it implies "allow"); a block rule does not. A `node` rule whose
 // target tag isn't a current outbound (memberTags) is skipped entirely
 // (self-heal) so a removed node can't brick the box.
-func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets ruleset.Sets, dl directlist.Rules, cr customrules.Rules, memberTags []string) error {
+func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets ruleset.Sets, dl directlist.Rules, cr customrules.Rules, memberTags []string, final string) error {
 	routeRaw, ok := cfg["route"]
 	if !ok {
 		return nil
@@ -2254,15 +2334,16 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	merged = append(merged, inserted...)
 	merged = append(merged, rules[catchIdx:]...)
 
-	// Flip the catch-all default egress from blocked -> proxy (gate present):
-	// allowed traffic that no L4 rule routed egresses via the proxy group.
+	// Flip the catch-all default egress from blocked -> Final (gate present):
+	// allowed traffic that no L4 rule routed uses the configured Final outbound
+	// (proxy/direct/blocked/<node>; unknown node tags self-heal to proxy).
 	newCatchIdx := catchIdx + len(inserted)
 	if newCatchIdx < len(merged) {
 		var catchRule map[string]any
 		if err := json.Unmarshal(merged[newCatchIdx], &catchRule); err == nil {
 			if _, hasNet := catchRule["network"]; hasNet {
 				catchRule["action"] = "route"
-				catchRule["outbound"] = ProxyGroupTag
+				catchRule["outbound"] = resolveFinal(final, memberTags)
 				if b, err := json.Marshal(catchRule); err == nil {
 					merged[newCatchIdx] = b
 				}
@@ -2283,8 +2364,10 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	return nil
 }
 
-// globToRegex compiles a domain glob (containing * or ?) to an anchored Go
-// regex: * => any run of chars, ? => one char, everything else literal.
+// resolveFinal picks the catch-all outbound (self-heals unknown node tags).
+func resolveFinal(outbound string, memberTags []string) string {
+	return finalroute.Resolve(outbound, memberTags)
+}
 //
 //	*.example.com -> subdomains of example.com
 //	foo*          -> prefix match

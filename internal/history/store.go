@@ -227,16 +227,33 @@ func (s *Store) Stats() Stats {
 }
 
 // Recent returns up to limit newest records, optionally filtered by host
-// substring. Reads the tail of the JSONL.
+// substring. Reads the JSONL. Prefer RecentPage when the UI needs totals/offset.
 func (s *Store) Recent(limit int, host string) []Record {
+	page, _ := s.RecentPage(limit, 0, host)
+	return page
+}
+
+// Page is one slice of history plus the filtered total for pagination.
+type Page struct {
+	Items  []Record `json:"items"`
+	Total  int      `json:"total"`
+	Limit  int      `json:"limit"`
+	Offset int      `json:"offset"`
+}
+
+// RecentPage returns newest-first records matching q (host/dest/process/outbound
+// substring), with offset/limit for UI pagination. total is the filtered count.
+func (s *Store) RecentPage(limit, offset int, q string) ([]Record, int) {
 	if limit <= 0 || limit > 2000 {
-		limit = 200
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
 	}
 	b, err := os.ReadFile(s.path)
 	if err != nil {
-		return []Record{}
+		return []Record{}, 0
 	}
-	// scan all lines, keep matching, then take the newest `limit`.
 	var recs []Record
 	sc := bufio.NewScanner(b2r(b))
 	sc.Buffer(make([]byte, 64*1024), 1024*1024)
@@ -245,15 +262,17 @@ func (s *Store) Recent(limit int, host string) []Record {
 		if json.Unmarshal(sc.Bytes(), &r) != nil {
 			continue
 		}
-		if host != "" && !contains(r.Host, host) {
+		if q != "" && !(contains(r.Host, q) || contains(r.Dest, q) || contains(r.Process, q) || contains(r.Outbound, q)) {
 			continue
 		}
 		recs = append(recs, r)
 	}
+	total := len(recs)
 	// newest first
 	out := make([]Record, 0, limit)
-	for i := len(recs) - 1; i >= 0 && len(out) < limit; i-- {
+	start := total - 1 - offset
+	for i := start; i >= 0 && len(out) < limit; i-- {
 		out = append(out, recs[i])
 	}
-	return out
+	return out, total
 }

@@ -168,6 +168,16 @@ func (s *Store) Get() Sets {
 	return Sets{Sets: append(make([]apitypes.RuleSet, 0, len(s.data.Sets)), s.data.Sets...)}
 }
 
+// Set replaces the whole collection and persists (used by profile activate).
+func (s *Store) Set(sets Sets) (Sets, error) {
+	if sets.Sets == nil {
+		sets.Sets = []apitypes.RuleSet{}
+	}
+	return s.mutate(func() {
+		s.data.Sets = append([]apitypes.RuleSet(nil), sets.Sets...)
+	})
+}
+
 // Add inserts or overwrites (by Tag = idempotent re-import) and persists.
 func (s *Store) Add(rs apitypes.RuleSet) (Sets, error) {
 	if rs.Tag == "" {

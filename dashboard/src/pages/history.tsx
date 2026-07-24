@@ -1,25 +1,45 @@
-import { type ElementType, useState } from 'react';
+import { type ElementType, useDeferredValue, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowDown, ArrowUp, Ban, Search, Waypoints } from 'lucide-react';
+import { ArrowDown, ArrowUp, Ban, Waypoints } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '@/lib/api';
 import { cn, fmtBytes } from '@/lib/utils';
+import { DEFAULT_PAGE_SIZE } from '@/hooks/use-paged-list';
 import { PageHeader } from '@/components/page-header';
+import { ListSearch, PaginationBar } from '@/components/pagination-bar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 export default function History() {
   const { t } = useTranslation();
-  const [host, setHost] = useState('');
+  const [q, setQ] = useState('');
+  const deferredQ = useDeferredValue(q);
+  const [page, setPage] = useState(0);
+  const pageSize = DEFAULT_PAGE_SIZE;
+
+  useEffect(() => {
+    setPage(0);
+  }, [deferredQ]);
+
   const { data: stats } = useQuery({ queryKey: ['history', 'stats'], queryFn: api.historyStats, refetchInterval: 5000 });
-  const { data: recent = [] } = useQuery({
-    queryKey: ['history', 'recent', host],
-    queryFn: () => api.history(300, host),
+  const { data: hist } = useQuery({
+    queryKey: ['history', 'recent', deferredQ, page, pageSize],
+    queryFn: () => api.history(pageSize, deferredQ, page * pageSize),
     refetchInterval: 5000,
+    placeholderData: (prev) => prev,
   });
+
+  const total = hist?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize) || 1);
+  const safePage = Math.min(page, totalPages - 1);
+  useEffect(() => {
+    if (safePage !== page) setPage(safePage);
+  }, [safePage, page]);
+  const recent = hist?.items ?? [];
+  const from = total === 0 ? 0 : safePage * pageSize + 1;
+  const to = Math.min(total, (safePage + 1) * pageSize);
 
   const maxHour = Math.max(1, ...(stats?.hourly ?? []).map((h) => h.up + h.down));
   const maxTalker = Math.max(1, ...(stats?.top_talkers ?? []).map((talker) => talker.up + talker.down));
@@ -50,12 +70,12 @@ export default function History() {
             ) : (
               <div className="flex h-32 items-end gap-1">
                 {stats!.hourly.map((h) => {
-                  const total = h.up + h.down;
+                  const totalH = h.up + h.down;
                   return (
                     <div
                       key={h.hour}
                       className="group relative flex-1 rounded-t bg-primary/70 transition-colors hover:bg-primary"
-                      style={{ height: `${Math.max(2, (total / maxHour) * 100)}%` }}
+                      style={{ height: `${Math.max(2, (totalH / maxHour) * 100)}%` }}
                       title={t('pages.history.hourTooltip', {
                         time: new Date(h.hour * 1000).toLocaleTimeString([], { hour: '2-digit' }),
                         up: fmtBytes(h.up),
@@ -92,10 +112,7 @@ export default function History() {
       <Card className="mt-4 overflow-hidden">
         <CardHeader className="flex-row items-center justify-between pb-2">
           <CardTitle className="text-sm">{t('pages.history.recentTitle')}</CardTitle>
-          <div className="relative">
-            <Search className="absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input className="h-8 w-56 pl-7" placeholder={t('pages.history.filterPlaceholder')} value={host} onChange={(e) => setHost(e.target.value)} />
-          </div>
+          <ListSearch value={q} onChange={setQ} placeholder={t('pages.history.filterPlaceholder')} />
         </CardHeader>
         <CardContent className="px-0 pb-0">
           <Table>
@@ -116,7 +133,7 @@ export default function History() {
                 </TableRow>
               )}
               {recent.map((r, i) => (
-                <TableRow key={i} data-state={r.l === 'alert' ? 'alert' : undefined}>
+                <TableRow key={`${r.t}-${r.h}-${r.d}-${i}`} data-state={r.l === 'alert' ? 'alert' : undefined}>
                   <TableCell className="tnum text-xs text-muted-foreground">
                     {r.t ? new Date(r.t).toLocaleTimeString() : '—'}
                   </TableCell>
@@ -135,6 +152,14 @@ export default function History() {
               ))}
             </TableBody>
           </Table>
+          <PaginationBar
+            page={safePage}
+            totalPages={totalPages}
+            total={total}
+            from={from}
+            to={to}
+            onPageChange={setPage}
+          />
         </CardContent>
       </Card>
     </div>

@@ -11,6 +11,8 @@ export default {
     clear: 'Clear',
     paused: 'Paused.',
     waitingForLogs: 'Waiting for logs…',
+    searchPlaceholder: 'Search log text…',
+    noMatch: 'No matching log lines.',
   },
   zh: {
     title: '日志',
@@ -24,5 +26,7 @@ export default {
     clear: '清空',
     paused: '已暂停。',
     waitingForLogs: '等待日志…',
+    searchPlaceholder: '搜索日志内容…',
+    noMatch: '没有匹配的日志。',
   },
 };

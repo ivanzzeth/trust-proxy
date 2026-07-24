@@ -1,4 +1,4 @@
-import { type ElementType, useMemo, useState } from 'react';
+import { type ElementType, useDeferredValue, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Ban, Globe, Cpu, MonitorSmartphone, Network, X } from 'lucide-react';
@@ -6,7 +6,9 @@ import { useTranslation } from 'react-i18next';
 
 import { api, isIP, splitHost, toCIDR, WLType } from '@/lib/api';
 import { cn, fmtBytes } from '@/lib/utils';
+import { matchesQuery, usePagedList } from '@/hooks/use-paged-list';
 import { PageHeader } from '@/components/page-header';
+import { ListSearch, PaginationBar } from '@/components/pagination-bar';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -36,6 +38,8 @@ export default function Connections() {
   const qc = useQueryClient();
   const [tab, setTab] = useState<'all' | 'live' | 'closed'>('all');
   const [alertsOnly, setAlertsOnly] = useState(false);
+  const [search, setSearch] = useState('');
+  const deferredSearch = useDeferredValue(search);
 
   const { data: snap } = useQuery({ queryKey: ['conns'], queryFn: api.connections, refetchInterval: 2000 });
   const { data: events = [] } = useQuery({ queryKey: ['events'], queryFn: () => api.events(false), refetchInterval: 3000 });
@@ -62,7 +66,7 @@ export default function Connections() {
   const { liveRows, closedRows } = useMemo(() => {
     const liveRows: Row[] = (snap?.connections ?? []).map((c) => ({
       key: 'l:' + c.id,
-      status: 'live',
+      status: 'live' as const,
       host: c.metadata.host || c.metadata.destinationIP,
       dest: `${c.metadata.destinationIP}:${c.metadata.destinationPort}`,
       source: c.metadata.sourceIP || '',
@@ -75,7 +79,7 @@ export default function Connections() {
     }));
     const closedRows: Row[] = events.map((e) => ({
       key: 'e:' + e.id,
-      status: e.denied ? 'denied' : 'allowed',
+      status: (e.denied ? 'denied' : 'allowed') as Status,
       time: e.time,
       host: e.host,
       dest: e.destination,
@@ -90,8 +94,19 @@ export default function Connections() {
     return { liveRows, closedRows };
   }, [snap, events]);
 
-  let rows = tab === 'live' ? liveRows : tab === 'closed' ? closedRows : [...liveRows, ...closedRows];
-  if (alertsOnly) rows = rows.filter((r) => r.alert);
+  const filtered = useMemo(() => {
+    let rows = tab === 'live' ? liveRows : tab === 'closed' ? closedRows : [...liveRows, ...closedRows];
+    if (alertsOnly) rows = rows.filter((r) => r.alert);
+    if (deferredSearch.trim()) {
+      rows = rows.filter((r) =>
+        matchesQuery(deferredSearch, r.host, r.dest, r.source, r.process, r.chain, ...(r.reasons ?? [])),
+      );
+    }
+    return rows;
+  }, [tab, liveRows, closedRows, alertsOnly, deferredSearch]);
+
+  const resetKey = `${tab}|${alertsOnly}|${deferredSearch.trim().toLowerCase()}`;
+  const page = usePagedList(filtered, resetKey);
   const alertCount = closedRows.filter((r) => r.alert).length;
 
   const badge = (r: Row) =>
@@ -129,19 +144,27 @@ export default function Connections() {
         }
       />
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)} className="mb-4">
-        <TabsList>
-          <TabsTrigger value="all">
-            {t('pages.connections.tabAll')} <span className="tnum text-muted-foreground">{liveRows.length + closedRows.length}</span>
-          </TabsTrigger>
-          <TabsTrigger value="live">
-            {t('pages.connections.tabLive')} <span className="tnum text-muted-foreground">{liveRows.length}</span>
-          </TabsTrigger>
-          <TabsTrigger value="closed">
-            {t('pages.connections.tabClosed')} <span className="tnum text-muted-foreground">{closedRows.length}</span>
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <Tabs value={tab} onValueChange={(v) => setTab(v as typeof tab)}>
+          <TabsList>
+            <TabsTrigger value="all">
+              {t('pages.connections.tabAll')} <span className="tnum text-muted-foreground">{liveRows.length + closedRows.length}</span>
+            </TabsTrigger>
+            <TabsTrigger value="live">
+              {t('pages.connections.tabLive')} <span className="tnum text-muted-foreground">{liveRows.length}</span>
+            </TabsTrigger>
+            <TabsTrigger value="closed">
+              {t('pages.connections.tabClosed')} <span className="tnum text-muted-foreground">{closedRows.length}</span>
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <ListSearch
+          value={search}
+          onChange={setSearch}
+          placeholder={t('pages.connections.searchPlaceholder')}
+          className="ml-auto"
+        />
+      </div>
 
       <Card className="overflow-hidden">
         <Table>
@@ -159,14 +182,14 @@ export default function Connections() {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.length === 0 && (
+            {page.total === 0 && (
               <TableRow className="hover:bg-transparent">
                 <TableCell colSpan={9} className="py-12 text-center text-muted-foreground">
                   {t('pages.connections.empty')}
                 </TableCell>
               </TableRow>
             )}
-            {rows.map((r) => (
+            {page.pageItems.map((r) => (
               <TableRow key={r.key} data-state={r.alert ? 'alert' : undefined}>
                 <TableCell>{badge(r)}</TableCell>
                 <TableCell className="tnum text-xs text-muted-foreground">
@@ -232,6 +255,14 @@ export default function Connections() {
             ))}
           </TableBody>
         </Table>
+        <PaginationBar
+          page={page.page}
+          totalPages={page.totalPages}
+          total={page.total}
+          from={page.from}
+          to={page.to}
+          onPageChange={page.setPage}
+        />
       </Card>
     </div>
   );

@@ -1,11 +1,13 @@
-import { useState } from 'react';
+import { useDeferredValue, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { ArrowDown, ArrowUp, Download, Package, Plus, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api, CRAction, CRMatch, CustomRule, PackPreset } from '@/lib/api';
+import { matchesQuery, usePagedList } from '@/hooks/use-paged-list';
 import { PageHeader } from '@/components/page-header';
+import { ListSearch, PaginationBar } from '@/components/pagination-bar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -85,6 +87,17 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const [value, setValue] = useState('');
   const [action, setAction] = useState<CRAction>('proxy');
   const [node, setNode] = useState('');
+  const [ruleSearch, setRuleSearch] = useState('');
+  const deferredRuleSearch = useDeferredValue(ruleSearch);
+
+  const filteredRules = useMemo(
+    () =>
+      rules.filter((r) =>
+        matchesQuery(deferredRuleSearch, r.match, r.value, r.action, r.node, r.pack),
+      ),
+    [rules, deferredRuleSearch],
+  );
+  const rulePage = usePagedList(filteredRules, deferredRuleSearch.trim().toLowerCase());
 
   const submit = () => {
     const v = value.trim();
@@ -212,7 +225,10 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
       )}
 
       <Card className="mt-4 overflow-hidden">
-        <CardHeader className="pb-2"><CardTitle className="text-sm">{t('pages.customRules.tableTitle')}</CardTitle></CardHeader>
+        <CardHeader className="flex-row items-center justify-between pb-2">
+          <CardTitle className="text-sm">{t('pages.customRules.tableTitle')}</CardTitle>
+          <ListSearch value={ruleSearch} onChange={setRuleSearch} placeholder={t('pages.customRules.searchPlaceholder')} />
+        </CardHeader>
         <CardContent className="px-0 pb-0">
           <Table>
             <TableHeader>
@@ -226,21 +242,22 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {rules.length === 0 && (
+              {rulePage.total === 0 && (
                 <TableRow className="hover:bg-transparent">
                   <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{t('pages.customRules.empty')}</TableCell>
                 </TableRow>
               )}
-              {rules.map((r, i) => {
+              {rulePage.pageItems.map((r) => {
+                const i = rules.findIndex((x) => x.id === r.id);
                 const stale = r.action === 'node' && !nodes.includes(r.node ?? '');
                 return (
                   <TableRow key={r.id}>
                     <TableCell>
                       <div className="flex">
-                        <Button size="icon" variant="ghost" className="size-6" disabled={i === 0} onClick={() => move.mutate({ id: r.id, dir: -1 })}>
+                        <Button size="icon" variant="ghost" className="size-6" disabled={i <= 0} onClick={() => move.mutate({ id: r.id, dir: -1 })}>
                           <ArrowUp className="size-3.5" />
                         </Button>
-                        <Button size="icon" variant="ghost" className="size-6" disabled={i === rules.length - 1} onClick={() => move.mutate({ id: r.id, dir: 1 })}>
+                        <Button size="icon" variant="ghost" className="size-6" disabled={i < 0 || i >= rules.length - 1} onClick={() => move.mutate({ id: r.id, dir: 1 })}>
                           <ArrowDown className="size-3.5" />
                         </Button>
                       </div>
@@ -293,6 +310,14 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
               })}
             </TableBody>
           </Table>
+          <PaginationBar
+            page={rulePage.page}
+            totalPages={rulePage.totalPages}
+            total={rulePage.total}
+            from={rulePage.from}
+            to={rulePage.to}
+            onPageChange={rulePage.setPage}
+          />
         </CardContent>
       </Card>
     </div>

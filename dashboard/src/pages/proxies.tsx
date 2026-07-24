@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useDeferredValue, useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { Check, Gauge, Loader2, Plus, Trash2, Zap } from 'lucide-react';
@@ -6,7 +6,9 @@ import { useTranslation } from 'react-i18next';
 
 import { api, PGFilter, PGType, ProxyGroup, ProxyGroupsConfig, ProxyNode } from '@/lib/api';
 import { cn } from '@/lib/utils';
+import { matchesQuery, usePagedList } from '@/hooks/use-paged-list';
 import { PageHeader } from '@/components/page-header';
+import { ListSearch, PaginationBar } from '@/components/pagination-bar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -33,6 +35,8 @@ export default function Proxies() {
   const { data } = useQuery({ queryKey: ['proxies'], queryFn: api.proxies, refetchInterval: 5000 });
   const [delays, setDelays] = useState<Record<string, number>>({});
   const [testing, setTesting] = useState<string | null>(null);
+  const [nodeSearch, setNodeSearch] = useState('');
+  const deferredNodeSearch = useDeferredValue(nodeSearch);
 
   const select = useMutation({
     mutationFn: (v: { group: string; name: string }) => api.selectProxy(v.group, v.name),
@@ -70,6 +74,7 @@ export default function Proxies() {
       <PageHeader
         title={t('pages.proxies.title')}
         description={t('pages.proxies.description')}
+        actions={<ListSearch value={nodeSearch} onChange={setNodeSearch} placeholder={t('pages.proxies.searchPlaceholder')} />}
       />
       <GroupSettings />
       {groups.length === 0 && (
@@ -80,55 +85,114 @@ export default function Proxies() {
         </Card>
       )}
       <div className="space-y-4">
-        {groups.map(([name, g]: [string, ProxyNode]) => {
-          const selectable = g.type === 'Selector';
-          const members = g.all ?? [];
-          return (
-            <Card key={name}>
-              <CardHeader className="flex-row items-center justify-between pb-3">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  {name}
-                  <Badge variant="outline">{g.type}</Badge>
-                  {g.now && <span className="text-xs font-normal text-muted-foreground">{t('pages.proxies.nowLabel')} <span className="text-primary">{g.now}</span></span>}
-                </CardTitle>
-                <Button size="xs" variant="outline" disabled={!!testing} onClick={() => testGroup(members)}>
-                  {testing === members.join() ? <Loader2 className="size-3.5 animate-spin" /> : <Zap className="size-3.5" />} {t('pages.proxies.test')}
-                </Button>
-              </CardHeader>
-              <CardContent className="pt-0">
-                <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
-                  {members.map((m) => {
-                    const active = g.now === m;
-                    const d = lastDelay(m);
-                    return (
-                      <button
-                        key={m}
-                        disabled={!selectable || select.isPending}
-                        onClick={() => selectable && select.mutate({ group: name, name: m })}
-                        className={cn(
-                          'flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors',
-                          active ? 'border-primary/50 bg-primary/10' : 'hover:bg-muted/50',
-                          selectable ? 'cursor-pointer' : 'cursor-default',
-                        )}
-                      >
-                        <span className="flex min-w-0 items-center gap-1.5">
-                          {active && <Check className="size-3.5 shrink-0 text-primary" />}
-                          <span className="truncate">{m}</span>
-                        </span>
-                        <span className={cn('tnum shrink-0 text-xs', delayColor(d))}>{delayText(d, t('pages.proxies.delayTimeout'))}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          );
-        })}
+        {groups.map(([name, g]: [string, ProxyNode]) => (
+          <ProxyGroupCard
+            key={name}
+            name={name}
+            g={g}
+            search={deferredNodeSearch}
+            lastDelay={lastDelay}
+            testing={testing}
+            selectPending={select.isPending}
+            onSelect={(n) => select.mutate({ group: name, name: n })}
+            onTest={testGroup}
+            timeoutLabel={t('pages.proxies.delayTimeout')}
+            nowLabel={t('pages.proxies.nowLabel')}
+            testLabel={t('pages.proxies.test')}
+          />
+        ))}
       </div>
       <p className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
         <Gauge className="size-3.5" /> {t('pages.proxies.footerHint')}
       </p>
     </div>
+  );
+}
+
+function ProxyGroupCard({
+  name,
+  g,
+  search,
+  lastDelay,
+  testing,
+  selectPending,
+  onSelect,
+  onTest,
+  timeoutLabel,
+  nowLabel,
+  testLabel,
+}: {
+  name: string;
+  g: ProxyNode;
+  search: string;
+  lastDelay: (n: string) => number | undefined;
+  testing: string | null;
+  selectPending: boolean;
+  onSelect: (n: string) => void;
+  onTest: (members: string[]) => void;
+  timeoutLabel: string;
+  nowLabel: string;
+  testLabel: string;
+}) {
+  const selectable = g.type === 'Selector';
+  const members = g.all ?? [];
+  const filtered = useMemo(() => members.filter((m) => matchesQuery(search, m)), [members, search]);
+  const page = usePagedList(filtered, search.trim().toLowerCase(), 60);
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="flex-row items-center justify-between pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          {name}
+          <Badge variant="outline">{g.type}</Badge>
+          {g.now && (
+            <span className="text-xs font-normal text-muted-foreground">
+              {nowLabel} <span className="text-primary">{g.now}</span>
+            </span>
+          )}
+          <Badge variant="muted" className="tnum">
+            {page.total}/{members.length}
+          </Badge>
+        </CardTitle>
+        <Button size="xs" variant="outline" disabled={!!testing} onClick={() => onTest(members)}>
+          {testing === members.join() ? <Loader2 className="size-3.5 animate-spin" /> : <Zap className="size-3.5" />} {testLabel}
+        </Button>
+      </CardHeader>
+      <CardContent className="pt-0">
+        <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-3">
+          {page.pageItems.map((m) => {
+            const active = g.now === m;
+            const d = lastDelay(m);
+            return (
+              <button
+                key={m}
+                disabled={!selectable || selectPending}
+                onClick={() => selectable && onSelect(m)}
+                className={cn(
+                  'flex items-center justify-between gap-2 rounded-md border px-3 py-2 text-left text-sm transition-colors',
+                  active ? 'border-primary/50 bg-primary/10' : 'hover:bg-muted/50',
+                  selectable ? 'cursor-pointer' : 'cursor-default',
+                )}
+              >
+                <span className="flex min-w-0 items-center gap-1.5">
+                  {active && <Check className="size-3.5 shrink-0 text-primary" />}
+                  <span className="truncate">{m}</span>
+                </span>
+                <span className={cn('tnum shrink-0 text-xs', delayColor(d))}>{delayText(d, timeoutLabel)}</span>
+              </button>
+            );
+          })}
+        </div>
+      </CardContent>
+      <PaginationBar
+        page={page.page}
+        totalPages={page.totalPages}
+        total={page.total}
+        from={page.from}
+        to={page.to}
+        onPageChange={page.setPage}
+      />
+    </Card>
   );
 }
 
