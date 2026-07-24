@@ -19,6 +19,12 @@ const ACTIONS: CRAction[] = ['direct', 'proxy', 'block', 'node'];
 const actionBadge = (a: CRAction) =>
   a === 'block' ? 'danger' : a === 'proxy' ? 'success' : a === 'node' ? 'default' : 'muted';
 
+// flag turns a 2-letter ISO code into its regional-indicator flag emoji.
+const flag = (code: string) =>
+  code.length === 2
+    ? String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65))
+    : '';
+
 export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -129,8 +135,17 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
             <div key={p.name} className="flex items-center gap-3 rounded-md border px-3 py-2">
               <Package className="size-4 shrink-0 text-muted-foreground" />
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium">{p.name}</div>
-                <div className="truncate text-xs text-muted-foreground">{p.description}</div>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm font-medium">{p.name}</span>
+                  {p.region ? (
+                    <Badge variant="default" title={t('pages.customRules.regionPinned', { region: p.region })}>
+                      {flag(p.region)} {p.region}
+                    </Badge>
+                  ) : (
+                    <Badge variant="muted" title={t('pages.customRules.regionAuto')}>{t('pages.customRules.autoBadge')}</Badge>
+                  )}
+                </div>
+                <div className="truncate text-xs text-muted-foreground" title={p.description}>{p.description}</div>
               </div>
               <Badge variant="muted" className="tnum">{p.rules.length}</Badge>
               {importedPacks.has(p.name) ? (

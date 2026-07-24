@@ -91,6 +91,7 @@ export interface CustomRule {
 export interface PackPreset {
   name: string;
   description: string;
+  region?: string; // recommended exit ISO2 baked into the rules ("" = auto/fastest)
   rules: CustomRule[];
 }
 export interface RuleSetEntry {
