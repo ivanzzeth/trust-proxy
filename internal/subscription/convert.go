@@ -335,6 +335,29 @@ func clashProxyToOutbound(p map[string]any) (proto, server string, port int, ob 
 		}
 		ob["tls"] = tls
 		return "anytls", server, port, ob, true
+	case "socks5", "socks", "socks5-tls":
+		ob["type"] = "socks"
+		ob["version"] = "5"
+		if u := mstr(p, "username"); u != "" {
+			ob["username"] = u
+			ob["password"] = mstr(p, "password")
+		}
+		return "socks", server, port, ob, true
+	case "http", "https":
+		ob["type"] = "http"
+		if u := mstr(p, "username"); u != "" {
+			ob["username"] = u
+			ob["password"] = mstr(p, "password")
+		}
+		// Clash marks TLS via `tls: true` or the `https` type.
+		if typ == "https" || boolOf(p, "tls") {
+			tls := map[string]any{"enabled": true, "server_name": nz(mstr(p, "sni"), mstr(p, "servername"), server)}
+			if boolOf(p, "skip-cert-verify") {
+				tls["insecure"] = true
+			}
+			ob["tls"] = tls
+		}
+		return "http", server, port, ob, true
 	default:
 		return "", server, port, nil, false
 	}
