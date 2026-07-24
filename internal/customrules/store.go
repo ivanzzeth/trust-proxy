@@ -297,6 +297,34 @@ func (s *Store) RemovePack(pack string) (Rules, error) {
 	})
 }
 
+// ReplacePack atomically drops every rule tagged with pack, then appends the
+// supplied rules (tagged + enabled). Re-importing a preset overwrites without
+// leaving stale matchers from an older pack version.
+func (s *Store) ReplacePack(pack string, rules []apitypes.CustomRule) (Rules, error) {
+	if pack == "" {
+		return s.Get(), fmt.Errorf("pack name is required")
+	}
+	prepared := make([]apitypes.CustomRule, 0, len(rules))
+	for _, r := range rules {
+		r.Pack = pack
+		r.Enabled = true
+		if err := validate(&r); err != nil {
+			return s.Get(), err
+		}
+		r.ID = idFor(r)
+		prepared = append(prepared, r)
+	}
+	return s.mutate(func() {
+		out := make([]apitypes.CustomRule, 0, len(s.data.Rules))
+		for _, x := range s.data.Rules {
+			if x.Pack != pack {
+				out = append(out, x)
+			}
+		}
+		s.data.Rules = append(out, prepared...)
+	})
+}
+
 // Move shifts the rule up (dir<0) or down (dir>0) by one position, changing its
 // first-match priority. Out-of-range moves are no-ops.
 func (s *Store) Move(id string, dir int) (Rules, error) {

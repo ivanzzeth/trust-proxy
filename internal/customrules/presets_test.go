@@ -153,3 +153,87 @@ func TestPresets_XBindsTwitterGeosite(t *testing.T) {
 		t.Fatal("geosite-twitter missing from rule-set catalog")
 	}
 }
+
+// Dev must cover Git SSH under TUN: domain hosts + git IP ranges (SSH dials by IP).
+func TestPresets_DevCoversGitSSH(t *testing.T) {
+	var dev *apitypes.PackPreset
+	for i := range Presets {
+		if Presets[i].Name == "Dev" {
+			dev = &Presets[i]
+			break
+		}
+	}
+	if dev == nil {
+		t.Fatal("Dev preset missing")
+	}
+	hasMSDev := false
+	for _, rs := range dev.RuleSets {
+		if rs.CatalogTag == "geosite-microsoft-dev" {
+			hasMSDev = true
+		}
+	}
+	if !hasMSDev {
+		t.Fatal("Dev should bind geosite-microsoft-dev (VS Code / NuGet)")
+	}
+	hasSSH, hasGitCIDR, hasMetaIP, hasVSCode := false, false, false, false
+	for _, r := range dev.Rules {
+		switch {
+		case r.Match == apitypes.CustomMatchDomainSuffix && r.Value == "ssh.github.com":
+			hasSSH = true
+		case r.Match == apitypes.CustomMatchDomainSuffix && r.Value == "code.visualstudio.com":
+			hasVSCode = true
+		case r.Match == apitypes.CustomMatchIPCIDR && r.Value == "140.82.112.0/20":
+			hasGitCIDR = true
+		case r.Match == apitypes.CustomMatchIPCIDR && r.Value == "20.205.243.160/32":
+			hasMetaIP = true // the edge that closed our SSH kex in CN
+		}
+		if r.Match == apitypes.CustomMatchIPCIDR && r.Action != apitypes.CustomActionProxy {
+			t.Fatalf("git CIDR %q must action=proxy, got %q", r.Value, r.Action)
+		}
+	}
+	if !hasSSH {
+		t.Fatal("Dev missing ssh.github.com domain rule")
+	}
+	if !hasVSCode {
+		t.Fatal("Dev missing code.visualstudio.com (seen blocked in live history)")
+	}
+	if !hasGitCIDR {
+		t.Fatal("Dev missing core GitHub git CIDR 140.82.112.0/20")
+	}
+	if !hasMetaIP {
+		t.Fatal("Dev missing 20.205.243.160/32 (common CN git SSH edge)")
+	}
+}
+
+// Telegram must include official DC CIDRs — live history showed thousands of
+// IP-only blocks (91.108.56.125 / 149.154.171.5) with geosite domains alone.
+func TestPresets_TelegramCoversOfficialCIDRs(t *testing.T) {
+	var tg *apitypes.PackPreset
+	for i := range Presets {
+		if Presets[i].Name == "Telegram" {
+			tg = &Presets[i]
+			break
+		}
+	}
+	if tg == nil {
+		t.Fatal("Telegram preset missing")
+	}
+	need := map[string]bool{
+		"91.108.56.0/22":    false,
+		"149.154.160.0/20":  false,
+		"2001:b28:f23f::/48": false,
+	}
+	for _, r := range tg.Rules {
+		if r.Match != apitypes.CustomMatchIPCIDR {
+			t.Fatalf("Telegram custom rules should be ip_cidr only, got %s=%s", r.Match, r.Value)
+		}
+		if _, ok := need[r.Value]; ok {
+			need[r.Value] = true
+		}
+	}
+	for cidr, ok := range need {
+		if !ok {
+			t.Fatalf("Telegram missing official CIDR %s from core.telegram.org/resources/cidr.txt", cidr)
+		}
+	}
+}

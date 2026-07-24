@@ -148,6 +148,26 @@ func TestPacks(t *testing.T) {
 		t.Fatalf("re-apply duplicated Dev: %d", td)
 	}
 
+	// ReplacePack drops obsolete matchers from an older pack version.
+	stale := apitypes.CustomRule{
+		Match: apitypes.CustomMatchDomainSuffix, Value: "obsolete.example",
+		Action: apitypes.CustomActionProxy, Pack: "Dev", Enabled: true,
+	}
+	if _, err := s.Add(stale); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ReplacePack("Dev", dev.Rules); err != nil {
+		t.Fatal(err)
+	}
+	if td, _ := count("Dev"); td != len(dev.Rules) {
+		t.Fatalf("ReplacePack left %d Dev rules, want %d", td, len(dev.Rules))
+	}
+	for _, r := range s.Get().Rules {
+		if r.Pack == "Dev" && r.Value == "obsolete.example" {
+			t.Fatal("ReplacePack kept stale rule obsolete.example")
+		}
+	}
+
 	// Disable the Dev pack only.
 	if _, err := s.SetPackEnabled("Dev", false); err != nil {
 		t.Fatal(err)

@@ -40,7 +40,14 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const patch = useMutation({ mutationFn: (v: { id: string; patch: Partial<Omit<CustomRule, 'id'>> }) => api.patchCR(v.id, v.patch), onSuccess: invalidate, onError: err });
   const del = useMutation({ mutationFn: api.delCR, onSuccess: invalidate, onError: err });
   const move = useMutation({ mutationFn: (v: { id: string; dir: number }) => api.moveCR(v.id, v.dir), onSuccess: invalidate, onError: err });
-  const applyPack = useMutation({ mutationFn: api.applyPack, onSuccess: invalidate, onError: err });
+  const applyPack = useMutation({
+    mutationFn: api.applyPack,
+    onSuccess: (_data, name) => {
+      invalidate();
+      toast.success(t('pages.customRules.updateDone', { name }));
+    },
+    onError: err,
+  });
   const packEnable = useMutation({ mutationFn: (v: { name: string; enabled: boolean }) => api.setPackEnabled(v.name, v.enabled), onSuccess: invalidate, onError: err });
   const packDel = useMutation({ mutationFn: api.delPack, onSuccess: invalidate, onError: err });
 
@@ -174,13 +181,13 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
               <Badge variant="muted" className="tnum">
                 {(p.rules?.length ?? 0) + (p.rule_sets?.length ?? 0)}
               </Badge>
-              {importedPacks.has(p.name) ? (
+              {importedPacks.has(p.name) && (
                 <Badge variant="muted">{t('pages.customRules.importedBadge')}</Badge>
-              ) : (
-                <Button size="xs" variant="secondary" disabled={applyPack.isPending} onClick={() => applyPack.mutate(p.name)}>
-                  <Download className="size-3.5" /> {t('pages.customRules.importButton')}
-                </Button>
               )}
+              <Button size="xs" variant="secondary" disabled={applyPack.isPending} onClick={() => applyPack.mutate(p.name)}>
+                <Download className="size-3.5" />
+                {importedPacks.has(p.name) ? t('pages.customRules.updateButton') : t('pages.customRules.importButton')}
+              </Button>
             </div>
           ))}
         </CardContent>

@@ -42,25 +42,53 @@ var Presets = []apitypes.PackPreset{
 			"gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com", "deepmind.com",
 			"x.ai", "grok.com", "perplexity.ai",
 			"mistral.ai", "cohere.com", "groq.com", "poe.com",
-			"huggingface.co", "hf.co", "midjourney.com", "suno.com"),
+			"huggingface.co", "hf.co", "midjourney.com", "suno.com",
+			"ollama.com"),
 	},
 	{
-		Name:        "Dev",
-		Description: "GitHub ecosystem via geosite-github (community-maintained). Covers github.com, raw/usercontent, ghcr, Copilot hosts, etc. without a hand-maintained domain list.",
-		Exit:        apitypes.PackExitAuto,
-		RuleSets:    catalogRS("geosite-github"),
-		// npm/pypi/go/docker stay as custom rules — no single clean geosite tag.
-		Rules: proxyRules("Dev",
-			"npmjs.org", "npmjs.com", "pypi.org", "pythonhosted.org",
-			"pkg.go.dev", "proxy.golang.org", "sum.golang.org",
-			"docker.io", "docker.com"),
+		Name: "Dev",
+		Description: "GitHub + Microsoft-dev (VS Code / NuGet / …) via geosite, plus package registries. " +
+			"Custom rules pin Git SSH hosts and GitHub git IP ranges from api.github.com/meta — under TUN, " +
+			"git often dials by IP with no SNI, so domain-only allow is not enough. " +
+			"VS Code update hosts (code.visualstudio.com) are also pinned — they are not always in geosite-github.",
+		Exit:     apitypes.PackExitAuto,
+		RuleSets: catalogRS("geosite-github", "geosite-microsoft-dev"),
+		Rules: concatRules(
+			// Explicit Git SSH / forge hosts first (ordered L4).
+			proxyRules("Dev", "ssh.github.com", "github.com", "githubusercontent.com"),
+			proxyCIDRs("Dev", githubGitCIDRs...),
+			// VS Code update CDN (seen blocked under TUN when only geosite-github was on).
+			// vscode.download.prss.microsoft.com is in v2fly microsoft list; code.visualstudio.com is the update host.
+			proxyRules("Dev", "code.visualstudio.com", "vscode.download.prss.microsoft.com"),
+			// Registries without a clean geosite tag.
+			proxyRules("Dev",
+				"npmjs.org", "npmjs.com", "pypi.org", "pythonhosted.org",
+				"pkg.go.dev", "proxy.golang.org", "sum.golang.org",
+				"docker.io", "docker.com"),
+		),
 	},
 	{
-		Name:        "Telegram",
-		Description: "Telegram via geosite-telegram (apps + media CDN). Community list stays current.",
+		Name: "Telegram",
+		Description: "Telegram via geosite-telegram (apps + media CDN) plus official DC IP ranges " +
+			"from core.telegram.org/resources/cidr.txt. Desktop often dials DCs by IP with no SNI — " +
+			"domain-only allow leaves MTProto/HTTPS edges blocked under TUN.",
+		Exit:     apitypes.PackExitAuto,
+		RuleSets: catalogRS("geosite-telegram"),
+		Rules:    proxyCIDRs("Telegram", telegramCIDRs...),
+	},
+	{
+		Name:        "Slack",
+		Description: "Slack via geosite-slack (slack.com, slack-edge, slackb, …). Community list from SagerNet/sing-geosite.",
 		Exit:        apitypes.PackExitAuto,
-		RuleSets:    catalogRS("geosite-telegram"),
-		Rules:       []apitypes.CustomRule{}, // non-nil so JSON is [] not null (UI reads .length)
+		RuleSets:    catalogRS("geosite-slack"),
+		Rules:       []apitypes.CustomRule{},
+	},
+	{
+		Name:        "Notion",
+		Description: "Notion via geosite-notion. Community list from SagerNet/sing-geosite.",
+		Exit:        apitypes.PackExitAuto,
+		RuleSets:    catalogRS("geosite-notion"),
+		Rules:       []apitypes.CustomRule{},
 	},
 	{
 		Name:        "X",
@@ -115,12 +143,85 @@ func catalogRS(tags ...string) []apitypes.PackRuleSet {
 	return out
 }
 
+// telegramCIDRs are Telegram's published DC ranges
+// (https://core.telegram.org/resources/cidr.txt). Desktop clients commonly
+// dial these by IP; geosite-telegram alone is not enough under TUN.
+var telegramCIDRs = []string{
+	"91.108.56.0/22",
+	"91.108.4.0/22",
+	"91.108.8.0/22",
+	"91.108.16.0/22",
+	"91.108.12.0/22",
+	"91.108.20.0/22",
+	"149.154.160.0/20",
+	"91.105.192.0/23",
+	"185.76.151.0/24",
+	"2001:b28:f23d::/48",
+	"2001:b28:f23f::/48",
+	"2001:67c:4e8::/48",
+	"2001:b28:f23c::/48",
+	"2a0a:f280::/32",
+}
+
+// githubGitCIDRs are GitHub's published git SSH/HTTPS edge ranges
+// (https://api.github.com/meta → "git"). Needed because TUN clients often
+// connect to these IPs directly after DNS — domain_suffix rules never see a
+// name. Refresh when GitHub announces new edges (spot-check meta).
+var githubGitCIDRs = []string{
+	// Classic GitHub AS
+	"192.30.252.0/22",
+	"185.199.108.0/22",
+	"140.82.112.0/20",
+	"143.55.64.0/20",
+	"2a0a:a440::/29",
+	"2606:50c0::/32",
+	// Azure front doors (often hit from CN); /32s as published
+	"20.201.28.151/32", "20.201.28.152/32",
+	"20.205.243.160/32", "20.205.243.166/32",
+	"20.87.245.0/32", "20.87.245.4/32",
+	"4.237.22.38/32", "4.237.22.40/32",
+	"4.228.31.150/32", "4.228.31.145/32",
+	"20.207.73.82/32", "20.207.73.83/32",
+	"20.27.177.113/32", "20.27.177.118/32",
+	"20.200.245.247/32", "20.200.245.248/32",
+	"20.175.192.147/32", "20.175.192.146/32",
+	"20.233.83.145/32", "20.233.83.149/32",
+	"20.29.134.23/32", "20.29.134.19/32",
+	"20.199.39.232/32", "20.199.39.227/32",
+	"20.217.135.5/32", "20.217.135.4/32",
+	"4.225.11.194/32", "4.225.11.200/32",
+	"4.208.26.197/32", "4.208.26.198/32",
+	"20.26.156.215/32", "20.26.156.214/32",
+}
+
 func packRules(pack, action, node string, domains ...string) []apitypes.CustomRule {
 	out := make([]apitypes.CustomRule, 0, len(domains))
 	for _, d := range domains {
 		out = append(out, apitypes.CustomRule{
 			Match: apitypes.CustomMatchDomainSuffix, Value: d, Action: action, Node: node, Pack: pack, Enabled: true,
 		})
+	}
+	return out
+}
+
+func proxyCIDRs(pack string, cidrs ...string) []apitypes.CustomRule {
+	out := make([]apitypes.CustomRule, 0, len(cidrs))
+	for _, c := range cidrs {
+		out = append(out, apitypes.CustomRule{
+			Match: apitypes.CustomMatchIPCIDR, Value: c, Action: apitypes.CustomActionProxy, Pack: pack, Enabled: true,
+		})
+	}
+	return out
+}
+
+func concatRules(parts ...[]apitypes.CustomRule) []apitypes.CustomRule {
+	n := 0
+	for _, p := range parts {
+		n += len(p)
+	}
+	out := make([]apitypes.CustomRule, 0, n)
+	for _, p := range parts {
+		out = append(out, p...)
 	}
 	return out
 }

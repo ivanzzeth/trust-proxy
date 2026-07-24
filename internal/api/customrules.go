@@ -161,7 +161,7 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 		prevRS = s.rs.Get()
 	}
 
-	// 1) Import catalog rule sets (community coverage) into the store.
+	// 1) Upsert catalog rule sets (community coverage). Add is tag-idempotent.
 	if len(packRS) > 0 {
 		if s.rs == nil {
 			writeErr(w, http.StatusServiceUnavailable, "rule sets not available")
@@ -170,7 +170,6 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 		for _, prs := range packRS {
 			entry, ok := ruleset.CatalogByTag(prs.CatalogTag)
 			if !ok {
-				_, _ = s.cr.Set(prevCR)
 				writeErr(w, http.StatusBadRequest, "unknown rule-set catalog tag: "+prs.CatalogTag)
 				return
 			}
@@ -179,7 +178,6 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 				role = entry.SuggestedRole
 			}
 			if !validRole(role) {
-				_, _ = s.cr.Set(prevCR)
 				writeErr(w, http.StatusBadRequest, "invalid role for "+prs.CatalogTag+": "+role)
 				return
 			}
@@ -189,7 +187,6 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 				Role: role, Enabled: true,
 			}
 			if _, err := s.rs.Add(rs); err != nil {
-				_, _ = s.cr.Set(prevCR)
 				_ = s.rollbackRuleSets(prevRS)
 				writeErr(w, http.StatusBadRequest, err.Error())
 				return
@@ -197,19 +194,12 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 2) Add custom rules (Overseas pins, extras without a geosite tag).
-	var out customrules.Rules = prevCR
-	for _, rule := range rules {
-		rule.ID = ""
-		rule.Pack = name
-		rule.Enabled = true
-		var err error
-		if out, err = s.cr.Add(rule); err != nil {
-			_, _ = s.cr.Set(prevCR)
-			_ = s.rollbackRuleSets(prevRS)
-			writeErr(w, http.StatusBadRequest, err.Error())
-			return
-		}
+	// 2) Replace pack custom rules (overwrite stale matchers from older versions).
+	out, err := s.cr.ReplacePack(name, rules)
+	if err != nil {
+		_ = s.rollbackRuleSets(prevRS)
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	// 3) Single plane rebuild: rulesets first (manager state), then custom rules.
@@ -221,16 +211,12 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if len(rules) > 0 {
-		if err := s.applyCustomRules(out); err != nil {
-			_, _ = s.cr.Set(prevCR)
-			_ = s.rollbackRuleSets(prevRS)
-			_ = s.applyRuleSets(prevRS)
-			writeErr(w, http.StatusBadGateway, "apply pack: "+err.Error())
-			return
-		}
-	} else if len(packRS) == 0 {
-		// unreachable due to earlier check
+	if err := s.applyCustomRules(out); err != nil {
+		_, _ = s.cr.Set(prevCR)
+		_ = s.rollbackRuleSets(prevRS)
+		_ = s.applyRuleSets(prevRS)
+		writeErr(w, http.StatusBadGateway, "apply pack: "+err.Error())
+		return
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{

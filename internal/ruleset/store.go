@@ -67,6 +67,24 @@ var Catalog = []apitypes.RuleSetCatalogEntry{
 		SuggestedRole: apitypes.RuleRoleAllowProxy,
 	},
 	{
+		Tag: "geosite-slack", Name: "Slack (proxy)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-slack.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-slack.srs",
+		SuggestedRole: apitypes.RuleRoleAllowProxy,
+	},
+	{
+		Tag: "geosite-notion", Name: "Notion (proxy)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-notion.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-notion.srs",
+		SuggestedRole: apitypes.RuleRoleAllowProxy,
+	},
+	{
+		Tag: "geosite-microsoft-dev", Name: "Microsoft 开发者 (VS Code / NuGet / …)", Format: "binary",
+		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-microsoft-dev.srs",
+		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-microsoft-dev.srs",
+		SuggestedRole: apitypes.RuleRoleAllowProxy,
+	},
+	{
 		Tag: "geosite-twitter", Name: "X / Twitter (proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-twitter.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-twitter.srs",
