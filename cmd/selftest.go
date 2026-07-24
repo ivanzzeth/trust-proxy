@@ -20,9 +20,18 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
+
+// selftestSubFile, when set, runs the LIVE section: apply the real node(s) from
+// this clash-yaml file and fetch real sites through them, asserting real data.
+var selftestSubFile string
+
+func init() {
+	selftestCmd.Flags().StringVar(&selftestSubFile, "sub-file", "", "clash-yaml file with real node(s): also run the live real-data test through them")
+}
 
 // selftest is an in-binary end-to-end test of the core routing engine. It needs
 // no internet and no real proxy: it stands up a local "origin" server and a
@@ -330,11 +339,104 @@ func runSelftest() error {
 		_ = mgr.SetMode(gateway.ModeManual)
 	}
 
+	// Live section (opt-in): apply REAL node(s) and fetch REAL sites through them,
+	// asserting real target data comes back — this is what catches "connection
+	// shows live but the site never actually loads".
+	if selftestSubFile != "" {
+		lp, lf := liveTest(selftestSubFile)
+		pass += lp
+		fail += lf
+	}
+
 	fmt.Printf("\n%d passed, %d failed\n", pass, fail)
 	if fail > 0 {
 		return fmt.Errorf("selftest: %d scenario(s) failed", fail)
 	}
 	return nil
+}
+
+// liveTest applies the real node(s) from a clash-yaml file and fetches real
+// sites through them, asserting actual target data (not just a connection or a
+// status code): a 204 probe, the exit IP (which must differ from the direct
+// IP — proving bytes really traversed the node), and real HTML content.
+func liveTest(subFile string) (pass, fail int) {
+	ck := func(name string, ok bool, detail string) {
+		if ok {
+			pass++
+			fmt.Printf("  PASS  %-42s %s\n", name, detail)
+		} else {
+			fail++
+			fmt.Printf("  FAIL  %-42s %s\n", name, detail)
+		}
+	}
+	fmt.Println("== live: real data through a real node ==")
+
+	body, err := os.ReadFile(subFile)
+	if err != nil {
+		ck("read sub-file", false, err.Error())
+		return
+	}
+	nodes := subscription.Parse(body)
+	ck("parse real node(s)", len(nodes) > 0, fmt.Sprintf("%d node(s)", len(nodes)))
+	if len(nodes) == 0 {
+		return
+	}
+
+	mixedPort, clashPort := freePort(), freePort()
+	dir, _ := os.MkdirTemp("", "tp-live-")
+	defer os.RemoveAll(dir)
+	baseCfg := fmt.Sprintf(`{"log":{"level":"error"},"experimental":{"clash_api":{"external_controller":"127.0.0.1:%d","secret":""}},"inbounds":[{"type":"mixed","tag":"mixed-in","listen":"127.0.0.1","listen_port":%d}],"outbounds":[{"type":"direct","tag":"direct"},{"type":"block","tag":"blocked"},{"type":"selector","tag":"proxy","outbounds":["direct"]}],"route":{"rules":[{"action":"sniff"},{"network":["tcp","udp"],"action":"route","outbound":"blocked"}],"final":"blocked"}}`, clashPort, mixedPort)
+	cfgPath := filepath.Join(dir, "config.json")
+	_ = os.WriteFile(cfgPath, []byte(baseCfg), 0o644)
+
+	engine := detect.New(200)
+	mgr := gateway.NewManager(cfgPath, dir, whitelist.Rules{Domains: []string{"example.com", "api.ipify.org", "www.gstatic.com"}}, engine, "")
+	mgr.SetInitialNodes(nodes)
+	// A manual select group over all nodes so egress is deterministic (picks the
+	// first node; no urltest health-check dependency).
+	mgr.SetInitialProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{{Name: "g", Type: "select", Filter: "regex", Value: ".*"}}})
+	if err := mgr.Start(); err != nil {
+		ck("gateway start with real node", false, err.Error())
+		return
+	}
+	defer mgr.Close()
+	time.Sleep(500 * time.Millisecond)
+	selectProxyGroup(clashPort, "g")
+	time.Sleep(300 * time.Millisecond)
+
+	proxyURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", mixedPort))
+	viaNode := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}, Timeout: 20 * time.Second}
+	direct := &http.Client{Timeout: 12 * time.Second}
+	status := func(c *http.Client, u string) int {
+		resp, err := c.Get(u)
+		if err != nil {
+			return 0
+		}
+		defer resp.Body.Close()
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode
+	}
+	text := func(c *http.Client, u string) string {
+		resp, err := c.Get(u)
+		if err != nil {
+			return ""
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		return strings.TrimSpace(string(b))
+	}
+
+	// 1) a 204 connectivity probe through the node (real TLS + real response).
+	ck("gstatic 204 probe via node", status(viaNode, "https://www.gstatic.com/generate_204") == 204, "")
+	// 2) exit IP via node must be a valid IP AND differ from the direct IP —
+	//    this proves real bytes came back FROM the node, not just a live socket.
+	nodeIP := text(viaNode, "https://api.ipify.org")
+	directIP := text(direct, "https://api.ipify.org")
+	ck("exit IP via node is real + != direct", net.ParseIP(nodeIP) != nil && nodeIP != directIP, fmt.Sprintf("node=%q direct=%q", nodeIP, directIP))
+	// 3) real website content through the node (the actual page bytes).
+	page := text(viaNode, "https://example.com")
+	ck("example.com real content via node", strings.Contains(page, "Example Domain"), fmt.Sprintf("%d bytes", len(page)))
+	return
 }
 
 // setClashMode switches the live Clash routing mode (Rule/Global) via the API.
