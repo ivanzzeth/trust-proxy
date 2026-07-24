@@ -116,9 +116,16 @@ type CustomRule struct {
 type PackPreset struct {
 	Name        string       `json:"name"`
 	Description string       `json:"description"`
-	Region      string       `json:"region,omitempty"` // recommended exit ISO2 baked into the rules ("" = auto/fastest)
+	Exit        string       `json:"exit,omitempty"` // how the pack egresses: PackExit* (display hint)
 	Rules       []CustomRule `json:"rules"`
 }
+
+// PackExit* describe how a preset's traffic leaves — a display hint for the UI.
+const (
+	PackExitOverseas = "overseas" // via the shared Overseas group (geofenced services)
+	PackExitAuto     = "auto"     // via the default proxy group (fastest)
+	PackExitDirect   = "direct"   // direct, no proxy
+)
 
 // Custom-rule actions + match kinds.
 const (

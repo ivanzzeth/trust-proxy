@@ -34,10 +34,43 @@ type Group struct {
 	Nodes  []string `json:"nodes,omitempty"`
 }
 
+// OverseasGroupTag is the built-in shared "allowed overseas" urltest group: all
+// subscription nodes whose country is NOT in ExcludeCountries. Services that
+// geofence out HK/CN (Anthropic, OpenAI, Cursor…) route here so failover stays
+// within allowed regions and never falls back to a blocked one. The gateway
+// builds it only when the exclusion actually removes a node (otherwise Auto is
+// already safe and a rule targeting it self-heals to Auto).
+const OverseasGroupTag = "🌏 Overseas"
+
+// DefaultExcludeCountries are the regions most commercial AI services refuse
+// (Hong Kong / Macau / mainland China). Seeded into a fresh store and applied
+// as a one-time migration to pre-existing stores; fully user-overridable.
+var DefaultExcludeCountries = []string{"HK", "MO", "CN"}
+
 // Config is the persisted proxy-group configuration.
 type Config struct {
-	AutoCountry bool    `json:"auto_country"`
-	Groups      []Group `json:"groups"`
+	AutoCountry bool `json:"auto_country"`
+	// ExcludeCountries are ISO2 regions kept OUT of the shared Overseas group.
+	// A non-nil empty slice means "exclude nothing"; nil means "unset" (the
+	// store fills the default on load).
+	ExcludeCountries []string `json:"exclude_countries"`
+	Groups           []Group  `json:"groups"`
+}
+
+// normalizeCodes upper-cases, validates (2 ASCII letters) and dedups ISO codes,
+// dropping anything invalid. Always returns a non-nil slice.
+func normalizeCodes(in []string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, c := range in {
+		c = strings.ToUpper(strings.TrimSpace(c))
+		if len(c) != 2 || c[0] < 'A' || c[0] > 'Z' || c[1] < 'A' || c[1] > 'Z' || seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out
 }
 
 func validType(t string) bool   { return t == TypeSelect || t == TypeURLTest }
@@ -93,7 +126,7 @@ func NewStore(path string) (*Store, error) {
 	s := &Store{path: path}
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		s.data = Config{AutoCountry: true, Groups: []Group{}}
+		s.data = Config{AutoCountry: true, ExcludeCountries: append([]string{}, DefaultExcludeCountries...), Groups: []Group{}}
 		return s, s.save()
 	}
 	if err != nil {
@@ -105,7 +138,14 @@ func NewStore(path string) (*Store, error) {
 	if s.data.Groups == nil {
 		s.data.Groups = []Group{}
 	}
-	if n := s.sanitize(); n > 0 {
+	// Migration: a pre-existing store predating this field gets the safe default
+	// once (nil = absent). An explicit empty slice ("exclude nothing") is kept.
+	migrated := false
+	if s.data.ExcludeCountries == nil {
+		s.data.ExcludeCountries = append([]string{}, DefaultExcludeCountries...)
+		migrated = true
+	}
+	if n := s.sanitize(); n > 0 || migrated {
 		_ = s.save()
 	}
 	return s, nil
@@ -125,6 +165,11 @@ func (s *Store) sanitize() int {
 		out = append(out, g)
 	}
 	s.data.Groups = out
+	before := len(s.data.ExcludeCountries)
+	s.data.ExcludeCountries = normalizeCodes(s.data.ExcludeCountries)
+	if len(s.data.ExcludeCountries) != before {
+		removed++ // a cleaned exclude list still warrants a persist
+	}
 	return removed
 }
 
@@ -147,7 +192,11 @@ func (s *Store) Get() Config {
 }
 
 func snapshot(c Config) Config {
-	return Config{AutoCountry: c.AutoCountry, Groups: append(make([]Group, 0, len(c.Groups)), c.Groups...)}
+	return Config{
+		AutoCountry:      c.AutoCountry,
+		ExcludeCountries: append(make([]string, 0, len(c.ExcludeCountries)), c.ExcludeCountries...),
+		Groups:           append(make([]Group, 0, len(c.Groups)), c.Groups...),
+	}
 }
 
 // Set validates and replaces the whole config, then persists. Rejects duplicate
@@ -166,7 +215,13 @@ func (s *Store) Set(c Config) (Config, error) {
 		groups = append(groups, g)
 	}
 	s.mu.Lock()
-	s.data = Config{AutoCountry: c.AutoCountry, Groups: groups}
+	// A nil ExcludeCountries means the caller omitted the field — keep the current
+	// value rather than wiping it. A non-nil (even empty) slice replaces it.
+	ex := c.ExcludeCountries
+	if ex == nil {
+		ex = s.data.ExcludeCountries
+	}
+	s.data = Config{AutoCountry: c.AutoCountry, ExcludeCountries: normalizeCodes(ex), Groups: groups}
 	snap := snapshot(s.data)
 	err := s.save()
 	s.mu.Unlock()

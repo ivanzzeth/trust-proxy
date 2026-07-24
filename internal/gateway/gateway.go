@@ -1621,6 +1621,18 @@ func groupMembers(g proxygroups.Group, tags []string) []string {
 	return m
 }
 
+// excludeSet builds a lookup of excluded ISO country codes (already normalized
+// upper-case by the store) for the shared Overseas group.
+func excludeSet(codes []string) map[string]bool {
+	m := make(map[string]bool, len(codes))
+	for _, c := range codes {
+		if c != "" {
+			m[c] = true
+		}
+	}
+	return m
+}
+
 // buildProxyGroups turns the member pool (node + endpoint tags) into sing-box
 // group outbounds and the top-level `proxy` selector. It returns the outbound
 // JSON to append AND the group tags (Auto + per-country + user groups, NOT the
@@ -1666,6 +1678,24 @@ func buildProxyGroups(tags []string, pg proxygroups.Config) (outs []json.RawMess
 
 	autoTag := uniq("Auto")
 	add("urltest", autoTag, tags)
+
+	// Shared "Overseas" group: urltest over every node whose country is NOT
+	// excluded (default HK/MO/CN). Built ONLY when the exclusion actually removes
+	// ≥1 node — if nothing is excluded, Auto is already a safe superset and any
+	// rule targeting Overseas self-heals back to Auto. This gives geofenced
+	// services (Anthropic/OpenAI/Cursor) failover across allowed regions that can
+	// never land on a blocked one.
+	if ex := excludeSet(pg.ExcludeCountries); len(ex) > 0 {
+		var allowed []string
+		for _, t := range tags {
+			if !ex[proxygroups.Country(t)] {
+				allowed = append(allowed, t)
+			}
+		}
+		if len(allowed) > 0 && len(allowed) < len(tags) {
+			add("urltest", uniq(proxygroups.OverseasGroupTag), allowed)
+		}
+	}
 
 	if pg.AutoCountry {
 		buckets := map[string][]string{}

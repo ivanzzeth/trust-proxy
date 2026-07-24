@@ -754,21 +754,21 @@ func TestCustomRules_NodeSelfHeal(t *testing.T) {
 	}
 }
 
-// Region-pinned Allow packs emit a `proxy` rule whose Node names a country
-// group (e.g. "🇯🇵 JP"). With a node in that country the rule routes to the
-// group; WITHOUT one it must gracefully fall back to the default proxy selector
-// (still allowed, never blocked) — this is what makes importing "Claude via JP"
-// safe even for a user who has no JP node.
-func TestPresets_RegionPinRoutesOrFallsBack(t *testing.T) {
-	jpGroup := proxygroups.CountryName("JP") // "🇯🇵 JP"
+// Geofenced Allow packs emit a `proxy` rule whose Node is the shared Overseas
+// group. When the exclusion removes a node (there's an HK node to keep out) the
+// group is built and the rule routes there — never to the blocked region. When
+// there is nothing to exclude, the group isn't built and the rule gracefully
+// falls back to the default proxy selector (still allowed, never blocked).
+func TestPresets_OverseasGroupRoutesOrFallsBack(t *testing.T) {
+	overseas := proxygroups.OverseasGroupTag // "🌏 Overseas"
 	cr := customrules.Rules{Rules: []apitypes.CustomRule{
-		{Match: "domain_suffix", Value: "claude.ai", Action: "proxy", Node: jpGroup, Enabled: true},
+		{Match: "domain_suffix", Value: "claude.ai", Action: "proxy", Node: overseas, Enabled: true},
 	}}
-	buildPinned := func(nodes []apitypes.Node) []byte {
+	build := func(nodes []apitypes.Node, exclude []string) []byte {
 		t.Helper()
 		merged, err := buildMergedConfig([]byte(baseCfg), nodes, whitelist.Rules{}, blacklist.Rules{},
-			directlist.Rules{}, cr, proxygroups.Config{AutoCountry: true}, ModeManual, ruleset.Sets{},
-			apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "s", t.TempDir())
+			directlist.Rules{}, cr, proxygroups.Config{AutoCountry: true, ExcludeCountries: exclude}, ModeManual,
+			ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "s", t.TempDir())
 		if err != nil {
 			t.Fatalf("buildMergedConfig: %v", err)
 		}
@@ -789,31 +789,39 @@ func TestPresets_RegionPinRoutesOrFallsBack(t *testing.T) {
 		return false
 	}
 
-	// A) JP node present → the "🇯🇵 JP" group exists → rule routes there.
-	rulesA := routeRules(t, buildPinned([]apitypes.Node{node("🇯🇵 JP-01"), node("🇭🇰 HK-01")}))
+	// A) HK + JP nodes, exclude HK → the Overseas group is built (JP only) and
+	//    the rule routes to it, and its members must exclude the HK node.
+	mergedA := build([]apitypes.Node{node("🇭🇰 HK-01"), node("🇯🇵 JP-01"), node("🇺🇸 US-01")}, []string{"HK"})
+	rulesA := routeRules(t, mergedA)
 	if firstIdx(rulesA, func(r map[string]any) bool {
-		return containsStr(r["domain_suffix"], "claude.ai") && r["outbound"] == jpGroup
+		return containsStr(r["domain_suffix"], "claude.ai") && r["outbound"] == overseas
 	}) == -1 {
-		t.Fatalf("with a JP node, claude.ai must route to %q", jpGroup)
+		t.Fatalf("with an excluded HK node present, claude.ai must route to %q", overseas)
+	}
+	og := findOut(outbounds(t, mergedA), overseas)
+	if og == nil || og["type"] != "urltest" {
+		t.Fatalf("Overseas group missing/not urltest: %v", og)
+	}
+	if m, _ := og["outbounds"].([]any); len(m) != 2 { // JP + US, not HK
+		t.Fatalf("Overseas group must exclude the HK node, got %v", og["outbounds"])
 	}
 	if !claudeAllowed(rulesA) {
-		t.Fatal("pinned domain must join the ACL allow-set (A)")
+		t.Fatal("overseas-routed domain must join the ACL allow-set (A)")
 	}
 
-	// B) No JP node → no JP group → rule falls back to the default proxy selector,
-	//    and the domain is still allowed (not blocked).
-	rulesB := routeRules(t, buildPinned([]apitypes.Node{node("🇭🇰 HK-01")}))
-	if firstIdx(rulesB, func(r map[string]any) bool {
-		return containsStr(r["domain_suffix"], "claude.ai") && r["outbound"] == jpGroup
-	}) != -1 {
-		t.Fatal("without a JP node there is no JP group; the rule must not route to it")
+	// B) No node to exclude (only JP) → no Overseas group → rule falls back to the
+	//    default proxy selector, and the domain is still allowed (not blocked).
+	mergedB := build([]apitypes.Node{node("🇯🇵 JP-01")}, []string{"HK"})
+	if findOut(outbounds(t, mergedB), overseas) != nil {
+		t.Fatal("with nothing to exclude, the Overseas group must not be built")
 	}
+	rulesB := routeRules(t, mergedB)
 	if firstIdx(rulesB, func(r map[string]any) bool {
 		return containsStr(r["domain_suffix"], "claude.ai") && r["outbound"] == ProxyGroupTag
 	}) == -1 {
-		t.Fatalf("without a JP node, claude.ai must fall back to the default proxy selector %q", ProxyGroupTag)
+		t.Fatalf("without an Overseas group, claude.ai must fall back to the default proxy selector %q", ProxyGroupTag)
 	}
 	if !claudeAllowed(rulesB) {
-		t.Fatal("pinned domain must still be allowed when its region group is absent (B)")
+		t.Fatal("overseas-routed domain must still be allowed when the group is absent (B)")
 	}
 }

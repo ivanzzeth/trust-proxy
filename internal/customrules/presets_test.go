@@ -40,24 +40,27 @@ func TestPresets_AllRulesValidAndTagged(t *testing.T) {
 	}
 }
 
-// A preset with a Region must pin every rule (proxy action) to that country's
-// group tag; a preset without a Region must not pin any rule to a country group.
-func TestPresets_RegionPinning(t *testing.T) {
+// The Exit hint must match how the rules actually egress: overseas packs route
+// every proxy rule through the Overseas group; auto packs use the default proxy
+// (empty node); direct packs use the direct action.
+func TestPresets_ExitMatchesRules(t *testing.T) {
 	for _, p := range Presets {
-		wantNode := ""
-		if p.Region != "" {
-			wantNode = proxygroups.CountryName(p.Region)
-			if wantNode == p.Region {
-				t.Fatalf("preset %q: region %q did not resolve to a country group tag", p.Name, p.Region)
-			}
-		}
 		for _, r := range p.Rules {
-			// Region packs pin proxy rules; direct/block rules (e.g. Apple) never pin.
-			if r.Action == apitypes.CustomActionProxy && r.Node != wantNode {
-				t.Fatalf("preset %q rule %q: node=%q, want %q (region %q)", p.Name, r.Value, r.Node, wantNode, p.Region)
-			}
-			if r.Action != apitypes.CustomActionProxy && r.Node != "" {
-				t.Fatalf("preset %q rule %q: non-proxy action %q must not set node (%q)", p.Name, r.Value, r.Action, r.Node)
+			switch p.Exit {
+			case apitypes.PackExitOverseas:
+				if r.Action != apitypes.CustomActionProxy || r.Node != proxygroups.OverseasGroupTag {
+					t.Fatalf("preset %q (overseas) rule %q: action=%q node=%q, want proxy -> %q", p.Name, r.Value, r.Action, r.Node, proxygroups.OverseasGroupTag)
+				}
+			case apitypes.PackExitAuto:
+				if r.Action != apitypes.CustomActionProxy || r.Node != "" {
+					t.Fatalf("preset %q (auto) rule %q: action=%q node=%q, want proxy with no node", p.Name, r.Value, r.Action, r.Node)
+				}
+			case apitypes.PackExitDirect:
+				if r.Action != apitypes.CustomActionDirect || r.Node != "" {
+					t.Fatalf("preset %q (direct) rule %q: action=%q node=%q, want direct", p.Name, r.Value, r.Action, r.Node)
+				}
+			default:
+				t.Fatalf("preset %q: unknown Exit %q", p.Name, p.Exit)
 			}
 		}
 	}

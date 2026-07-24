@@ -1,7 +1,9 @@
 package proxygroups
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -56,6 +58,61 @@ func TestStore_SeedAndSet(t *testing.T) {
 	}})
 	if err != nil || c.AutoCountry || len(c.Groups) != 2 {
 		t.Fatalf("set valid failed: %+v err=%v", c, err)
+	}
+}
+
+func TestStore_ExcludeCountries(t *testing.T) {
+	s := newStore(t)
+	// Fresh store seeds the default exclusion.
+	if got := s.Get().ExcludeCountries; !reflect.DeepEqual(got, DefaultExcludeCountries) {
+		t.Fatalf("fresh store exclude = %v, want %v", got, DefaultExcludeCountries)
+	}
+	// Explicit list is upper-cased, deduped, and invalid codes dropped.
+	c, err := s.Set(Config{ExcludeCountries: []string{"hk", "HK", "us", "XYZ", "j"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(c.ExcludeCountries, []string{"HK", "US"}) {
+		t.Fatalf("normalized exclude = %v, want [HK US]", c.ExcludeCountries)
+	}
+	// A nil field (caller omitted it) preserves the current value.
+	c, _ = s.Set(Config{AutoCountry: true, ExcludeCountries: nil})
+	if !reflect.DeepEqual(c.ExcludeCountries, []string{"HK", "US"}) {
+		t.Fatalf("nil exclude should preserve, got %v", c.ExcludeCountries)
+	}
+	// An explicit empty slice means "exclude nothing".
+	c, _ = s.Set(Config{ExcludeCountries: []string{}})
+	if len(c.ExcludeCountries) != 0 {
+		t.Fatalf("empty exclude should clear, got %v", c.ExcludeCountries)
+	}
+}
+
+// A store file predating the field (no exclude_countries key) adopts the safe
+// default once on load; an explicit empty list is left untouched.
+func TestStore_ExcludeMigration(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "legacy.json")
+	if err := os.WriteFile(legacy, []byte(`{"auto_country":true,"groups":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := NewStore(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(s.Get().ExcludeCountries, DefaultExcludeCountries) {
+		t.Fatalf("legacy store should migrate to default, got %v", s.Get().ExcludeCountries)
+	}
+
+	explicit := filepath.Join(dir, "explicit.json")
+	if err := os.WriteFile(explicit, []byte(`{"auto_country":true,"exclude_countries":[],"groups":[]}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := NewStore(explicit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(s2.Get().ExcludeCountries) != 0 {
+		t.Fatalf("explicit empty exclude must be kept, got %v", s2.Get().ExcludeCountries)
 	}
 }
 
