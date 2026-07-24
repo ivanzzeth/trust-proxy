@@ -137,7 +137,12 @@ func runSelftest() error {
 	// Every test domain resolves to the origin so the DIRECT outbound can reach
 	// it; the node path forwards to the origin regardless.
 	hostRecords := map[string][]string{}
-	for _, d := range []string{"allow.tp", "deny.tp", "direct.tp", "evil.tp", "np.tp", "cdirect.tp", "cproxy.tp", "cblock.tp", "cnode.tp", "www.gstatic.com"} {
+	for _, d := range []string{
+		"allow.tp", "deny.tp", "deny2.tp", "direct.tp", "np.tp", "evil.tp", "evilg.tp",
+		"track-me.tp", "reblock.tp", "sub.wild.tp",
+		"cdirect.tp", "cproxy.tp", "cblock.tp", "cnode.tp", "kw-host.tp", "rex.tp", "ord.tp",
+		"www.gstatic.com",
+	} {
 		hostRecords[d] = []string{"127.0.0.1"}
 	}
 	dns := apitypes.DNSConfig{
@@ -177,66 +182,128 @@ func runSelftest() error {
 		return strings.TrimSpace(string(b))
 	}
 
-	empty := whitelist.Rules{}
+	selfExe, _ := os.Executable()
+	selfProc := filepath.Base(selfExe)
+
 	reset := func() {
-		_ = mgr.SetWhitelist(empty)
+		_ = mgr.SetWhitelist(whitelist.Rules{})
 		_ = mgr.SetBlacklist(blacklist.Rules{})
 		_ = mgr.SetDirectList(directlist.Rules{})
 		_ = mgr.SetCustomRules(customrules.Rules{})
+		setClashMode(clashPort, "Rule")
 		selectProxyGroup(clashPort, "g")
-	}
-
-	type step struct {
-		name   string
-		setup  func()
-		domain string
-		want   string // "node" | "direct" | "" (blocked)
-	}
-	steps := []step{
-		{"default-deny blocks unlisted", func() {}, "deny.tp", ""},
-		{"whitelist domain egresses via node", func() { _ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}}) }, "allow.tp", "node"},
-		{"no-proxy list egresses direct", func() { _ = mgr.SetDirectList(directlist.Rules{Domains: []string{"np.tp"}}) }, "np.tp", "direct"},
-		{"blacklist beats whitelist", func() {
-			_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"evil.tp"}})
-			_ = mgr.SetBlacklist(blacklist.Rules{Domains: []string{"evil.tp"}})
-		}, "evil.tp", ""},
-		{"custom rule: direct", func() {
-			_ = mgr.SetCustomRules(customrules.Rules{Rules: []apitypes.CustomRule{{Match: "domain_suffix", Value: "cdirect.tp", Action: "direct", Enabled: true}}})
-		}, "cdirect.tp", "direct"},
-		{"custom rule: proxy (via node)", func() {
-			_ = mgr.SetCustomRules(customrules.Rules{Rules: []apitypes.CustomRule{{Match: "domain_suffix", Value: "cproxy.tp", Action: "proxy", Node: "g", Enabled: true}}})
-		}, "cproxy.tp", "node"},
-		{"custom rule: block", func() {
-			_ = mgr.SetCustomRules(customrules.Rules{Rules: []apitypes.CustomRule{{Match: "domain_suffix", Value: "cblock.tp", Action: "block", Enabled: true}}})
-		}, "cblock.tp", ""},
-		{"custom rule: node target", func() {
-			_ = mgr.SetCustomRules(customrules.Rules{Rules: []apitypes.CustomRule{{Match: "domain_suffix", Value: "cnode.tp", Action: "node", Node: "NODE", Enabled: true}}})
-		}, "cnode.tp", "node"},
 	}
 
 	pass, fail := 0, 0
+	label := map[string]string{"node": "node", "direct": "direct", "": "blocked"}
 	check := func(name, want, got string) {
-		ok := want == got
-		label := map[string]string{"node": "node", "direct": "direct", "": "blocked"}
-		if ok {
+		if want == got {
 			pass++
-			fmt.Printf("  PASS  %-40s -> %s\n", name, label[got])
+			fmt.Printf("  PASS  %-42s -> %s\n", name, label[got])
 		} else {
 			fail++
-			fmt.Printf("  FAIL  %-40s want=%s got=%s\n", name, label[want], label[got])
+			fmt.Printf("  FAIL  %-42s want=%s got=%s\n", name, label[want], label[got])
 		}
 	}
-
-	fmt.Println("== manual mode ==")
-	for _, s := range steps {
+	// run reconfigures policy, waits for the rebuild, and asserts the egress path.
+	run := func(name string, setup func(), target, want string) {
 		reset()
-		s.setup()
+		setup()
 		selectProxyGroup(clashPort, "g")
 		time.Sleep(150 * time.Millisecond)
-		check(s.name, s.want, get(s.domain))
+		check(name, want, get(target))
+	}
+	cr := func(rules ...apitypes.CustomRule) func() {
+		return func() { _ = mgr.SetCustomRules(customrules.Rules{Rules: rules}) }
+	}
+	rule := func(match, value, action, node string) apitypes.CustomRule {
+		return apitypes.CustomRule{Match: match, Value: value, Action: action, Node: node, Enabled: true}
 	}
 
-	// system mode: same egress path + sets the OS proxy. Just confirm egress.
+	fmt.Println("== ACL: allow / deny ==")
+	run("default-deny blocks unlisted", func() {}, "deny.tp", "")
+	run("whitelist domain -> node", func() { _ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}}) }, "allow.tp", "node")
+	run("whitelist wildcard *.wild.tp -> node", func() { _ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"*.wild.tp"}}) }, "sub.wild.tp", "node")
+	run("whitelist IP -> node", func() { _ = mgr.SetWhitelist(whitelist.Rules{IPs: []string{"203.0.113.5/32"}}) }, "203.0.113.5", "node")
+
+	fmt.Println("== egress: no-proxy / private ==")
+	run("no-proxy domain -> direct", func() { _ = mgr.SetDirectList(directlist.Rules{Domains: []string{"np.tp"}}) }, "np.tp", "direct")
+	run("built-in private CIDR -> direct", func() { _ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}}) }, "127.0.0.1", "direct")
+
+	fmt.Println("== blacklist (beats allow) ==")
+	run("blacklist domain", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"evil.tp"}})
+		_ = mgr.SetBlacklist(blacklist.Rules{Domains: []string{"evil.tp"}})
+	}, "evil.tp", "")
+	run("blacklist keyword", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"track-me.tp"}})
+		_ = mgr.SetBlacklist(blacklist.Rules{Keywords: []string{"track"}})
+	}, "track-me.tp", "")
+	run("blacklist regex", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"reblock.tp"}})
+		_ = mgr.SetBlacklist(blacklist.Rules{Regexes: []string{`.*reblock\.tp`}})
+	}, "reblock.tp", "")
+	run("blacklist IP", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{IPs: []string{"203.0.113.7/32"}})
+		_ = mgr.SetBlacklist(blacklist.Rules{IPs: []string{"203.0.113.7/32"}})
+	}, "203.0.113.7", "")
+
+	fmt.Println("== custom rules: actions ==")
+	run("custom direct", cr(rule("domain_suffix", "cdirect.tp", "direct", "")), "cdirect.tp", "direct")
+	run("custom proxy (specific group)", cr(rule("domain_suffix", "cproxy.tp", "proxy", "g")), "cproxy.tp", "node")
+	run("custom node target", cr(rule("domain_suffix", "cnode.tp", "node", "NODE")), "cnode.tp", "node")
+	run("custom block (beats whitelist)", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"cblock.tp"}})
+		_ = mgr.SetCustomRules(customrules.Rules{Rules: []apitypes.CustomRule{rule("domain_suffix", "cblock.tp", "block", "")}})
+	}, "cblock.tp", "")
+
+	fmt.Println("== custom rules: match kinds ==")
+	run("custom match: keyword", cr(rule("keyword", "kw-host", "node", "NODE")), "kw-host.tp", "node")
+	run("custom match: regex", cr(rule("regex", `.*rex\.tp`, "node", "NODE")), "rex.tp", "node")
+	run("custom match: ip_cidr -> node", cr(rule("ip_cidr", "203.0.113.8/32", "node", "NODE")), "203.0.113.8", "node")
+
+	fmt.Println("== custom rules: first-match ordering ==")
+	// block before proxy on the same domain: the earlier rule wins.
+	run("order: block then proxy -> block", cr(rule("domain_suffix", "ord.tp", "block", ""), rule("domain_suffix", "ord.tp", "proxy", "g")), "ord.tp", "")
+	run("order: proxy then block -> node", cr(rule("domain_suffix", "ord.tp", "proxy", "g"), rule("domain_suffix", "ord.tp", "block", "")), "ord.tp", "node")
+
+	fmt.Println("== process / device gates ==")
+	run("process gate: listed process allowed", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}, Processes: []string{selfProc}})
+	}, "allow.tp", "node")
+	run("process gate: unlisted process blocked", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}, Processes: []string{"no-such-proc"}})
+	}, "allow.tp", "")
+	run("device gate: known source allowed", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}, Devices: []string{"127.0.0.1/32"}})
+	}, "allow.tp", "node")
+	run("device gate: unknown source blocked", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}, Devices: []string{"10.0.0.0/8"}})
+	}, "allow.tp", "")
+
+	fmt.Println("== Global routing mode ==")
+	reset()
+	_ = mgr.SetBlacklist(blacklist.Rules{Domains: []string{"evilg.tp"}})
+	setClashMode(clashPort, "Global")
+	selectProxyGroup(clashPort, "g")
+	time.Sleep(200 * time.Millisecond)
+	check("Global: unlisted -> node", "node", get("deny2.tp"))
+	check("Global: blacklist still blocked", "", get("evilg.tp"))
+	setClashMode(clashPort, "Rule")
+
+	fmt.Println("== proxy grouping (auto-country) ==")
+	// Re-apply a country-named node so an auto-country group forms, and route via it.
+	hkOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "🇭🇰 HK", "server": "127.0.0.1", "server_port": nodePort})
+	_ = mgr.SetProxyGroups(proxygroups.Config{AutoCountry: true})
+	_ = mgr.Apply([]apitypes.Node{{Tag: "🇭🇰 HK", Protocol: "http", Server: "127.0.0.1", Port: nodePort, Outbound: hkOB}})
+	_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}})
+	selectProxyGroup(clashPort, "🇭🇰 HK")
+	time.Sleep(250 * time.Millisecond)
+	check("auto-country group routes via node", "node", get("allow.tp"))
+	// restore the plain node + manual group for the mode tests.
+	_ = mgr.SetProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{{Name: "g", Type: "select", Filter: "manual", Nodes: []string{"NODE"}}}})
+	_ = mgr.Apply([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "127.0.0.1", Port: nodePort, Outbound: nodeOB}})
+
 	fmt.Println("== system mode ==")
 	reset()
 	_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}})
@@ -268,6 +335,19 @@ func runSelftest() error {
 		return fmt.Errorf("selftest: %d scenario(s) failed", fail)
 	}
 	return nil
+}
+
+// setClashMode switches the live Clash routing mode (Rule/Global) via the API.
+func setClashMode(clashPort int, mode string) {
+	body, _ := json.Marshal(map[string]string{"mode": mode})
+	req, err := http.NewRequest(http.MethodPatch, fmt.Sprintf("http://127.0.0.1:%d/configs", clashPort), strings.NewReader(string(body)))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+	}
 }
 
 // selectProxyGroup points the `proxy` selector at the named group via the Clash API.
