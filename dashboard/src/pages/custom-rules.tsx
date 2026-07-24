@@ -19,12 +19,6 @@ const ACTIONS: CRAction[] = ['direct', 'proxy', 'block', 'node'];
 const actionBadge = (a: CRAction) =>
   a === 'block' ? 'danger' : a === 'proxy' ? 'success' : a === 'node' ? 'default' : 'muted';
 
-// flag turns a 2-letter ISO code into its regional-indicator flag emoji.
-const flag = (code: string) =>
-  code.length === 2
-    ? String.fromCodePoint(...[...code.toUpperCase()].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65))
-    : '';
-
 export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -137,12 +131,14 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-medium">{p.name}</span>
-                  {p.region ? (
-                    <Badge variant="default" title={t('pages.customRules.regionPinned', { region: p.region })}>
-                      {flag(p.region)} {p.region}
+                  {p.exit === 'overseas' ? (
+                    <Badge variant="default" title={t('pages.customRules.exitOverseasHint')}>
+                      🌏 {t('pages.customRules.exitOverseas')}
                     </Badge>
+                  ) : p.exit === 'direct' ? (
+                    <Badge variant="muted" title={t('pages.customRules.exitDirectHint')}>{t('pages.customRules.exitDirect')}</Badge>
                   ) : (
-                    <Badge variant="muted" title={t('pages.customRules.regionAuto')}>{t('pages.customRules.autoBadge')}</Badge>
+                    <Badge variant="muted" title={t('pages.customRules.exitAutoHint')}>{t('pages.customRules.exitAuto')}</Badge>
                   )}
                 </div>
                 <div className="truncate text-xs text-muted-foreground" title={p.description}>{p.description}</div>

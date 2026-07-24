@@ -178,6 +178,26 @@ function GroupSettings() {
           {t('pages.proxies.groups.autoCountry')}
         </label>
 
+        <div className="rounded-md border px-3 py-2.5">
+          <div className="text-sm font-medium">🌏 {t('pages.proxies.groups.overseasTitle')}</div>
+          <p className="mt-0.5 mb-2 text-xs leading-relaxed text-muted-foreground">{t('pages.proxies.groups.overseasHint')}</p>
+          <label className="text-xs text-muted-foreground">{t('pages.proxies.groups.excludeLabel')}</label>
+          <Input
+            className="mt-1 font-mono"
+            placeholder="HK, MO, CN"
+            value={(draft.exclude_countries ?? []).join(', ')}
+            onChange={(e) =>
+              setDraft({
+                ...draft,
+                exclude_countries: e.target.value
+                  .split(',')
+                  .map((s) => s.trim().toUpperCase())
+                  .filter(Boolean),
+              })
+            }
+          />
+        </div>
+
         <div className="space-y-2">
           {draft.groups.map((g, i) => (
             <div key={i} className="flex flex-wrap items-center gap-2 rounded-md border px-2 py-2">

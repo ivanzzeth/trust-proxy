@@ -91,7 +91,7 @@ export interface CustomRule {
 export interface PackPreset {
   name: string;
   description: string;
-  region?: string; // recommended exit ISO2 baked into the rules ("" = auto/fastest)
+  exit?: 'overseas' | 'auto' | 'direct'; // how the pack egresses (display hint)
   rules: CustomRule[];
 }
 export interface RuleSetEntry {
@@ -125,6 +125,7 @@ export interface ProxyGroup {
 }
 export interface ProxyGroupsConfig {
   auto_country: boolean;
+  exclude_countries: string[]; // ISO2 regions kept out of the shared Overseas group
   groups: ProxyGroup[];
 }
 export interface TPNode {
@@ -387,6 +388,7 @@ export const api = {
   proxyGroups: () =>
     get<ProxyGroupsConfig>('/proxygroups').then((c) => ({
       auto_country: !!c.auto_country,
+      exclude_countries: c.exclude_countries ?? [],
       groups: c.groups ?? [],
     })),
   setProxyGroups: (cfg: ProxyGroupsConfig) => put<ProxyGroupsConfig>('/proxygroups', cfg),
