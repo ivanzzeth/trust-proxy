@@ -753,3 +753,67 @@ func TestCustomRules_NodeSelfHeal(t *testing.T) {
 		t.Fatalf("with only a dead-node rule, catch-all stays blocked, got %v", rules2[ci]["outbound"])
 	}
 }
+
+// Region-pinned Allow packs emit a `proxy` rule whose Node names a country
+// group (e.g. "🇯🇵 JP"). With a node in that country the rule routes to the
+// group; WITHOUT one it must gracefully fall back to the default proxy selector
+// (still allowed, never blocked) — this is what makes importing "Claude via JP"
+// safe even for a user who has no JP node.
+func TestPresets_RegionPinRoutesOrFallsBack(t *testing.T) {
+	jpGroup := proxygroups.CountryName("JP") // "🇯🇵 JP"
+	cr := customrules.Rules{Rules: []apitypes.CustomRule{
+		{Match: "domain_suffix", Value: "claude.ai", Action: "proxy", Node: jpGroup, Enabled: true},
+	}}
+	buildPinned := func(nodes []apitypes.Node) []byte {
+		t.Helper()
+		merged, err := buildMergedConfig([]byte(baseCfg), nodes, whitelist.Rules{}, blacklist.Rules{},
+			directlist.Rules{}, cr, proxygroups.Config{AutoCountry: true}, ModeManual, ruleset.Sets{},
+			apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "s", t.TempDir())
+		if err != nil {
+			t.Fatalf("buildMergedConfig: %v", err)
+		}
+		parseValidate(t, merged)
+		return merged
+	}
+	claudeAllowed := func(rules []map[string]any) bool {
+		gi := firstIdx(rules, isGate)
+		if gi == -1 {
+			return false
+		}
+		subs, _ := rules[gi]["rules"].([]any)
+		for _, s := range subs {
+			if containsStr(s.(map[string]any)["domain_suffix"], "claude.ai") {
+				return true
+			}
+		}
+		return false
+	}
+
+	// A) JP node present → the "🇯🇵 JP" group exists → rule routes there.
+	rulesA := routeRules(t, buildPinned([]apitypes.Node{node("🇯🇵 JP-01"), node("🇭🇰 HK-01")}))
+	if firstIdx(rulesA, func(r map[string]any) bool {
+		return containsStr(r["domain_suffix"], "claude.ai") && r["outbound"] == jpGroup
+	}) == -1 {
+		t.Fatalf("with a JP node, claude.ai must route to %q", jpGroup)
+	}
+	if !claudeAllowed(rulesA) {
+		t.Fatal("pinned domain must join the ACL allow-set (A)")
+	}
+
+	// B) No JP node → no JP group → rule falls back to the default proxy selector,
+	//    and the domain is still allowed (not blocked).
+	rulesB := routeRules(t, buildPinned([]apitypes.Node{node("🇭🇰 HK-01")}))
+	if firstIdx(rulesB, func(r map[string]any) bool {
+		return containsStr(r["domain_suffix"], "claude.ai") && r["outbound"] == jpGroup
+	}) != -1 {
+		t.Fatal("without a JP node there is no JP group; the rule must not route to it")
+	}
+	if firstIdx(rulesB, func(r map[string]any) bool {
+		return containsStr(r["domain_suffix"], "claude.ai") && r["outbound"] == ProxyGroupTag
+	}) == -1 {
+		t.Fatalf("without a JP node, claude.ai must fall back to the default proxy selector %q", ProxyGroupTag)
+	}
+	if !claudeAllowed(rulesB) {
+		t.Fatal("pinned domain must still be allowed when its region group is absent (B)")
+	}
+}

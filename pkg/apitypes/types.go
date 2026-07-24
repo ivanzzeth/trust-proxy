@@ -116,6 +116,7 @@ type CustomRule struct {
 type PackPreset struct {
 	Name        string       `json:"name"`
 	Description string       `json:"description"`
+	Region      string       `json:"region,omitempty"` // recommended exit ISO2 baked into the rules ("" = auto/fastest)
 	Rules       []CustomRule `json:"rules"`
 }
 

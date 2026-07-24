@@ -100,7 +100,7 @@ internal/dnscfg/           DNS 解析策略存储（servers/rules/strategy + fak
 internal/blacklist/        出网黑名单（域名/关键字/正则/IP → reject，injectBlacklist 注入在 sniff 之后、白名单之前）
 internal/directlist/       no-proxy/旁路清单（域名/IP → direct，routing 层；injectAllow 同时喂给 ACL 闸允许集 + L4 直连规则；私网段引擎内置）
 internal/proxygroups/      代理分组（Config{AutoCountry,Groups}）+ 国家解析(country.go：旗emoji/中英/国码→ISO)；injectOutbounds 据此建 Auto(urltest全部)+按国家 urltest 组+用户组(select/urltest,filter country/regex/manual)，proxy 改 selector(default Auto)。sing-box 只有 selector/urltest,无 load-balance
-internal/customrules/      有序自定义路由规则（matcher + action∈{direct,proxy,block,node}，L4 最先求值；injectAllow 发射 + direct/proxy/node 进允许集；node tag 不在当前 outbound 成员集则跳过=self-heal，data/customrules.json）+ **Allow 包**（`Pack` 命名标签 = 一组规则整组启停/删除;`presets.go` 内置 Dev/Google/Apple/China-direct 一键导入。pack 纯元数据、零引擎改动）
+internal/customrules/      有序自定义路由规则（matcher + action∈{direct,proxy,block,node}，L4 最先求值；injectAllow 发射 + direct/proxy/node 进允许集；node tag 不在当前 outbound 成员集则跳过=self-heal，data/customrules.json）+ **Allow 包**（`Pack` 命名标签 = 一组规则整组启停/删除;`presets.go` 内置一键导入包 Claude/OpenAI/Cursor/AI(other)/Dev/Telegram/Streaming/Google/Apple/China-direct。**地区固定（region pin）**：机场式地理封锁（Anthropic/OpenAI 拒 HK+CN、Cursor Claude 模型拒 HK/TW/CN）——这些包发 `proxy` 规则但把 `Node` 钉在推荐国家组（如 `🇯🇵 JP`），有该国节点则走它、没有则**优雅回退到默认 proxy(Auto)**（域名照样放行、只是不钉地区）；无封锁的服务用普通 proxy(Auto)。`PackPreset.Region` 供 UI 显示徽标。pack 纯元数据、零引擎改动）
 internal/inbound/          入站鉴权（mixed users，applyMode 注入）
 internal/tuncfg/           TUN 高级选项（stack/mtu/strict_route/exclude·include_package，applyMode 用）
 internal/endpoints/        WireGuard/Tailscale 出口（wg-quick 解析；injectEndpoints 注入 endpoints[] + 标签加入 proxy 组）
