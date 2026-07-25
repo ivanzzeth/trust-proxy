@@ -8,6 +8,31 @@
 
 ---
 
+## 开发顺序（**铁律，不得跳阶**）
+
+任何新功能都按这条链推进，**每一阶段测试充分后才进下一阶段**：
+
+```
+功能(数据面/引擎) → API → SDK → CLI → WebUI
+```
+
+跳阶的代价就是**漏实现**：先写 UI 就会出现「控制台能点、CLI 没有、脚本调不到」的半成品；先写 CLI 再补 API 就会出现两套模型。逐层落地还有一个副作用是**每层都能独立发现上一层的错**——CLI 阶段拿真实网关跑一遍，就抓出了 `/api/customrules`、`/api/rulesets` 返回整份 store 文档而非裸数组这种只有真机才暴露的形状 bug。
+
+| 阶段 | 落点 | 「测试充分」的判定 |
+|---|---|---|
+| **1. 功能** | `internal/gateway`（注入/重建）、`internal/detect`、各 store（`internal/{whitelist,customrules,ruleset,dnscfg,…}`） | 该包单测 + **`make build && ./trust-proxy selftest`**（VM 里 `sudo` 跑覆盖 tun）。涉及安全语义的必须新增 selftest 场景，并**验证去掉修复后该场景会 FAIL**（测试得有牙齿） |
+| **2. API** | `internal/api`（路由 + 入参校验 + **失败回滚**，别让一条坏数据 brick 网关） | handler 单测（`internal/api/*_test.go`）+ 对真实实例 curl 一遍；错误必须以 `{"error":…}` 透出，不能静默成功 |
+| **3. SDK** | `pkg/client`（每个端点一个薄方法，wire 类型只放 `pkg/apitypes`，**不建第二套模型**）；底层 Clash 原语在 `pkg/clash` | `httptest` 假后端断言 method/path/body/token（`pkg/client/policy_test.go`）。**注意返回整份 store 文档的端点要解包** |
+| **4. CLI** | `cmd/*.go`（cobra，走 SDK 而非直接拼 HTTP）；每个命令必须有 `--json`，共享 `--api-addr`/`--api-token` | VM 里对真实网关跑通，且**每个写操作用另一个命令读回来**验证（no-proxy 不能顺带授予 Permit 这类轴隔离要显式断言）；危险开关要确认提示 + `-y` |
+| **5. WebUI** | `dashboard/`（页面 + `src/lib/api.ts` 类型 + `src/i18n/pages/*.ts` 的 en/zh 双语） | `npx tsc --noEmit` 通过 + 页面实操；只连 `:9096` 单一 origin，浏览器不碰 secret |
+
+**跨阶段规矩**：
+- 发现上游阶段设计不对，**回那一层改**，不要在下游打补丁（例：CLI 里 workaround 一个畸形 API 响应＝把技术债搬到最末端）。
+- 每阶段收尾都要更新本文件对应段落（新端点、新命令、新坑），文档滞后视为该阶段未完成。
+- 只读能力（列表/查看）与写能力（增删改）一起交付，否则用户看得见改不了。
+
+---
+
 ## 架构
 
 **单进程**：我们自己的 Go `main` 以库方式 `import` sing-box，一个二进制同时是数据面 + 控制面 + (未来)检测面。
