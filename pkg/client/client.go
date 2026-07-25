@@ -23,11 +23,15 @@ type Options struct {
 	// ClashAddr / ClashSecret point at the standard Clash API (low-level).
 	ClashAddr   string
 	ClashSecret string
+	// Token is the bearer token required when the backend runs with --api-token
+	// (probe mode). Empty for a loopback backend.
+	Token string
 }
 
 // Client is the high-level SDK. Clash exposes the raw standard primitives.
 type Client struct {
 	base  string
+	token string
 	hc    *http.Client
 	Clash *clash.Client
 }
@@ -39,8 +43,9 @@ func New(o Options) *Client {
 		base = "http://" + base
 	}
 	c := &Client{
-		base: strings.TrimRight(base, "/"),
-		hc:   &http.Client{Timeout: 35 * time.Second},
+		base:  strings.TrimRight(base, "/"),
+		token: o.Token,
+		hc:    &http.Client{Timeout: 35 * time.Second},
 	}
 	if o.ClashAddr != "" {
 		c.Clash = clash.New(o.ClashAddr, o.ClashSecret)
@@ -131,6 +136,9 @@ func (c *Client) do(method, path string, in, out any) error {
 	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
+	}
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {

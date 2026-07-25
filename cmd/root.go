@@ -21,5 +21,13 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.AddCommand(serveCmd, subCmd, connCmd, proxyCmd, selftestCmd)
+	// serve/proxy run the gateway or an exit node; everything else is a CLI
+	// client for a running backend and shares --api-addr/--api-token/--json.
+	clients := []*cobra.Command{
+		subCmd, aclCmd, rulesCmd, statusCmd, modeCmd, routingCmd, postureCmd, finalCmd,
+		dnsCmd, tunCmd, inboundCmd, groupsCmd, endpointsCmd, proxiesCmd, autoBlockCmd,
+		profileCmd, detectionsCmd, historyCmd, nodeCmd,
+	}
+	addClientFlags(clients...)
+	rootCmd.AddCommand(append(clients, serveCmd, connCmd, proxyCmd, selftestCmd)...)
 }

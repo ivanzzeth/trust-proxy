@@ -10,8 +10,6 @@ import (
 	"github.com/ivanzzeth/trust-proxy/pkg/client"
 )
 
-var apiAddr string
-
 var subCmd = &cobra.Command{
 	Use:   "sub",
 	Short: "Manage subscriptions (CLI client -> backend API via SDK)",
@@ -138,7 +136,6 @@ var subRefreshCmd = &cobra.Command{
 }
 
 func init() {
-	subCmd.PersistentFlags().StringVar(&apiAddr, "api-addr", "127.0.0.1:9096", "backend API address")
 	subAddCmd.Flags().StringVar(&subAddName, "name", "", "friendly name")
 	subAddCmd.Flags().StringVar(&subAddUA, "ua", "", "User-Agent for fetching (default: clash-verge/v2.0.0)")
 	subAddCmd.Flags().StringVar(&subAddVia, "via", "", "fetch through a proxy (socks5://host:port or http://host:port)")
@@ -146,6 +143,7 @@ func init() {
 	subCmd.AddCommand(subLsCmd, subAddCmd, subImportCmd, subApplyCmd, subRmCmd, subRefreshCmd)
 }
 
+// sdk builds the SDK client from the shared client flags (see cmd/cli.go).
 func sdk() *client.Client {
-	return client.New(client.Options{APIBaseURL: apiAddr})
+	return client.New(client.Options{APIBaseURL: apiAddr, Token: apiToken})
 }

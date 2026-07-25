@@ -96,7 +96,9 @@ sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 
 - `pkg/client` — **上层易用**：调我们自己的 `/api`（订阅等），并**组合** `pkg/clash`（`client.Clash` 暴露原语，`client.Connections()/Kill()` 是便捷封装）。
 - `pkg/apitypes` — 共享 wire 类型（无内部依赖，避免 import 环）。
 
-CLI：`conn ls|kill`（底层原语，走 pkg/clash→:9090）；`sub add|ls|rm|refresh`（上层，走 pkg/client→:9096）。
+**CLI 覆盖全部 API**（控制台能做的，命令行都能做；每个子命令都有 `--json` 供脚本消费，`--api-addr`/`--api-token` 指向本机或探针）：
+`status` | `acl ls|add|rm <permit|deny|no-proxy>` | `rules ls`(生效视图) `rules custom|packs|sets …` | `dns get|set`（`--direct-server` 等单项 patch，`-f` 整档替换）| `mode get|set|confirm`（`--guard` 死亡开关）| `routing get|set`(Rule/Global) | `posture get|set` | `final get|set` | `profile ls|save|activate|rm` | `proxies ls|select|delay` | `groups get|set` | `endpoints ls|add|toggle|rm` | `tun get|set` | `inbound get|set` | `autoblock on|off` | `detections ls|stats` | `history ls|stats` | `node ls|add|rm`(fleet) | `sub add|import|ls|apply|rm|refresh` | `conn ls|kill`(底层 Clash 原语→:9090)。
+**坑**：`/api/customrules` 与 `/api/rulesets` 返回的是**整份 store 文档**（`{"rules":[…]}` / `{"sets":[…]}`），不是裸数组——SDK 里 `customRulesDoc`/`ruleSetsDoc` 负责解包（`pkg/client/policy_test.go` 有回归）。
 
 ### 关键文件 / 目录
 ```

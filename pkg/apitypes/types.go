@@ -92,6 +92,7 @@ type PatchRuleSetRequest struct {
 // Order is priority for L4 (first-match). Permit and Egress are orthogonal:
 //   - Permit=true joins the L3 allow-set (may leave the network)
 //   - Egress selects L4 outbound (none = no route rule; Final applies)
+//
 // Legacy Action-only JSON is normalized via NormalizeCustomRule (action≠block
 // ⇒ permit+egress). A node egress targets a subscription/endpoint/group tag;
 // missing tags are skipped (self-heal).
@@ -110,6 +111,7 @@ type CustomRule struct {
 // PackPreset is a curated, one-click-importable policy pack. Applying it:
 //   - imports each RuleSets entry with an explicit Role (permit and/or route);
 //   - Adds each Rules entry tagged Pack=Name with explicit Permit/Egress.
+//
 // Either RuleSets or Rules (or both) may be non-empty.
 type PackPreset struct {
 	Name        string        `json:"name"`
@@ -161,6 +163,23 @@ type PatchCustomRuleRequest struct {
 	Pack    *string `json:"pack,omitempty"`
 }
 
+// ACLList is the wire shape shared by the three ACL stores. Each store fills
+// only its own dimensions: Permit uses domains/ips/processes/devices, Deny adds
+// keywords/regexes, No-Proxy uses domains/ips.
+type ACLList struct {
+	Domains   []string `json:"domains,omitempty"`
+	IPs       []string `json:"ips,omitempty"`
+	Processes []string `json:"processes,omitempty"`
+	Devices   []string `json:"devices,omitempty"`
+	Keywords  []string `json:"keywords,omitempty"`
+	Regexes   []string `json:"regexes,omitempty"`
+}
+
+// FinalConfig is the catch-all egress for permitted-but-unrouted traffic.
+type FinalConfig struct {
+	Outbound string `json:"outbound"`
+}
+
 // RuleView is one entry in the effective-policy explain view: a human-readable
 // projection of a single generated route rule, labeled by the layer and store
 // that produced it. It mirrors the order the gateway injects rules (first-match,
@@ -180,21 +199,21 @@ type RuleView struct {
 // auth/VPN endpoints) are intentionally excluded so activating a profile can't
 // brick a remote probe's capture path.
 type Profile struct {
-	ID             string             `json:"id"`
-	Name           string             `json:"name"`
-	Version        int                `json:"version,omitempty"` // policy schema; 2 = Permit⊥Route
-	SubID          string             `json:"subscription_id,omitempty"`
-	Whitelist      Rules              `json:"whitelist"`
-	Blacklist      Blacklist          `json:"blacklist,omitempty"`
-	Directlist     DirectList         `json:"directlist,omitempty"`
-	CustomRules    []CustomRule       `json:"custom_rules,omitempty"`
-	RuleSets       []RuleSet          `json:"rule_sets,omitempty"`    // full descriptors (preferred)
-	RuleSetTags    []string           `json:"ruleset_tags,omitempty"` // legacy: enable-only tags
-	ProxyGroups    *ProxyGroupsConfig `json:"proxy_groups,omitempty"`
-	DNS            *DNSConfig         `json:"dns,omitempty"`
-	Final          string             `json:"final,omitempty"` // catch-all egress: proxy|direct|blocked|<tag>
-	Mode           string             `json:"mode,omitempty"`
-	Active         bool               `json:"active,omitempty"`
+	ID          string             `json:"id"`
+	Name        string             `json:"name"`
+	Version     int                `json:"version,omitempty"` // policy schema; 2 = Permit⊥Route
+	SubID       string             `json:"subscription_id,omitempty"`
+	Whitelist   Rules              `json:"whitelist"`
+	Blacklist   Blacklist          `json:"blacklist,omitempty"`
+	Directlist  DirectList         `json:"directlist,omitempty"`
+	CustomRules []CustomRule       `json:"custom_rules,omitempty"`
+	RuleSets    []RuleSet          `json:"rule_sets,omitempty"`    // full descriptors (preferred)
+	RuleSetTags []string           `json:"ruleset_tags,omitempty"` // legacy: enable-only tags
+	ProxyGroups *ProxyGroupsConfig `json:"proxy_groups,omitempty"`
+	DNS         *DNSConfig         `json:"dns,omitempty"`
+	Final       string             `json:"final,omitempty"` // catch-all egress: proxy|direct|blocked|<tag>
+	Mode        string             `json:"mode,omitempty"`
+	Active      bool               `json:"active,omitempty"`
 }
 
 // ProfilePolicyVersion is written on new/updated profiles after the Permit⊥Route
@@ -219,7 +238,7 @@ type DirectList struct {
 // ProxyGroup is one user-defined group in a Profile / proxygroups config.
 type ProxyGroup struct {
 	Name   string   `json:"name"`
-	Type   string   `json:"type"` // select | urltest
+	Type   string   `json:"type"`   // select | urltest
 	Filter string   `json:"filter"` // country | regex | manual
 	Value  string   `json:"value,omitempty"`
 	Nodes  []string `json:"nodes,omitempty"`
