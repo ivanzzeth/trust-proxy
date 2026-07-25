@@ -6,8 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,6 +30,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/inbound"
+	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/policymigrate"
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
@@ -60,7 +61,20 @@ var (
 	serveDaemon        bool
 	serveLog           string
 	servePid           string
+	serveLogMaxMB      int
+	serveLogKeep       int
+	serveLogMaxAge     int
+	serveLogCompress   bool
 )
+
+// daemonLogPath returns the daemon log path the same way for the parent (which
+// opens it) and the child (which rotates it): --log, else <data>/serve.log.
+func daemonLogPath(dataDir string) string {
+	if serveLog != "" {
+		return serveLog
+	}
+	return filepath.Join(dataDir, "serve.log")
+}
 
 // embeddedUI holds the dashboard build baked into the binary via go:embed
 // (set by SetEmbeddedUI from the root package when built with -tags embed_ui).
@@ -82,14 +96,28 @@ var serveCmd = &cobra.Command{
 		// Built-in daemon: re-exec detached (survives SSH logout) unless we're
 		// already the daemon child.
 		if serveDaemon && os.Getenv("TP_DAEMON") == "" {
-			logPath, pidPath := serveLog, servePid
-			if logPath == "" {
-				logPath = filepath.Join(dir, "serve.log")
-			}
+			logPath, pidPath := daemonLogPath(dir), servePid
 			if pidPath == "" {
 				pidPath = filepath.Join(dir, "serve.pid")
 			}
 			return daemonize(logPath, pidPath)
+		}
+		// Daemon child: fd 1/2 point at the log file the parent opened, so the
+		// rotating+async stack has to be installed in here — from this point on
+		// everything (ours and sing-box's) goes through the ring (internal/logging).
+		if os.Getenv("TP_DAEMON") != "" {
+			stop, err := logging.Setup(logging.Options{
+				Path:         daemonLogPath(dir),
+				MaxSizeMB:    serveLogMaxMB,
+				MaxBackups:   serveLogKeep,
+				MaxAgeDays:   serveLogMaxAge,
+				Compress:     serveLogCompress,
+				CaptureStdio: true,
+			})
+			if err != nil {
+				return fmt.Errorf("set up daemon logging: %w", err)
+			}
+			defer stop()
 		}
 		return runServe()
 	},
@@ -135,6 +163,10 @@ func init() {
 	f.BoolVarP(&serveDaemon, "daemon", "d", false, "run in background (detached; survives SSH logout)")
 	f.StringVar(&serveLog, "log", "", "daemon log file (default <data>/serve.log)")
 	f.StringVar(&servePid, "pid", "", "daemon pid file (default <data>/serve.pid)")
+	f.IntVar(&serveLogMaxMB, "log-max-size", logging.DefaultMaxSizeMB, "rotate the daemon log past this many MB (0 = never rotate)")
+	f.IntVar(&serveLogKeep, "log-keep", logging.DefaultMaxBackups, "how many rotated daemon logs to keep")
+	f.IntVar(&serveLogMaxAge, "log-max-age", 0, "delete rotated daemon logs older than this many days (0 = keep by count only)")
+	f.BoolVar(&serveLogCompress, "log-compress", true, "gzip rotated daemon logs")
 }
 
 func runServe() error {
@@ -144,7 +176,7 @@ func runServe() error {
 	}
 
 	if err := policymigrate.Run(serveDataDir); err != nil {
-		log.Printf("policy migrate: %v", err)
+		logging.L().Warn().Err(err).Msg("policy migrate")
 	}
 
 	wlStore, err := whitelist.NewStore(serveDataDir + "/whitelist.json")
@@ -172,6 +204,15 @@ func runServe() error {
 		return err
 	}
 
+	rsStore, err := ruleset.NewStore(serveDataDir + "/rulesets.json")
+	if err != nil {
+		return err
+	}
+	// Off the hot path: decode enabled permit-granting rule sets (Slack/Notion/
+	// China-wide/… packs whose Permit comes entirely from a rule-set role) into
+	// the in-memory index ruleset.MatchesPermit queries. See SetTrustedDest below.
+	go ruleset.WarmPermitCache(rsStore.Get(), nil)
+
 	engine := detect.New(2000)
 	engine.SetAutoBlock(serveAutoBlock)
 
@@ -192,14 +233,19 @@ func runServe() error {
 	engine.LoadThreats([]string{"malware.test", "c2.example.com"}, nil)
 
 	// Large upload to a destination that is NOT permitted (whitelist OR
-	// pack/custom Permit rules) is treated as exfil when auto-block is on.
-	// Packs like Cursor open the ACL gate via customrules — they must also
-	// count as trusted here, or Agent uploads to *.cursor.sh get killed.
+	// pack/custom Permit rules OR a rule-set role granting Permit) is treated
+	// as exfil when auto-block is on. Packs like Cursor/Slack/Notion/China-wide
+	// open the ACL gate via customrules or via a permit-role rule set — both
+	// must count as trusted here, or a legitimate upload to a pack's domains
+	// gets wrongly auto-blocked/banned as exfiltration.
 	engine.SetTrustedDest(func(host, dest string) bool {
 		if whitelist.Matches(wlStore.Get(), host, dest) {
 			return true
 		}
-		return customrules.MatchesPermit(crStore.Get(), host, dest)
+		if customrules.MatchesPermit(crStore.Get(), host, dest) {
+			return true
+		}
+		return ruleset.MatchesPermit(host, dest)
 	})
 
 	// Restore the persisted audit log so events survive a restart.
@@ -208,7 +254,7 @@ func runServe() error {
 		var saved []detect.Event
 		if json.Unmarshal(b, &saved) == nil {
 			engine.RestoreEvents(saved)
-			log.Printf("restored %d event(s) from %s", len(saved), eventsPath)
+			logging.L().Info().Int("count", len(saved)).Str("path", eventsPath).Msg("restored detection events")
 		}
 	}
 
@@ -224,14 +270,10 @@ func runServe() error {
 				}
 			}
 		}
-		loader := threatfeed.New(engine, feeds, serveThreatRefresh, log.Printf)
+		loader := threatfeed.New(engine, feeds, serveThreatRefresh, logging.Printf)
 		go loader.Run(feedCtx)
 	}
 
-	rsStore, err := ruleset.NewStore(serveDataDir + "/rulesets.json")
-	if err != nil {
-		return err
-	}
 	profStore, err := profile.NewStore(serveDataDir + "/profiles.json")
 	if err != nil {
 		return err
@@ -271,6 +313,9 @@ func runServe() error {
 	}
 
 	mgr := gateway.NewManager(serveConfig, serveDataDir, wlStore.Get(), engine, secret)
+	// Under --daemon this is the async ring (logging.Setup); in the foreground it
+	// is nil and sing-box keeps writing to the terminal.
+	mgr.SetLogWriter(logging.Sink())
 	mgr.SetInitialMode(serveMode)
 	mgr.SetInitialPosture(postureStore.Active())
 	mgr.SetInitialFinal(finalStore.Get().Outbound)
@@ -283,20 +328,60 @@ func runServe() error {
 	mgr.SetInitialInbound(inbStore.Get())
 	mgr.SetInitialTUN(tunStore.Get())
 	mgr.SetInitialEndpoints(epStore.All())
+	// In TUN mode the gateway captures ALL of this machine's outbound traffic,
+	// including this store's OWN subscription-fetch HTTP client — which has
+	// nothing to do with sing-box's internal dialer. Without an explicit
+	// permit+direct route for the subscription host, that fetch gets routed
+	// through whichever proxy node is currently applied instead of this
+	// machine's real network path, and some subscription providers detect
+	// "this looks like a VPN/proxy request" and refuse to serve real node
+	// data. Ensure the host is permitted + routed direct before every fetch
+	// (idempotent: skips the rebuild entirely once already set).
+	//
+	// The connection route alone used to not be enough: a direct-routed
+	// *domain* destination still re-resolves via sing-box's global
+	// default_domain_resolver, which is commonly detour="proxy" (anti-leak/
+	// anti-poisoning) — so the fetch could still hang through a dead proxy
+	// node even after routing correctly. Fixed generally (not just for this
+	// host) by giving the "direct" outbound its own domain_resolver — see
+	// gateway_dns.go's injectDirectDomainResolver — so this callback only
+	// needs to handle the permit+route side.
+	store.SetEnsureReachable(func(host string) error {
+		host = strings.ToLower(host)
+		wl := wlStore.Get()
+		dl := dlStore.Get()
+		if sliceHasFold(wl.Domains, host) && sliceHasFold(dl.Domains, host) {
+			return nil
+		}
+		if !sliceHasFold(wl.Domains, host) {
+			if _, err := wlStore.AddDomain(host); err != nil {
+				return err
+			}
+		}
+		if !sliceHasFold(dl.Domains, host) {
+			if _, err := dlStore.AddDomain(host); err != nil {
+				return err
+			}
+		}
+		if err := mgr.SetWhitelist(wlStore.Get()); err != nil {
+			return err
+		}
+		return mgr.SetDirectList(dlStore.Get())
+	})
 	mgr.SetInitialManagementPorts(managementPorts(serveMgmtPorts, serveAPIAddr))
 	// Auto-ban sink: threat-intel / non-permitted large upload → blacklist + hot reload.
 	engine.SetOnBan(func(domain, ip, reason string) {
 		changed := false
 		if domain != "" {
 			if _, err := blStore.AddDomain(domain); err != nil {
-				log.Printf("auto-ban domain %q: %v", domain, err)
+				logging.L().Error().Err(err).Str("domain", domain).Msg("auto-ban domain")
 			} else {
 				changed = true
 			}
 		}
 		if ip != "" {
 			if _, err := blStore.AddIP(ip); err != nil {
-				log.Printf("auto-ban ip %q: %v", ip, err)
+				logging.L().Error().Err(err).Str("ip", ip).Msg("auto-ban ip")
 			} else {
 				changed = true
 			}
@@ -304,9 +389,9 @@ func runServe() error {
 		if !changed {
 			return
 		}
-		log.Printf("auto-ban: domain=%q ip=%q (%s)", domain, ip, reason)
+		logging.L().Warn().Str("domain", domain).Str("ip", ip).Str("reason", reason).Msg("auto-ban")
 		if err := mgr.SetBlacklist(blStore.Get()); err != nil {
-			log.Printf("auto-ban apply blacklist: %v", err)
+			logging.L().Error().Err(err).Msg("auto-ban apply blacklist")
 		}
 	})
 	// Re-apply the previously-applied subscription so a restart/upgrade keeps the
@@ -315,7 +400,7 @@ func runServe() error {
 	for _, sub := range store.List() {
 		if sub.Applied && len(sub.Nodes) > 0 {
 			mgr.SetInitialNodes(sub.Nodes)
-			log.Printf("re-applying subscription %q (%d node(s)) on startup", sub.Name, len(sub.Nodes))
+			logging.L().Info().Str("subscription", sub.Name).Int("nodes", len(sub.Nodes)).Msg("re-applying subscription on startup")
 			break
 		}
 	}
@@ -324,56 +409,56 @@ func runServe() error {
 	}
 	defer mgr.Close()
 	apiSrv := api.NewServer(api.Options{
-		Addr:        serveAPIAddr,
-		Store:       store,
-		Applier:     mgr,
-		Whitelist:   wlStore,
-		WLApplier:   mgr,
-		Blacklist:   blStore,
-		BLApplier:   mgr,
-		Directlist:  dlStore,
-		DLApplier:   mgr,
-		CustomRules: crStore,
-		CRApplier:   mgr,
-		RulesView:   mgr,
-		ProxyGroups: pgStore,
-		PGApplier:   mgr,
-		Detect:      engine,
-		Mode:        mgr,
-		RuleSets:    rsStore,
-		RSApplier:   mgr,
-		Profiles:    profStore,
-		ProfApplier: mgr,
-		Posture:     postureStore,
-		Final:       finalStore,
+		Addr:         serveAPIAddr,
+		Store:        store,
+		Applier:      mgr,
+		Whitelist:    wlStore,
+		WLApplier:    mgr,
+		Blacklist:    blStore,
+		BLApplier:    mgr,
+		Directlist:   dlStore,
+		DLApplier:    mgr,
+		CustomRules:  crStore,
+		CRApplier:    mgr,
+		RulesView:    mgr,
+		ProxyGroups:  pgStore,
+		PGApplier:    mgr,
+		Detect:       engine,
+		Mode:         mgr,
+		RuleSets:     rsStore,
+		RSApplier:    mgr,
+		Profiles:     profStore,
+		ProfApplier:  mgr,
+		Posture:      postureStore,
+		Final:        finalStore,
 		FinalApplier: mgr,
-		DNS:         dnsStore,
-		DNSApplier:  mgr,
-		Inbound:     inbStore,
-		InbApplier:  mgr,
-		TUN:         tunStore,
-		TUNApplier:  mgr,
-		Endpoints:   epStore,
-		EPApplier:   mgr,
-		History:     histStore,
-		Detections:  detStore,
-		Nodes:       nodesStore,
-		Token:       serveAPIToken,
-		Clash:       clash.New(serveClashAddr, secret),
-		ConsoleDir:  serveConsoleDir,
-		ConsoleFS:   embeddedUI,
+		DNS:          dnsStore,
+		DNSApplier:   mgr,
+		Inbound:      inbStore,
+		InbApplier:   mgr,
+		TUN:          tunStore,
+		TUNApplier:   mgr,
+		Endpoints:    epStore,
+		EPApplier:    mgr,
+		History:      histStore,
+		Detections:   detStore,
+		Nodes:        nodesStore,
+		Token:        serveAPIToken,
+		Clash:        clash.New(serveClashAddr, secret),
+		ConsoleDir:   serveConsoleDir,
+		ConsoleFS:    embeddedUI,
 	})
 	apiSrv.SyncActivePostureSlot()
 	go func() {
 		if err := apiSrv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Println("backend api:", err)
+			logging.L().Error().Err(err).Msg("backend api")
 		}
 	}()
 	defer apiSrv.Close()
 
-	log.Printf("trust-proxy serve: gateway up, backend API at http://%s", serveAPIAddr)
-	log.Printf("dashboard: http://%s/", serveAPIAddr)
-	log.Printf("mode: %s | auto-block: %v", mgr.Mode(), serveAutoBlock)
+	logging.L().Info().Str("api", serveAPIAddr).Msg("gateway up")
+	logging.L().Info().Str("url", "http://"+serveAPIAddr+"/").Msg("dashboard")
+	logging.L().Info().Str("mode", mgr.Mode()).Bool("auto_block", serveAutoBlock).Msg("capture mode")
 
 	// Persist the audit log periodically so a crash loses at most one interval.
 	saveEvents := func() {
@@ -398,10 +483,20 @@ func runServe() error {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	<-signals
-	log.Println("shutting down")
+	logging.L().Info().Msg("shutting down")
 	close(stopSave)
 	saveEvents()
 	return nil
+}
+
+// sliceHasFold reports whether ss contains want, case-insensitively.
+func sliceHasFold(ss []string, want string) bool {
+	for _, s := range ss {
+		if strings.EqualFold(s, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // managementPorts parses the --management-ports csv and always appends the API

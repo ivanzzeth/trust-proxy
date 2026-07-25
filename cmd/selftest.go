@@ -63,6 +63,11 @@ func runSelftest() error {
 	directPort, nodeOriginPort := freePort(), freePort()
 	nodePort := freePort()
 	mixedPort, clashPort := freePort(), freePort()
+	// Two stub resolvers for the "dns follows route" section: one we reach
+	// directly, one reachable only THROUGH the node (so a lookup's path is
+	// observable).
+	directDNSPort, remoteDNSPort := freePort(), freePort()
+	remoteDNSAddr := fmt.Sprintf("127.0.0.1:%d", remoteDNSPort)
 
 	// Two "internet" origins: whichever one answers tells us the egress path.
 	// The direct outbound reaches directPort; the node upstream splices to
@@ -84,7 +89,15 @@ func runSelftest() error {
 	// request that goes through the node lands there and reads "node").
 	nodeOriginAddr := fmt.Sprintf("127.0.0.1:%d", nodeOriginPort)
 	nodeHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		dst, err := net.Dial("tcp", nodeOriginAddr)
+		target := nodeOriginAddr
+		// One exception to the "everything lands on node-origin" rule: a CONNECT
+		// to the remote stub resolver is spliced to the resolver itself. That is
+		// what makes a resolver behind the exit node (detour="proxy") real, and
+		// therefore what makes the DNS split observable.
+		if r.Method == http.MethodConnect && r.Host == remoteDNSAddr {
+			target = remoteDNSAddr
+		}
+		dst, err := net.Dial("tcp", target)
 		if err != nil {
 			http.Error(w, err.Error(), 502)
 			return
@@ -591,6 +604,85 @@ func runSelftest() error {
 	_ = mgr.SetProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{{Name: "g", Type: "select", Filter: "manual", Nodes: []string{"NODE"}}}})
 	_ = mgr.Apply([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: nodeOB}})
 
+	fmt.Println("== dns follows route ==")
+	// Regression: "everything domestic crawls while the gateway runs". With the
+	// only resolver behind the exit node, mainland domains were answered from the
+	// node's vantage point (Korea/India CDN edges) and then dialed DIRECT — every
+	// domestic site went across an ocean and back. A domain that egresses direct
+	// must be resolved by a resolver we dial directly.
+	//
+	// Both stubs answer 127.0.0.1 (so the fetch still lands on an origin and the
+	// egress assertion still holds); the signal is WHICH stub was queried.
+	directRes := newStubResolver(directDNSPort, "127.0.0.1")
+	defer directRes.close()
+	remoteRes := newStubResolver(remoteDNSPort, "127.0.0.1")
+	defer remoteRes.close()
+	if !waitResolver(directDNSPort) || !waitResolver(remoteDNSPort) {
+		fail++
+		fmt.Println("  FAIL  stub resolvers did not start")
+	} else {
+		reset()
+		_ = mgr.SetPosture(apitypes.PostureSplit) // default-allow: this section is about DNS, not the gate
+		_ = mgr.SetCustomRules(customrules.Rules{Rules: []apitypes.CustomRule{
+			rule("domain_suffix", "dnsdirect.tp", "direct", ""),
+			rule("domain_suffix", "dnsproxy.tp", "proxy", ""),
+		}})
+		_ = mgr.SetRuleSets(ruleset.Sets{Sets: []apitypes.RuleSet{
+			localRS("dns-cn", apitypes.RuleRoleRouteDirect, writeLocalRS("dns-cn", "rscn.tp")),
+		}})
+		splitErr := mgr.SetDNS(apitypes.DNSConfig{
+			Servers: []apitypes.DNSServer{{Tag: "remote", Type: "tcp", Server: "127.0.0.1", Port: remoteDNSPort, Detour: "proxy"}},
+			Final:   "remote",
+			// node-exit.tp must keep resolving while the split is armed: it is
+			// pinned to the direct resolver like every other direct dial.
+			DirectServer: fmt.Sprintf("127.0.0.1:%d", directDNSPort),
+		})
+		if splitErr != nil {
+			fail++
+			fmt.Printf("  FAIL  set split dns: %v\n", splitErr)
+		} else {
+			selectProxyGroup(clashPort, "g")
+			time.Sleep(200 * time.Millisecond)
+			// Each case: the right egress AND the right resolver. A domain is only
+			// asked of one of the two stubs, so "the other one saw it" is a real
+			// failure, not noise.
+			dnsCase := func(name, target, wantEgress string) {
+				directRes.reset()
+				remoteRes.reset()
+				got := get(target)
+				check(name, wantEgress, got)
+				switch {
+				case !directRes.saw(target):
+					fail++
+					fmt.Printf("  FAIL  %-48s %s was not resolved by the direct resolver\n", name+" (resolver)", target)
+				case remoteRes.saw(target):
+					fail++
+					fmt.Printf("  FAIL  %-48s %s leaked to the resolver behind the node\n", name+" (resolver)", target)
+				default:
+					pass++
+					fmt.Printf("  PASS  %-48s -> dns-direct\n", name+" (resolver)")
+				}
+			}
+			dnsCase("custom direct rule resolves direct", "dnsdirect.tp", "direct")
+			dnsCase("route-direct rule set resolves direct", "rscn.tp", "direct")
+
+			// Control: a proxied destination is never resolved locally at all (the
+			// node resolves it), so neither stub may be asked for it.
+			directRes.reset()
+			remoteRes.reset()
+			check("proxied domain still egresses via node", "node", get("dnsproxy.tp"))
+			if directRes.saw("dnsproxy.tp") {
+				fail++
+				fmt.Println("  FAIL  proxied domain must not be resolved by the direct resolver")
+			} else {
+				pass++
+				fmt.Println("  PASS  proxied domain is resolved by the node, not locally")
+			}
+		}
+	}
+	_ = mgr.SetDNS(dns) // restore the hosts resolver for the sections below
+	reset()
+
 	fmt.Println("== tun mode ==")
 	if os.Geteuid() != 0 {
 		fmt.Println("  SKIP  tun mode (needs root)")
@@ -648,29 +740,36 @@ func runSelftest() error {
 	return nil
 }
 
+// scorer tallies PASS/FAIL lines for the live (real-network) self-test
+// sections, shared between liveTest and liveOverseas — the latter accumulates
+// into the SAME counters (passed by pointer) since it's one continuous report.
+type scorer struct{ pass, fail *int }
+
+func (s *scorer) ck(name string, ok bool, detail string) {
+	if ok {
+		*s.pass++
+		fmt.Printf("  PASS  %-42s %s\n", name, detail)
+	} else {
+		*s.fail++
+		fmt.Printf("  FAIL  %-42s %s\n", name, detail)
+	}
+}
+
 // liveTest applies the real node(s) from a clash-yaml file and fetches real
 // sites through them, asserting actual target data (not just a connection or a
 // status code): a 204 probe, the exit IP (which must differ from the direct
 // IP — proving bytes really traversed the node), and real HTML content.
 func liveTest(subFile string) (pass, fail int) {
-	ck := func(name string, ok bool, detail string) {
-		if ok {
-			pass++
-			fmt.Printf("  PASS  %-42s %s\n", name, detail)
-		} else {
-			fail++
-			fmt.Printf("  FAIL  %-42s %s\n", name, detail)
-		}
-	}
+	sc := &scorer{&pass, &fail}
 	fmt.Println("== live: real data through a real node ==")
 
 	body, err := os.ReadFile(subFile)
 	if err != nil {
-		ck("read sub-file", false, err.Error())
+		sc.ck("read sub-file", false, err.Error())
 		return
 	}
 	nodes := subscription.Parse(body)
-	ck("parse real node(s)", len(nodes) > 0, fmt.Sprintf("%d node(s)", len(nodes)))
+	sc.ck("parse real node(s)", len(nodes) > 0, fmt.Sprintf("%d node(s)", len(nodes)))
 	if len(nodes) == 0 {
 		return
 	}
@@ -691,7 +790,7 @@ func liveTest(subFile string) (pass, fail int) {
 	// fastest that actually connects.
 	mgr.SetInitialProxyGroups(proxygroups.Config{AutoCountry: true})
 	if err := mgr.Start(); err != nil {
-		ck("gateway start with real node", false, err.Error())
+		sc.ck("gateway start with real node", false, err.Error())
 		return
 	}
 	defer mgr.Close()
@@ -726,17 +825,17 @@ func liveTest(subFile string) (pass, fail int) {
 	}
 
 	// 1) a 204 connectivity probe through the node (real TLS + real response).
-	ck("gstatic 204 probe via node", status(viaNode, "https://www.gstatic.com/generate_204") == 204, "")
+	sc.ck("gstatic 204 probe via node", status(viaNode, "https://www.gstatic.com/generate_204") == 204, "")
 	// 2) exit IP via node must be a valid IP AND differ from the direct IP —
 	//    this proves real bytes came back FROM the node, not just a live socket.
 	nodeIP := text(viaNode, "https://api.ipify.org")
 	directIP := text(direct, "https://api.ipify.org")
-	ck("exit IP via node is real + != direct", net.ParseIP(nodeIP) != nil && nodeIP != directIP, fmt.Sprintf("node=%q direct=%q", nodeIP, directIP))
+	sc.ck("exit IP via node is real + != direct", net.ParseIP(nodeIP) != nil && nodeIP != directIP, fmt.Sprintf("node=%q direct=%q", nodeIP, directIP))
 	// 3) real website content through the node (the actual page bytes).
 	page := text(viaNode, "https://example.com")
-	ck("example.com real content via node", strings.Contains(page, "Example Domain"), fmt.Sprintf("%d bytes", len(page)))
+	sc.ck("example.com real content via node", strings.Contains(page, "Example Domain"), fmt.Sprintf("%d bytes", len(page)))
 
-	liveOverseas(nodes, mgr, clashPort, viaNode, text, &pass, &fail)
+	liveOverseas(nodes, mgr, clashPort, viaNode, text, sc)
 	return
 }
 
@@ -745,16 +844,7 @@ func liveTest(subFile string) (pass, fail int) {
 // verifies (a) the group materializes excluding that region's node(s), and
 // (b) real data fetched through the group exits from an allowed region (geoip
 // via ip-api.com), never the excluded one — the core geofence-failover promise.
-func liveOverseas(nodes []apitypes.Node, mgr *gateway.Manager, clashPort int, viaNode *http.Client, text func(*http.Client, string) string, pass, fail *int) {
-	ck := func(name string, ok bool, detail string) {
-		if ok {
-			*pass++
-			fmt.Printf("  PASS  %-42s %s\n", name, detail)
-		} else {
-			*fail++
-			fmt.Printf("  FAIL  %-42s %s\n", name, detail)
-		}
-	}
+func liveOverseas(nodes []apitypes.Node, mgr *gateway.Manager, clashPort int, viaNode *http.Client, text func(*http.Client, string) string, sc *scorer) {
 	fmt.Println("== live: Overseas group (geofenced failover) ==")
 
 	// Pick a country the nodes actually have, such that excluding it still leaves
@@ -778,12 +868,12 @@ func liveOverseas(nodes []apitypes.Node, mgr *gateway.Manager, clashPort int, vi
 		}
 	}
 	if excluded == "" {
-		ck("overseas: needs ≥2 node countries (SKIP)", true, "not enough distinct countries in the sub")
+		sc.ck("overseas: needs ≥2 node countries (SKIP)", true, "not enough distinct countries in the sub")
 		return
 	}
 
 	if err := mgr.SetProxyGroups(proxygroups.Config{AutoCountry: true, ExcludeCountries: []string{excluded}}); err != nil {
-		ck("overseas: reconfigure gateway", false, err.Error())
+		sc.ck("overseas: reconfigure gateway", false, err.Error())
 		return
 	}
 	time.Sleep(time.Second)
@@ -796,14 +886,14 @@ func liveOverseas(nodes []apitypes.Node, mgr *gateway.Manager, clashPort int, vi
 			badMember = true
 		}
 	}
-	ck("overseas: group built, excludes "+excluded, ok && !badMember, fmt.Sprintf("members=%v", members))
+	sc.ck("overseas: group built, excludes "+excluded, ok && !badMember, fmt.Sprintf("members=%v", members))
 
 	// Real data: route via Overseas and confirm the exit region is NOT the
 	// excluded one (proves failover stays within allowed regions).
 	selectProxyGroup(clashPort, proxygroups.OverseasGroupTag)
 	time.Sleep(3 * time.Second) // urltest health-check within the allowed set
 	cc, exitIP := geoCountry(viaNode, text)
-	ck("overseas: real data exits allowed region (not "+excluded+")", cc != "" && cc != excluded, fmt.Sprintf("exit=%s ip=%s", cc, exitIP))
+	sc.ck("overseas: real data exits allowed region (not "+excluded+")", cc != "" && cc != excluded, fmt.Sprintf("exit=%s ip=%s", cc, exitIP))
 }
 
 // geoCountry fetches the exit IP's country code via ip-api.com through the given

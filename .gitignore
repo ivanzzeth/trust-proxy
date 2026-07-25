@@ -15,3 +15,7 @@ data/
 
 # local test fixtures with real node credentials — NEVER tracked
 /testdata-local/
+
+# scratch (VM screenshots, diagnosis dumps) + TS incremental build cache
+/tmp/
+/dashboard/tsconfig.tsbuildinfo

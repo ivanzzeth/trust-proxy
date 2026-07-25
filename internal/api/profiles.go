@@ -2,13 +2,12 @@ package api
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
-	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
+	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
@@ -39,15 +38,27 @@ func (s *Server) handleAddProfile(w http.ResponseWriter, r *http.Request) {
 	p := s.snapshotProfile(req.Name)
 	saved, err := s.profStore.Add(p)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusConflict, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, saved)
 }
 
-// snapshotProfile captures every policy store that ApplyProfile restores.
+// snapshotProfile captures every policy store that ApplyProfile restores. See
+// snapshotLivePolicy for the shared capture logic.
 func (s *Server) snapshotProfile(name string) apitypes.Profile {
-	p := apitypes.Profile{Name: name}
+	slot := s.snapshotLivePolicy()
+	p := apitypes.Profile{
+		Name:        name,
+		Whitelist:   slot.Whitelist,
+		Blacklist:   slot.Blacklist,
+		Directlist:  slot.Directlist,
+		CustomRules: slot.CustomRules,
+		RuleSets:    slot.RuleSets,
+		ProxyGroups: slot.ProxyGroups,
+		DNS:         slot.DNS,
+		Final:       slot.Final,
+	}
 	if s.store != nil {
 		for _, sub := range s.store.List() {
 			if sub.Applied {
@@ -56,54 +67,10 @@ func (s *Server) snapshotProfile(name string) apitypes.Profile {
 			}
 		}
 	}
-	if s.wl != nil {
-		wl := s.wl.Get()
-		p.Whitelist = apitypes.Rules{Domains: wl.Domains, IPs: wl.IPs, Processes: wl.Processes, Devices: wl.Devices}
-	}
-	if s.bl != nil {
-		bl := s.bl.Get()
-		p.Blacklist = apitypes.Blacklist{Domains: bl.Domains, Keywords: bl.Keywords, Regexes: bl.Regexes, IPs: bl.IPs}
-	}
-	if s.dl != nil {
-		dl := s.dl.Get()
-		p.Directlist = apitypes.DirectList{Domains: dl.Domains, IPs: dl.IPs}
-	}
-	if s.cr != nil {
-		cr := s.cr.Get()
-		p.CustomRules = append([]apitypes.CustomRule(nil), cr.Rules...)
-	}
-	if s.rs != nil {
-		sets := s.rs.Get().Sets
-		p.RuleSets = append([]apitypes.RuleSet(nil), sets...)
-		for _, rs := range sets {
-			if rs.Enabled {
-				p.RuleSetTags = append(p.RuleSetTags, rs.Tag) // keep legacy field populated
-			}
+	for _, rs := range slot.RuleSets {
+		if rs.Enabled {
+			p.RuleSetTags = append(p.RuleSetTags, rs.Tag) // keep legacy field populated
 		}
-	}
-	if s.pgroups != nil {
-		pg := s.pgroups.Get()
-		out := apitypes.ProxyGroupsConfig{
-			AutoCountry:      pg.AutoCountry,
-			ExcludeCountries: append([]string(nil), pg.ExcludeCountries...),
-		}
-		for _, g := range pg.Groups {
-			out.Groups = append(out.Groups, apitypes.ProxyGroup{
-				Name: g.Name, Type: g.Type, Filter: g.Filter, Value: g.Value,
-				Nodes: append([]string(nil), g.Nodes...),
-			})
-		}
-		p.ProxyGroups = &out
-	}
-	if s.dns != nil {
-		d := s.dns.Get()
-		cp := d
-		p.DNS = &cp
-	}
-	if s.final != nil {
-		p.Final = s.final.Get().Outbound
-	} else if s.finalApplier != nil {
-		p.Final = s.finalApplier.Final()
 	}
 	if s.mode != nil {
 		p.Mode = s.mode.Mode()
@@ -129,74 +96,44 @@ func (s *Server) handleActivateProfile(w http.ResponseWriter, r *http.Request) {
 		if sub, ok := s.store.Get(p.SubID); ok {
 			nodes = sub.Nodes
 		} else {
-			log.Printf("profile %q: subscription %q missing, using direct-only", p.ID, p.SubID)
+			logging.L().Warn().Str("profile", p.ID).Str("subscription", p.SubID).Msg("profile subscription missing, using direct-only")
 		}
 	}
 
-	sets := s.resolveProfileRuleSets(p)
-	wl := whitelist.Rules{Domains: p.Whitelist.Domains, IPs: p.Whitelist.IPs, Processes: p.Whitelist.Processes, Devices: p.Whitelist.Devices}
-	bl := blacklist.Rules{Domains: p.Blacklist.Domains, Keywords: p.Blacklist.Keywords, Regexes: p.Blacklist.Regexes, IPs: p.Blacklist.IPs}
-	dl := directlist.Rules{Domains: p.Directlist.Domains, IPs: p.Directlist.IPs}
-	cr := customrules.Rules{Rules: append([]apitypes.CustomRule(nil), p.CustomRules...)}
-	pg := s.resolveProfileProxyGroups(p)
-	dns := s.resolveProfileDNS(p)
+	in := policyInputs{
+		wl:   whitelist.Rules{Domains: p.Whitelist.Domains, IPs: p.Whitelist.IPs, Processes: p.Whitelist.Processes, Devices: p.Whitelist.Devices},
+		bl:   blacklist.Rules{Domains: p.Blacklist.Domains, Keywords: p.Blacklist.Keywords, Regexes: p.Blacklist.Regexes, IPs: p.Blacklist.IPs},
+		dl:   directlist.Rules{Domains: p.Directlist.Domains, IPs: p.Directlist.IPs},
+		cr:   customrules.Rules{Rules: append([]apitypes.CustomRule(nil), p.CustomRules...)},
+		sets: s.resolveProfileRuleSets(p),
+		pg:   s.resolveProfileProxyGroups(p),
+		dns:  s.resolveProfileDNS(p),
+	}
 
-	if err := s.profApplier.ApplyProfile(nodes, wl, bl, dl, cr, sets, pg, dns, p.Mode, p.Final, ""); err != nil {
+	if err := s.profApplier.ApplyProfile(nodes, in.wl, in.bl, in.dl, in.cr, in.sets, in.pg, in.dns, p.Mode, p.Final, ""); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	// Success: align live stores so other pages reflect the switch.
-	if s.rs != nil {
-		if _, err := s.rs.Set(sets); err != nil {
-			log.Println("profile activate: rs Set:", err)
-		}
-	}
-	if s.wl != nil {
-		if _, err := s.wl.Set(wl); err != nil {
-			log.Println("profile activate: wl Set:", err)
-		}
-	}
-	if s.bl != nil {
-		if _, err := s.bl.Set(bl); err != nil {
-			log.Println("profile activate: bl Set:", err)
-		}
-	}
-	if s.dl != nil {
-		if _, err := s.dl.Set(dl); err != nil {
-			log.Println("profile activate: dl Set:", err)
-		}
-	}
-	if s.cr != nil {
-		if _, err := s.cr.Set(cr); err != nil {
-			log.Println("profile activate: cr Set:", err)
-		}
-	}
-	if s.pgroups != nil && p.ProxyGroups != nil {
-		if _, err := s.pgroups.Set(pg); err != nil {
-			log.Println("profile activate: pg Set:", err)
-		}
-	}
-	if s.dns != nil && p.DNS != nil {
-		if _, err := s.dns.Set(dns); err != nil {
-			log.Println("profile activate: dns Set:", err)
-		}
-	}
-	if s.final != nil && p.Final != "" {
-		if _, err := s.final.Set(finalroute.Config{Outbound: p.Final}); err != nil {
-			log.Println("profile activate: final Set:", err)
-		}
-	}
+	// Success: align live stores so other pages reflect the switch. Only
+	// write back pg/dns/final when the profile explicitly specified them —
+	// otherwise resolveProfile* already fell back to whatever's live, so
+	// writing it back would be a no-op at best.
+	s.alignLiveStores(in, p.ProxyGroups != nil, p.DNS != nil, p.Final, p.Final != "", "profile activate:")
 	if p.SubID != "" && s.store != nil {
 		if err := s.store.SetApplied(p.SubID); err != nil {
-			log.Println("profile activate: SetApplied:", err)
+			logging.L().Warn().Err(err).Msg("profile activate: SetApplied")
 		}
 	}
 	if err := s.profStore.SetActive(p.ID); err != nil {
-		log.Println("profile activate: SetActive:", err)
+		logging.L().Warn().Err(err).Msg("profile activate: SetActive")
 	}
-	log.Printf("profile activated %q (%s): wl=%d/%d bl=%d cr=%d rs=%d mode=%s",
-		p.Name, p.ID, len(wl.Domains), len(wl.IPs), len(bl.Domains)+len(bl.IPs), len(cr.Rules), len(sets.Sets), p.Mode)
+	logging.L().Info().
+		Str("profile", p.Name).Str("id", p.ID).Str("mode", p.Mode).
+		Int("wl_domains", len(in.wl.Domains)).Int("wl_ips", len(in.wl.IPs)).
+		Int("bl", len(in.bl.Domains)+len(in.bl.IPs)).
+		Int("custom_rules", len(in.cr.Rules)).Int("rule_sets", len(in.sets.Sets)).
+		Msg("profile activated")
 	p, _ = s.profStore.Get(p.ID)
 	writeJSON(w, http.StatusOK, p)
 }

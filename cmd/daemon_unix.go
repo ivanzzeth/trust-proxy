@@ -15,6 +15,15 @@ import (
 // TP_DAEMON=1 so it runs the server instead of re-daemonizing. Output goes to
 // logPath; the child pid is written to pidPath.
 func daemonize(logPath, pidPath string) error {
+	if pidPath != "" {
+		if pid, err := readPidFile(pidPath); err == nil {
+			if alive, _ := checkPid(pid); alive {
+				return fmt.Errorf("already running as pid %d (per %s) — stop it first: trust-proxy proxy stop --pid %s", pid, pidPath, pidPath)
+			}
+			// Stale pid file (process dead): fine to overwrite.
+		}
+	}
+
 	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		return fmt.Errorf("open log %s: %w", logPath, err)

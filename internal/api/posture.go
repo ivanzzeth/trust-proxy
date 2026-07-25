@@ -2,14 +2,13 @@ package api
 
 import (
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
-	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
+	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
@@ -88,7 +87,7 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		log.Printf("posture: seeded Split with %d pack rule(s), %d rule-set(s)", len(toSlot.CustomRules), len(toSlot.RuleSets))
+		logging.L().Info().Int("rules", len(toSlot.CustomRules)).Int("rule_sets", len(toSlot.RuleSets)).Msg("posture: seeded Split")
 	}
 
 	// Keep a copy of current live for rollback.
@@ -101,7 +100,7 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.posture.SetActive(req.Active); err != nil {
-		log.Println("posture SetActive:", err)
+		logging.L().Warn().Err(err).Msg("posture SetActive")
 	}
 
 	// Split must not run under Clash Global (Global short-circuits before CN direct).
@@ -109,7 +108,7 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 	if req.Active == apitypes.PostureSplit && s.clash != nil {
 		if mode, err := s.clash.Mode(); err == nil && strings.EqualFold(mode, "global") {
 			if err := s.clash.SetMode("Rule"); err != nil {
-				log.Println("posture: force Clash Rule:", err)
+				logging.L().Warn().Err(err).Msg("posture: force Clash Rule")
 			} else {
 				forcedRule = true
 			}
@@ -123,81 +122,40 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// snapshotLiveSlot captures the current live policy as a PolicySlot (posture
+// swap format). See snapshotLivePolicy for the shared capture logic.
 func (s *Server) snapshotLiveSlot() apitypes.PolicySlot {
-	slot := apitypes.PolicySlot{Final: "proxy"}
-	if s.wl != nil {
-		wl := s.wl.Get()
-		slot.Whitelist = apitypes.Rules{Domains: wl.Domains, IPs: wl.IPs, Processes: wl.Processes, Devices: wl.Devices}
-	}
-	if s.bl != nil {
-		bl := s.bl.Get()
-		slot.Blacklist = apitypes.Blacklist{Domains: bl.Domains, Keywords: bl.Keywords, Regexes: bl.Regexes, IPs: bl.IPs}
-	}
-	if s.dl != nil {
-		dl := s.dl.Get()
-		slot.Directlist = apitypes.DirectList{Domains: dl.Domains, IPs: dl.IPs}
-	}
-	if s.cr != nil {
-		slot.CustomRules = append([]apitypes.CustomRule(nil), s.cr.Get().Rules...)
-	}
-	if s.rs != nil {
-		slot.RuleSets = append([]apitypes.RuleSet(nil), s.rs.Get().Sets...)
-	}
-	if s.pgroups != nil {
-		pg := s.pgroups.Get()
-		out := apitypes.ProxyGroupsConfig{
-			AutoCountry:      pg.AutoCountry,
-			ExcludeCountries: append([]string(nil), pg.ExcludeCountries...),
-		}
-		for _, g := range pg.Groups {
-			out.Groups = append(out.Groups, apitypes.ProxyGroup{
-				Name: g.Name, Type: g.Type, Filter: g.Filter, Value: g.Value,
-				Nodes: append([]string(nil), g.Nodes...),
-			})
-		}
-		slot.ProxyGroups = &out
-	}
-	if s.dns != nil {
-		d := s.dns.Get()
-		cp := d
-		slot.DNS = &cp
-	}
-	if s.final != nil {
-		slot.Final = s.final.Get().Outbound
-	} else if s.finalApplier != nil {
-		slot.Final = s.finalApplier.Final()
-	}
-	return slot
+	return s.snapshotLivePolicy()
 }
 
 func (s *Server) applySlot(slot apitypes.PolicySlot, postureName string) error {
-	wl := whitelist.Rules{
-		Domains: slot.Whitelist.Domains, IPs: slot.Whitelist.IPs,
-		Processes: slot.Whitelist.Processes, Devices: slot.Whitelist.Devices,
+	in := policyInputs{
+		wl: whitelist.Rules{
+			Domains: slot.Whitelist.Domains, IPs: slot.Whitelist.IPs,
+			Processes: slot.Whitelist.Processes, Devices: slot.Whitelist.Devices,
+		},
+		bl: blacklist.Rules{
+			Domains: slot.Blacklist.Domains, Keywords: slot.Blacklist.Keywords,
+			Regexes: slot.Blacklist.Regexes, IPs: slot.Blacklist.IPs,
+		},
+		dl:   directlist.Rules{Domains: slot.Directlist.Domains, IPs: slot.Directlist.IPs},
+		cr:   customrules.Rules{Rules: append([]apitypes.CustomRule(nil), slot.CustomRules...)},
+		sets: ruleset.Sets{Sets: append([]apitypes.RuleSet(nil), slot.RuleSets...)},
 	}
-	bl := blacklist.Rules{
-		Domains: slot.Blacklist.Domains, Keywords: slot.Blacklist.Keywords,
-		Regexes: slot.Blacklist.Regexes, IPs: slot.Blacklist.IPs,
-	}
-	dl := directlist.Rules{Domains: slot.Directlist.Domains, IPs: slot.Directlist.IPs}
-	cr := customrules.Rules{Rules: append([]apitypes.CustomRule(nil), slot.CustomRules...)}
-	sets := ruleset.Sets{Sets: append([]apitypes.RuleSet(nil), slot.RuleSets...)}
-	pg := proxygroups.Config{}
 	if slot.ProxyGroups != nil {
-		pg.AutoCountry = slot.ProxyGroups.AutoCountry
-		pg.ExcludeCountries = append([]string(nil), slot.ProxyGroups.ExcludeCountries...)
+		in.pg.AutoCountry = slot.ProxyGroups.AutoCountry
+		in.pg.ExcludeCountries = append([]string(nil), slot.ProxyGroups.ExcludeCountries...)
 		for _, g := range slot.ProxyGroups.Groups {
-			pg.Groups = append(pg.Groups, proxygroups.Group{
+			in.pg.Groups = append(in.pg.Groups, proxygroups.Group{
 				Name: g.Name, Type: g.Type, Filter: g.Filter, Value: g.Value,
 				Nodes: append([]string(nil), g.Nodes...),
 			})
 		}
 	} else if s.pgroups != nil {
-		pg = s.pgroups.Get()
+		in.pg = s.pgroups.Get()
 	}
-	dns := apitypes.DNSConfig{}
 	if slot.DNS != nil {
-		dns = *slot.DNS
+		in.dns = *slot.DNS
 	}
 	final := slot.Final
 	if final == "" {
@@ -205,51 +163,12 @@ func (s *Server) applySlot(slot apitypes.PolicySlot, postureName string) error {
 	}
 	nodes := s.profApplier.Nodes()
 
-	if err := s.profApplier.ApplyProfile(nodes, wl, bl, dl, cr, sets, pg, dns, "", final, postureName); err != nil {
+	if err := s.profApplier.ApplyProfile(nodes, in.wl, in.bl, in.dl, in.cr, in.sets, in.pg, in.dns, "", final, postureName); err != nil {
 		return err
 	}
-
-	// Align live stores after successful rebuild.
-	if s.wl != nil {
-		if _, err := s.wl.Set(wl); err != nil {
-			log.Println("posture: wl Set:", err)
-		}
-	}
-	if s.bl != nil {
-		if _, err := s.bl.Set(bl); err != nil {
-			log.Println("posture: bl Set:", err)
-		}
-	}
-	if s.dl != nil {
-		if _, err := s.dl.Set(dl); err != nil {
-			log.Println("posture: dl Set:", err)
-		}
-	}
-	if s.cr != nil {
-		if _, err := s.cr.Set(cr); err != nil {
-			log.Println("posture: cr Set:", err)
-		}
-	}
-	if s.rs != nil {
-		if _, err := s.rs.Set(sets); err != nil {
-			log.Println("posture: rs Set:", err)
-		}
-	}
-	if s.pgroups != nil {
-		if _, err := s.pgroups.Set(pg); err != nil {
-			log.Println("posture: pg Set:", err)
-		}
-	}
-	if s.dns != nil {
-		if _, err := s.dns.Set(dns); err != nil {
-			log.Println("posture: dns Set:", err)
-		}
-	}
-	if s.final != nil {
-		if _, err := s.final.Set(finalroute.Config{Outbound: final}); err != nil {
-			log.Println("posture: final Set:", err)
-		}
-	}
+	// A posture slot swap always replaces every axis (unlike profile
+	// activation, which only writes back axes the profile explicitly set).
+	s.alignLiveStores(in, true, true, final, true, "posture:")
 	return nil
 }
 
@@ -277,6 +196,6 @@ func (s *Server) syncActiveSlotFromLive() {
 		}
 	}
 	if err := s.posture.PutSlot(active, slot); err != nil {
-		log.Println("posture sync active slot:", err)
+		logging.L().Warn().Err(err).Msg("posture sync active slot")
 	}
 }

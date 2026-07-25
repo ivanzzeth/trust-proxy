@@ -21,8 +21,12 @@ type Engine struct {
 	cap    int
 	seq    uint64
 
-	uploadAlertBytes int64
-	autoBlock        bool
+	// uploadAlertBytes and autoBlock are read lock-free on the per-Read()
+	// hot path (checkExfilMidStream), so they're atomics rather than fields
+	// guarded by mu — a mutex there would serialize every connection's reads
+	// on one lock under concurrent throughput.
+	uploadAlertBytes atomic.Int64
+	autoBlock        atomic.Bool
 	// static (manual) indicators
 	threatDomains map[string]struct{}
 	threatIPs     map[string]struct{}
@@ -44,10 +48,10 @@ type Engine struct {
 	dgaEnabled bool
 	dnsParents map[string]*parentState
 
-	onFinalize   func(Event)     // completed connection (history sink)
-	onDetection  func(Detection) // alert findings (detections store)
-	trustedDest  func(host, destination string) bool
-	onBan        func(domain, ip, reason string)
+	onFinalize  func(Event)     // completed connection (history sink)
+	onDetection func(Detection) // alert findings (detections store)
+	trustedDest func(host, destination string) bool
+	onBan       func(domain, ip, reason string)
 }
 
 // SetOnFinalize registers a sink invoked once per connection when it closes,
@@ -74,39 +78,32 @@ func New(capacity int) *Engine {
 	if capacity <= 0 {
 		capacity = 1000
 	}
-	return &Engine{
-		cap:              capacity,
-		uploadAlertBytes: 10 << 20, // 10 MiB upload -> exfil alert
-		threatDomains:    map[string]struct{}{},
-		threatIPs:        map[string]struct{}{},
-		feedDomains:      map[string]struct{}{},
-		feedIPs:          map[string]struct{}{},
-		now:              time.Now,
-		beaconEnabled:    true,
-		beaconMinSample:  6, // >=5 intervals
-		beaconCV:         0.25,
-		beaconMinIntvl:   5 * time.Second,
-		beaconMaxIntvl:   2 * time.Hour,
-		beaconReAlert:    10 * time.Minute,
-		beacons:          map[string]*beaconState{},
-		dgaEnabled:       true,
-		dnsParents:       map[string]*parentState{},
+	e := &Engine{
+		cap:             capacity,
+		threatDomains:   map[string]struct{}{},
+		threatIPs:       map[string]struct{}{},
+		feedDomains:     map[string]struct{}{},
+		feedIPs:         map[string]struct{}{},
+		now:             time.Now,
+		beaconEnabled:   true,
+		beaconMinSample: 6, // >=5 intervals
+		beaconCV:        0.25,
+		beaconMinIntvl:  5 * time.Second,
+		beaconMaxIntvl:  2 * time.Hour,
+		beaconReAlert:   10 * time.Minute,
+		beacons:         map[string]*beaconState{},
+		dgaEnabled:      true,
+		dnsParents:      map[string]*parentState{},
 	}
+	e.uploadAlertBytes.Store(10 << 20) // 10 MiB upload -> exfil alert
+	return e
 }
 
 // SetAutoBlock toggles auto-disposal: alert connections are dropped.
-func (e *Engine) SetAutoBlock(v bool) {
-	e.mu.Lock()
-	e.autoBlock = v
-	e.mu.Unlock()
-}
+func (e *Engine) SetAutoBlock(v bool) { e.autoBlock.Store(v) }
 
 // AutoBlock reports whether auto-disposal is enabled.
-func (e *Engine) AutoBlock() bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.autoBlock
-}
+func (e *Engine) AutoBlock() bool { return e.autoBlock.Load() }
 
 // Track records a new connection event, runs connection-time detection, and
 // returns the event (whose Upload/Download the caller updates as bytes flow).
@@ -117,7 +114,7 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 	ev := &Event{
 		ID: e.seq, Time: now.Format(time.RFC3339), Network: network,
 		Host: host, Destination: dst, Source: src, Process: process, Rule: rule, Outbound: outbound,
-		Level: "info",
+		Level: "info", openedAt: now,
 	}
 	// Routed to the block outbound = denied by default-deny (or a blacklist rule).
 	if strings.HasPrefix(outbound, "block/") {
@@ -164,7 +161,7 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 // disposalActionLocked: auto-block + ban sink => banned; auto-block only => blocked; else alert.
 // Caller holds e.mu.
 func (e *Engine) disposalActionLocked() Action {
-	if !e.autoBlock {
+	if !e.autoBlock.Load() {
 		return ActionAlert
 	}
 	if e.onBan == nil {
@@ -211,13 +208,48 @@ func (e *Engine) RestoreEvents(evs []Event) {
 	}
 }
 
+// latencyBreakdown derives human-meaningful phase durations (ms) from a
+// TimingSource's raw timestamps. Returns all zero if t is nil (no timing was
+// ever attached — e.g. UDP) or a phase's timestamps aren't both set.
+func latencyBreakdown(t TimingSource) (dnsMs, connectMs, tlsMs int64) {
+	if t == nil {
+		return 0, 0, 0
+	}
+	dnsStart, dnsDone := t.DNSStartTime(), t.DNSDoneTime()
+	if !dnsStart.IsZero() && !dnsDone.IsZero() {
+		dnsMs = dnsDone.Sub(dnsStart).Milliseconds()
+	}
+	connectFrom := t.DialStartTime()
+	if !dnsDone.IsZero() {
+		connectFrom = dnsDone
+	}
+	tcpDone, tlsDone, connectDone := t.TCPDoneTime(), t.TLSDoneTime(), t.ConnectDoneTime()
+	switch {
+	case !tcpDone.IsZero() && !tlsDone.IsZero() && !connectFrom.IsZero():
+		// TLS-capable outbound: split TCP-connect from TLS-handshake.
+		connectMs = tcpDone.Sub(connectFrom).Milliseconds()
+		tlsMs = tlsDone.Sub(tcpDone).Milliseconds()
+	case !connectDone.IsZero() && !connectFrom.IsZero():
+		// No TLS split available (non-TLS outbound, or a protocol whose
+		// handshake isn't reported as a separate phase) — one combined number.
+		connectMs = connectDone.Sub(connectFrom).Milliseconds()
+	}
+	return dnsMs, connectMs, tlsMs
+}
+
 // finalize is called when a connection closes: re-score with final byte counts.
 func (e *Engine) finalize(ev *Event) {
 	up := atomic.LoadInt64(&ev.Upload)
+	dur := e.now().Sub(ev.openedAt).Milliseconds()
+	dnsMs, connectMs, tlsMs := latencyBreakdown(ev.timing)
 	e.mu.Lock()
-	thresh := e.uploadAlertBytes
-	auto := e.autoBlock
+	ev.DurationMS = dur
+	ev.DNSMs = dnsMs
+	ev.ConnectMs = connectMs
+	ev.TLSMs = tlsMs
 	e.mu.Unlock()
+	thresh := e.uploadAlertBytes.Load()
+	auto := e.autoBlock.Load()
 	if thresh > 0 && up >= thresh {
 		e.mu.Lock()
 		ev.Level = "alert"
@@ -304,10 +336,12 @@ func (e *Engine) banEvent(ev *Event, reason string) {
 // marks the event Block-eligible and bans. Returns true when the caller should
 // kill the connection now.
 func (e *Engine) checkExfilMidStream(ev *Event, up int64) bool {
-	e.mu.Lock()
-	thresh := e.uploadAlertBytes
-	auto := e.autoBlock
-	e.mu.Unlock()
+	// Lock-free fast path: this runs on every Read() of every connection, so
+	// the overwhelmingly common case (auto-block off, or still under
+	// threshold) must not take e.mu — that would serialize all concurrent
+	// connections' reads on one mutex under heavy throughput.
+	thresh := e.uploadAlertBytes.Load()
+	auto := e.autoBlock.Load()
 	if !auto || thresh <= 0 || up < thresh || ev.Denied || ev.Block {
 		return false
 	}

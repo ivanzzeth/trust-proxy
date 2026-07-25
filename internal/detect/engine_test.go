@@ -35,6 +35,17 @@ func TestDGAandTunnel(t *testing.T) {
 	if ev := track("kq3v9z7x1p2m4r8t.com"); !has(ev, "DGA-like") {
 		t.Fatalf("DGA not flagged: %v", ev.Reasons)
 	}
+	// Same DGA-like label under a multi-label TLD (.co.uk / .com.cn): must
+	// still flag the actual attacker-controlled label, not "co"/"com".
+	for _, d := range []string{"kq3v9z7x1p2m4r8t.co.uk", "kq3v9z7x1p2m4r8t.com.cn"} {
+		if ev := track(d); !has(ev, "DGA-like") {
+			t.Fatalf("DGA not flagged on multi-label TLD %s: %v", d, ev.Reasons)
+		}
+	}
+	// A benign subdomain of a real multi-label-TLD site must not false-positive.
+	if ev := track("www.bbc.co.uk"); has(ev, "DGA") || has(ev, "DNS tunnel") || has(ev, "tunneling") {
+		t.Fatalf("false positive on www.bbc.co.uk: %v", ev.Reasons)
+	}
 	// Long high-entropy subdomain label (data encoding).
 	if ev := track("mz2k9qw7rt4xy1bv6nc3ld8pf0ah5.tun.evil.io"); !has(ev, "DNS tunnel") {
 		t.Fatalf("tunnel label not flagged: %v", ev.Reasons)
@@ -307,4 +318,89 @@ func TestRestoreEvents_RoundTrip(t *testing.T) {
 	if ev.ID <= snap[0].ID {
 		t.Fatalf("new id %d not above restored max %d", ev.ID, snap[0].ID)
 	}
+}
+
+// TestFinalizeSetsDurationMS locks in the "how long was this connection
+// open" metric added for spotting stalled/slow connections (long duration,
+// few bytes moved) from the history/connections views.
+func TestFinalizeSetsDurationMS(t *testing.T) {
+	e := New(10)
+	clk := time.Unix(1_700_000_000, 0)
+	e.now = func() time.Time { return clk }
+
+	ev := e.Track("tcp", "slow.example", "1.2.3.4:443", "src", "", "", "direct")
+	if ev.DurationMS != 0 {
+		t.Fatalf("expected 0 duration before the connection closes, got %d", ev.DurationMS)
+	}
+
+	clk = clk.Add(4500 * time.Millisecond)
+	e.finalize(ev)
+	if ev.DurationMS != 4500 {
+		t.Fatalf("DurationMS = %d, want 4500", ev.DurationMS)
+	}
+}
+
+// fakeTiming implements TimingSource with fields settable per test case.
+type fakeTiming struct {
+	dialStart, dnsStart, dnsDone, tcpDone, tlsDone, connectDone time.Time
+}
+
+func (f fakeTiming) DialStartTime() time.Time   { return f.dialStart }
+func (f fakeTiming) DNSStartTime() time.Time    { return f.dnsStart }
+func (f fakeTiming) DNSDoneTime() time.Time     { return f.dnsDone }
+func (f fakeTiming) TCPDoneTime() time.Time     { return f.tcpDone }
+func (f fakeTiming) TLSDoneTime() time.Time     { return f.tlsDone }
+func (f fakeTiming) ConnectDoneTime() time.Time { return f.connectDone }
+
+// TestLatencyBreakdown locks in the DNS/connect/TLS phase-duration math for
+// the three real shapes a TimingSource can take: no timing at all (e.g. UDP),
+// a non-TLS outbound (one combined connect number), and a TLS outbound (TCP
+// split from TLS handshake) — with and without a DNS lookup.
+func TestLatencyBreakdown(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+
+	t.Run("nil timing", func(t *testing.T) {
+		dns, connect, tls := latencyBreakdown(nil)
+		if dns != 0 || connect != 0 || tls != 0 {
+			t.Fatalf("got dns=%d connect=%d tls=%d, want all 0", dns, connect, tls)
+		}
+	})
+
+	t.Run("non-TLS outbound, IP destination (no DNS)", func(t *testing.T) {
+		ft := fakeTiming{
+			dialStart:   base,
+			connectDone: base.Add(50 * time.Millisecond),
+		}
+		dns, connect, tls := latencyBreakdown(ft)
+		if dns != 0 {
+			t.Errorf("dns = %d, want 0 (no DNS phase for an IP destination)", dns)
+		}
+		if connect != 50 {
+			t.Errorf("connect = %d, want 50", connect)
+		}
+		if tls != 0 {
+			t.Errorf("tls = %d, want 0 (non-TLS outbound)", tls)
+		}
+	})
+
+	t.Run("TLS outbound with DNS", func(t *testing.T) {
+		ft := fakeTiming{
+			dialStart:   base,
+			dnsStart:    base.Add(1 * time.Millisecond),
+			dnsDone:     base.Add(21 * time.Millisecond),  // DNS: 20ms
+			tcpDone:     base.Add(51 * time.Millisecond),  // TCP: 30ms after DNS
+			tlsDone:     base.Add(101 * time.Millisecond), // TLS: 50ms after TCP
+			connectDone: base.Add(101 * time.Millisecond),
+		}
+		dns, connect, tls := latencyBreakdown(ft)
+		if dns != 20 {
+			t.Errorf("dns = %d, want 20", dns)
+		}
+		if connect != 30 {
+			t.Errorf("connect (TCP-only) = %d, want 30", connect)
+		}
+		if tls != 50 {
+			t.Errorf("tls = %d, want 50", tls)
+		}
+	})
 }

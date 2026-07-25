@@ -88,6 +88,12 @@ export interface CustomRule {
   node?: string;
   pack?: string;
   enabled: boolean;
+  /** Explicit Permit override (L3). Omitted ⇒ derived from action (direct/
+   *  proxy/node grant Permit, block/none don't). Set false to make a
+   *  direct/proxy/node rule Route-only — it still picks the egress but never
+   *  opens the allow-set; the destination must already be permitted
+   *  elsewhere (whitelist, a permit pack, …). */
+  permit?: boolean;
 }
 export interface PackRuleSet {
   catalog_tag: string;
@@ -168,6 +174,12 @@ export interface DetectEvent {
   level: 'info' | 'alert';
   denied?: boolean;
   reasons?: string[];
+  /** How long the connection was open, in ms — the key "was this slow" signal. */
+  duration_ms?: number;
+  /** Phase breakdown of duration_ms (all 0/absent when unavailable, e.g. UDP). */
+  dns_ms?: number;
+  connect_ms?: number;
+  tls_ms?: number;
 }
 export type DetectionKind = 'intel' | 'exfil' | 'beacon' | 'dga';
 export type DetectionAction = 'alert' | 'blocked' | 'banned';
@@ -292,6 +304,11 @@ export interface DNSConfig {
   rules: DNSRule[];
   final?: string;
   strategy?: string;
+  // "DNS follows route": when the servers above are reached through the exit
+  // node, direct-routed domains are resolved by this directly-dialed resolver
+  // instead, so domestic destinations get domestic answers. "" = 223.5.5.5.
+  direct_server?: string;
+  disable_direct_split?: boolean;
 }
 export interface Talker {
   host: string;
@@ -324,6 +341,12 @@ export interface HistoryRecord {
   dn: number;
   x?: boolean;
   l?: string;
+  /** How long the connection was open, in ms — the key "was this slow" signal. */
+  ms?: number;
+  /** Phase breakdown of ms (all 0/absent when unavailable, e.g. UDP). */
+  dns_ms?: number;
+  connect_ms?: number;
+  tls_ms?: number;
 }
 export interface HistoryPage {
   items: HistoryRecord[];

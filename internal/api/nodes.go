@@ -77,6 +77,7 @@ func (s *Server) handleNodeProxy(w http.ResponseWriter, r *http.Request) {
 			pr.Out.URL.Path = "/api/" + strings.TrimPrefix(rest, "/")
 			pr.Out.URL.RawQuery = r.URL.RawQuery
 			pr.Out.Host = target.Host
+			pr.Out.Header.Del("Authorization")
 			if token != "" {
 				pr.Out.Header.Set("Authorization", "Bearer "+token)
 			}

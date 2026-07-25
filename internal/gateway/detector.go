@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"net"
+	"time"
 
 	"github.com/sagernet/sing-box/adapter"
 	tun "github.com/sagernet/sing-tun"
@@ -27,6 +28,9 @@ var _ adapter.ConnectionTracker = (*detector)(nil)
 
 func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) net.Conn {
 	ev := d.engine.Track("tcp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound))
+	if timing := adapter.ConnectionTimingFromContext(ctx); timing != nil {
+		ev.SetTiming(connTiming{timing})
+	}
 	c := d.engine.Wrap(conn, ev)
 	// Auto-disposal: threat-intel hits (and mid-stream exfil via Wrap) drop the
 	// connection and persist the destination onto the blacklist.
@@ -75,3 +79,17 @@ func outStr(out adapter.Outbound) string {
 	}
 	return ""
 }
+
+// connTiming adapts *adapter.ConnectionTiming (sing-box's raw per-connection
+// phase timestamps, threaded through the router's context — see
+// adapter.ConnectionTiming's doc comment in our sing-box fork) to
+// detect.TimingSource, so internal/detect doesn't need to import sing-box's
+// adapter package directly.
+type connTiming struct{ t *adapter.ConnectionTiming }
+
+func (c connTiming) DialStartTime() time.Time   { return c.t.DialStart }
+func (c connTiming) DNSStartTime() time.Time    { return c.t.DNSStart }
+func (c connTiming) DNSDoneTime() time.Time     { return c.t.DNSDone }
+func (c connTiming) TCPDoneTime() time.Time     { return c.t.TCPDone }
+func (c connTiming) TLSDoneTime() time.Time     { return c.t.TLSDone }
+func (c connTiming) ConnectDoneTime() time.Time { return c.t.ConnectDone }

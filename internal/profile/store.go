@@ -86,18 +86,15 @@ func (s *Store) Add(p apitypes.Profile) (apitypes.Profile, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	replaced := false
-	for i := range s.data {
-		if s.data[i].ID == p.ID {
-			p.Active = s.data[i].Active
-			s.data[i] = p
-			replaced = true
-			break
+	// ID is derived from Name, so a collision here always means "a profile
+	// with this exact name already exists" — reject rather than silently
+	// overwrite the earlier profile's saved policy out from under the user.
+	for _, existing := range s.data {
+		if existing.ID == p.ID {
+			return apitypes.Profile{}, fmt.Errorf("a profile named %q already exists; delete it first or pick a different name", p.Name)
 		}
 	}
-	if !replaced {
-		s.data = append(s.data, p)
-	}
+	s.data = append(s.data, p)
 	return p, s.save()
 }
 

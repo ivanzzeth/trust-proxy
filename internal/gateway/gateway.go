@@ -7,12 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
+	"io"
 	"os"
-	"path/filepath"
-	"regexp"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -64,6 +60,7 @@ type Manager struct {
 	configPath  string
 	dataDir     string // where cache.db / tailscale state live (default ~/.trust-proxy)
 	logger      log.Logger
+	logWriter   io.Writer // sink for sing-box's own log lines (async ring; nil = stderr)
 	engine      *detect.Engine
 	clashSecret string
 
@@ -95,6 +92,14 @@ type Manager struct {
 	revertAt    time.Time
 }
 
+// SetLogWriter routes sing-box's own log lines to w (the async ring) instead of
+// stderr. Must be called before Start; nil restores sing-box's default.
+func (m *Manager) SetLogWriter(w io.Writer) {
+	m.mu.Lock()
+	m.logWriter = w
+	m.mu.Unlock()
+}
+
 // SetInitialManagementPorts sets ports whose local responses always bypass
 // default-deny (SSH, the API port) so a remote capture can't lock you out.
 func (m *Manager) SetInitialManagementPorts(ports []int) {
@@ -112,16 +117,29 @@ func (m *Manager) SetInitialEndpoints(eps []apitypes.Endpoint) {
 
 // SetEndpoints sets the exit endpoints and hot-reloads (reverts on failure).
 func (m *Manager) SetEndpoints(eps []apitypes.Endpoint) error {
+	return m.setAndRebuild("endpoints", func() func() {
+		prev := m.endpoints
+		m.endpoints = eps
+		return func() { m.endpoints = prev }
+	})
+}
+
+// setAndRebuild runs mutate under m.mu — mutate must swap in the new value and
+// return a closure that restores the previous one — then rebuilds the box. If
+// the rebuild fails, it restores the previous value under m.mu and rebuilds
+// again (best-effort) so the gateway stays up rather than going down with a
+// bad config. This is the shared revert-on-failure pattern used by every
+// Set* method below; `what` names the setting for the returned error.
+func (m *Manager) setAndRebuild(what string, mutate func() (revert func())) error {
 	m.mu.Lock()
-	prev := m.endpoints
-	m.endpoints = eps
+	revert := mutate()
 	m.mu.Unlock()
 	if err := m.rebuild(); err != nil {
 		m.mu.Lock()
-		m.endpoints = prev
+		revert()
 		m.mu.Unlock()
-		_ = m.rebuild()
-		return fmt.Errorf("apply endpoints failed (reverted): %w", err)
+		_ = m.rebuild() // best-effort restore
+		return fmt.Errorf("apply %s failed (reverted): %w", what, err)
 	}
 	return nil
 }
@@ -162,18 +180,11 @@ func (m *Manager) SetPosture(p string) error {
 	if !apitypes.ValidPosture(p) {
 		return fmt.Errorf("invalid posture %q", p)
 	}
-	m.mu.Lock()
-	prev := m.posture
-	m.posture = p
-	m.mu.Unlock()
-	if err := m.rebuild(); err != nil {
-		m.mu.Lock()
-		m.posture = prev
-		m.mu.Unlock()
-		_ = m.rebuild()
-		return fmt.Errorf("apply posture failed (reverted): %w", err)
-	}
-	return nil
+	return m.setAndRebuild("posture", func() func() {
+		prev := m.posture
+		m.posture = p
+		return func() { m.posture = prev }
+	})
 }
 
 // SetInitialFinal sets the catch-all egress used by the first Start().
@@ -205,18 +216,11 @@ func (m *Manager) SetFinal(outbound string) error {
 	if err := finalroute.Validate(outbound); err != nil {
 		return err
 	}
-	m.mu.Lock()
-	prev := m.final
-	m.final = outbound
-	m.mu.Unlock()
-	if err := m.rebuild(); err != nil {
-		m.mu.Lock()
-		m.final = prev
-		m.mu.Unlock()
-		_ = m.rebuild()
-		return fmt.Errorf("apply final failed (reverted): %w", err)
-	}
-	return nil
+	return m.setAndRebuild("final", func() func() {
+		prev := m.final
+		m.final = outbound
+		return func() { m.final = prev }
+	})
 }
 
 // SetInitialMode sets the mode used by the first Start() (before the box runs).
@@ -281,7 +285,7 @@ func (m *Manager) SetModeGuarded(mode string, revertAfter time.Duration) (string
 		m.revertTimer.Stop()
 	}
 	m.revertTo = prev
-	m.revertAt = m.nowUTC().Add(revertAfter)
+	m.revertAt = time.Now().Add(revertAfter)
 	m.revertTimer = time.AfterFunc(revertAfter, func() {
 		m.guardMu.Lock()
 		to := m.revertTo
@@ -326,232 +330,6 @@ func (m *Manager) PendingRevert() (to string, secondsLeft int, ok bool) {
 	return m.revertTo, left, true
 }
 
-func (m *Manager) nowUTC() time.Time { return time.Now() }
-
-// truncVals returns at most n values, appending a "(+K more)" marker if the
-// slice was longer — keeps the explain view readable for big rule-sets.
-func truncVals(vals []string, n int) []string {
-	if len(vals) <= n {
-		return append([]string(nil), vals...)
-	}
-	out := append([]string(nil), vals[:n]...)
-	return append(out, fmt.Sprintf("(+%d more)", len(vals)-n))
-}
-
-// EffectiveRules projects the current policy into the ordered, layer-labeled
-// view the "why is this allowed/blocked" UI renders. It mirrors, in the SAME
-// order, the rules buildMergedConfig injects — but derived directly from the
-// stores (the merged config isn't retained). The drift test in gateway_test.go
-// asserts the layer sequence here matches a freshly built merged config.
-func (m *Manager) EffectiveRules() []apitypes.RuleView {
-	m.mu.Lock()
-	wl, bl, dl, cr, pg, sets, mode, mgmt, nodes, eps, final, posture :=
-		m.wl, m.bl, m.dl, m.cr, m.pg, m.rulesets, m.mode, m.mgmtPorts, m.nodes, m.endpoints, m.final, m.posture
-	m.mu.Unlock()
-	if posture == "" {
-		posture = apitypes.PostureStrict
-	}
-
-	var epTags []string
-	for _, e := range eps {
-		if e.Enabled && e.Tag != "" {
-			epTags = append(epTags, e.Tag)
-		}
-	}
-	// Valid custom `node` targets = individual nodes/endpoints ∪ group tags
-	// (mirrors injectOutbounds), so a rule pointing at a group isn't flagged stale.
-	nodeT := memberTags(nodes, epTags)
-	_, groupT := buildProxyGroups(nodeT, loopbackTags(nodes), pg)
-	members := map[string]bool{}
-	for _, t := range append(append([]string(nil), nodeT...), groupT...) {
-		members[t] = true
-	}
-
-	var out []apitypes.RuleView
-	add := func(v apitypes.RuleView) { out = append(out, v) }
-
-	// prelude: sniff (+ TUN hijack-dns).
-	add(apitypes.RuleView{Layer: "prelude", Source: "sniff", Action: "sniff", Note: "detect SNI/domain"})
-	if mode == ModeTUN {
-		add(apitypes.RuleView{Layer: "prelude", Source: "hijack-dns", Action: "hijack-dns", Matcher: "protocol"})
-	}
-
-	// L0 management rescue (topmost).
-	if len(mgmt) > 0 {
-		vals := make([]string, len(mgmt))
-		for i, p := range mgmt {
-			vals[i] = strconv.Itoa(p)
-		}
-		add(apitypes.RuleView{Layer: "L0", Source: "management", Action: "route:direct", Matcher: "source_port", Values: vals, Note: "SSH/API rescue"})
-	}
-
-	// L1 security floor.
-	if sfx, rgx := splitDomainMatchers(bl.Domains); len(sfx) > 0 || len(rgx) > 0 {
-		if len(sfx) > 0 {
-			add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "domain_suffix", Values: truncVals(sfx, 20)})
-		}
-		if len(rgx) > 0 {
-			add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "domain_regex", Values: truncVals(rgx, 20)})
-		}
-	}
-	if len(bl.Keywords) > 0 {
-		add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "domain_keyword", Values: truncVals(bl.Keywords, 20)})
-	}
-	if len(bl.Regexes) > 0 {
-		add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "domain_regex", Values: truncVals(bl.Regexes, 20)})
-	}
-	if len(bl.IPs) > 0 {
-		add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "ip_cidr", Values: truncVals(bl.IPs, 20)})
-	}
-	for _, rs := range sets.Sets {
-		if rs.Enabled && rs.Tag != "" && apitypes.RuleRoleIsDeny(rs.Role) {
-			add(apitypes.RuleView{Layer: "L1", Source: "rule-set:" + rs.Tag, Action: "reject", Matcher: "rule_set", Values: []string{rs.Tag}})
-		}
-	}
-	if len(wl.Processes) > 0 {
-		add(apitypes.RuleView{Layer: "L1", Source: "process", Action: "reject", Matcher: "process (inverted)", Values: truncVals(wl.Processes, 20), Note: "unlisted processes can't egress"})
-	}
-	if len(wl.Devices) > 0 {
-		add(apitypes.RuleView{Layer: "L1", Source: "device", Action: "reject", Matcher: "source_ip_cidr (inverted)", Values: truncVals(wl.Devices, 20), Note: "unlisted source devices can't egress"})
-	}
-
-	// L2 Global bypass (always injected; inert in Rule mode).
-	add(apitypes.RuleView{Layer: "L2", Source: "global", Action: "route:proxy", Matcher: "clash_mode", Values: []string{"Global"}, Note: "only when routing mode = Global"})
-
-	// L3 Permit / L4 Route — orthogonal axes.
-	var directSets, proxySets, permitSets []string
-	for _, rs := range sets.Sets {
-		if !rs.Enabled || rs.Tag == "" {
-			continue
-		}
-		if apitypes.RuleRoleGrantsPermit(rs.Role) {
-			permitSets = append(permitSets, rs.Tag)
-		}
-		switch apitypes.RuleRoleRouteEgress(rs.Role) {
-		case "direct":
-			directSets = append(directSets, rs.Tag)
-		case "proxy":
-			proxySets = append(proxySets, rs.Tag)
-		}
-	}
-	wlSfx, wlRgx := splitDomainMatchers(wl.Domains)
-	dlSfx, dlRgx := splitDomainMatchers(dl.Domains)
-
-	var permitCustom []apitypes.CustomRule
-	var routeCustom []apitypes.CustomRule
-	for _, r := range cr.Rules {
-		if !r.Enabled {
-			continue
-		}
-		apitypes.NormalizeCustomRule(&r)
-		eg := r.RouteEgress()
-		deadNode := eg == apitypes.CustomEgressNode && !members[r.Node]
-		if r.GrantsPermit() && !deadNode {
-			permitCustom = append(permitCustom, r)
-		}
-		if eg != "" {
-			routeCustom = append(routeCustom, r)
-		}
-	}
-	hasUserPermit := len(wlSfx) > 0 || len(wlRgx) > 0 || len(wl.IPs) > 0 ||
-		len(permitSets) > 0 || len(permitCustom) > 0
-	splitOpen := posture == apitypes.PostureSplit
-
-	if !hasUserPermit && !splitOpen {
-		add(apitypes.RuleView{Layer: "catch-all", Source: "default-deny", Action: "route:blocked", Matcher: "network", Note: "nothing permitted → everything blocked (fail-closed)"})
-		return out
-	}
-
-	if splitOpen {
-		add(apitypes.RuleView{Layer: "L3", Source: "posture:split", Action: "gate-open", Matcher: "", Note: "Split posture — Permit gate skipped (default-allow); L1 floor + L4 + Final still apply"})
-	} else {
-		// L3 Permit gate — list every source.
-		var allowBits []string
-		if n := len(wlSfx) + len(wlRgx) + len(wl.IPs); n > 0 {
-			allowBits = append(allowBits, fmt.Sprintf("whitelist(%d)", n))
-		}
-		for _, tag := range permitSets {
-			allowBits = append(allowBits, "rule-set:"+tag)
-		}
-		for _, r := range permitCustom {
-			src := "custom"
-			if r.Pack != "" {
-				src = "pack:" + r.Pack
-			}
-			allowBits = append(allowBits, fmt.Sprintf("%s:%s=%s", src, r.Match, r.Value))
-		}
-		allowBits = append(allowBits, "private-CIDRs")
-		add(apitypes.RuleView{Layer: "L3", Source: "permit-gate", Action: "route:blocked", Matcher: "logical (inverted)", Values: truncVals(allowBits, 40), Note: "anything NOT permitted is blocked; Route never opens this gate"})
-	}
-
-	// L4 Route: custom → no-proxy → route-proxy RS → route-direct RS → Final.
-	for _, r := range routeCustom {
-		key, ok := customrules.SingboxMatchKey(r.Match)
-		if !ok || r.Value == "" {
-			continue
-		}
-		src := "custom"
-		if r.Pack != "" {
-			src = "pack:" + r.Pack
-		}
-		v := apitypes.RuleView{Layer: "L4", Source: src, Matcher: key, Values: []string{r.Value}}
-		if !r.GrantsPermit() {
-			v.Note = "route-only (does not permit)"
-		}
-		switch r.RouteEgress() {
-		case apitypes.CustomEgressDirect:
-			v.Action = "route:direct"
-		case apitypes.CustomEgressProxy:
-			if r.Node != "" && members[r.Node] {
-				v.Action = "route:" + r.Node
-			} else {
-				v.Action = "route:proxy"
-				if r.Node != "" {
-					v.Note = strings.TrimSpace(v.Note + " ; group " + r.Node + " missing — via proxy")
-				}
-			}
-		case apitypes.CustomEgressBlock:
-			v.Action = "route:blocked"
-		case apitypes.CustomEgressNode:
-			v.Action = "route:" + r.Node
-			if !members[r.Node] {
-				v.Note = "node " + r.Node + " missing — rule skipped"
-			}
-		}
-		add(v)
-	}
-	if len(dlSfx) > 0 {
-		add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "domain_suffix", Values: truncVals(dlSfx, 20), Note: "route-only (does not permit)"})
-	}
-	if len(dlRgx) > 0 {
-		add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "domain_regex", Values: truncVals(dlRgx, 20), Note: "route-only (does not permit)"})
-	}
-	ipVals := append(append([]string(nil), dl.IPs...), privateCIDRs...)
-	add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "ip_cidr", Values: truncVals(ipVals, 20), Note: "includes built-in LAN/private ranges; route-only"})
-	for _, tag := range proxySets {
-		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:proxy", Matcher: "rule_set", Values: []string{tag}})
-	}
-	for _, tag := range directSets {
-		note := ""
-		if !sliceHas(permitSets, tag) {
-			note = "route-only (does not permit)"
-		}
-		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:direct", Matcher: "rule_set", Values: []string{tag}, Note: note})
-	}
-
-	allTags := append(append([]string(nil), nodeT...), groupT...)
-	egress := resolveFinal(final, allTags)
-	note := "Final — permitted traffic with no explicit egress; never opens an empty gate"
-	if splitOpen {
-		note = "Final — Split default-allow catch-all egress"
-	}
-	if egress != final && final != "" {
-		note = "Final " + final + " missing — via " + egress
-	}
-	add(apitypes.RuleView{Layer: "catch-all", Source: "default", Action: "route:" + egress, Matcher: "network", Note: note})
-	return out
-}
-
 // Start builds and starts the box from the base config + current policy.
 func (m *Manager) Start() error { return m.rebuild() }
 
@@ -582,30 +360,25 @@ func (m *Manager) Nodes() []apitypes.Node {
 }
 
 // Apply sets the subscription nodes and hot-reloads (empty resets the proxy
-// group to direct-only).
+// group to direct-only). On rebuild failure it reverts to the previous nodes
+// so the gateway stays up rather than going down with a bad config.
 func (m *Manager) Apply(nodes []apitypes.Node) error {
-	m.mu.Lock()
-	m.nodes = nodes
-	m.mu.Unlock()
-	return m.rebuild()
+	return m.setAndRebuild("nodes", func() func() {
+		prev := m.nodes
+		m.nodes = nodes
+		return func() { m.nodes = prev }
+	})
 }
 
 // SetWhitelist sets the egress allow-list and hot-reloads. On rebuild failure
 // (e.g. a malformed entry) it reverts to the previous list so the gateway stays
 // up rather than going down with a bad config.
 func (m *Manager) SetWhitelist(wl whitelist.Rules) error {
-	m.mu.Lock()
-	prev := m.wl
-	m.wl = wl
-	m.mu.Unlock()
-	if err := m.rebuild(); err != nil {
-		m.mu.Lock()
-		m.wl = prev
-		m.mu.Unlock()
-		_ = m.rebuild() // best-effort restore
-		return fmt.Errorf("apply whitelist failed (reverted): %w", err)
-	}
-	return nil
+	return m.setAndRebuild("whitelist", func() func() {
+		prev := m.wl
+		m.wl = wl
+		return func() { m.wl = prev }
+	})
 }
 
 // SetInitialBlacklist sets the egress deny-list used by the first Start()
@@ -620,18 +393,11 @@ func (m *Manager) SetInitialBlacklist(bl blacklist.Rules) {
 // (e.g. a malformed entry) it reverts to the previous list so the gateway stays
 // up rather than going down with a bad config.
 func (m *Manager) SetBlacklist(bl blacklist.Rules) error {
-	m.mu.Lock()
-	prev := m.bl
-	m.bl = bl
-	m.mu.Unlock()
-	if err := m.rebuild(); err != nil {
-		m.mu.Lock()
-		m.bl = prev
-		m.mu.Unlock()
-		_ = m.rebuild() // best-effort restore
-		return fmt.Errorf("apply blacklist failed (reverted): %w", err)
-	}
-	return nil
+	return m.setAndRebuild("blacklist", func() func() {
+		prev := m.bl
+		m.bl = bl
+		return func() { m.bl = prev }
+	})
 }
 
 // SetInitialDirectList sets the no-proxy (bypass) list used by the first Start().
@@ -644,18 +410,11 @@ func (m *Manager) SetInitialDirectList(dl directlist.Rules) {
 // SetDirectList sets the no-proxy (bypass) list and hot-reloads. On rebuild
 // failure it reverts to the previous list so the gateway stays up.
 func (m *Manager) SetDirectList(dl directlist.Rules) error {
-	m.mu.Lock()
-	prev := m.dl
-	m.dl = dl
-	m.mu.Unlock()
-	if err := m.rebuild(); err != nil {
-		m.mu.Lock()
-		m.dl = prev
-		m.mu.Unlock()
-		_ = m.rebuild() // best-effort restore
-		return fmt.Errorf("apply no-proxy list failed (reverted): %w", err)
-	}
-	return nil
+	return m.setAndRebuild("no-proxy list", func() func() {
+		prev := m.dl
+		m.dl = dl
+		return func() { m.dl = prev }
+	})
 }
 
 // SetInitialCustomRules sets the custom routing rules used by the first Start().
@@ -668,18 +427,11 @@ func (m *Manager) SetInitialCustomRules(cr customrules.Rules) {
 // SetCustomRules sets the custom routing rules and hot-reloads. On rebuild
 // failure it reverts to the previous rules so the gateway stays up.
 func (m *Manager) SetCustomRules(cr customrules.Rules) error {
-	m.mu.Lock()
-	prev := m.cr
-	m.cr = cr
-	m.mu.Unlock()
-	if err := m.rebuild(); err != nil {
-		m.mu.Lock()
-		m.cr = prev
-		m.mu.Unlock()
-		_ = m.rebuild() // best-effort restore
-		return fmt.Errorf("apply custom rules failed (reverted): %w", err)
-	}
-	return nil
+	return m.setAndRebuild("custom rules", func() func() {
+		prev := m.cr
+		m.cr = cr
+		return func() { m.cr = prev }
+	})
 }
 
 // SetInitialProxyGroups sets the proxy-group config used by the first Start().
@@ -691,18 +443,11 @@ func (m *Manager) SetInitialProxyGroups(pg proxygroups.Config) {
 
 // SetProxyGroups sets the proxy-group config and hot-reloads (reverts on failure).
 func (m *Manager) SetProxyGroups(pg proxygroups.Config) error {
-	m.mu.Lock()
-	prev := m.pg
-	m.pg = pg
-	m.mu.Unlock()
-	if err := m.rebuild(); err != nil {
-		m.mu.Lock()
-		m.pg = prev
-		m.mu.Unlock()
-		_ = m.rebuild() // best-effort restore
-		return fmt.Errorf("apply proxy groups failed (reverted): %w", err)
-	}
-	return nil
+	return m.setAndRebuild("proxy groups", func() func() {
+		prev := m.pg
+		m.pg = pg
+		return func() { m.pg = prev }
+	})
 }
 
 // SetInitialRuleSets sets the imported rule sets used by the first Start().
@@ -712,12 +457,13 @@ func (m *Manager) SetInitialRuleSets(sets ruleset.Sets) {
 	m.mu.Unlock()
 }
 
-// SetRuleSets sets the imported rule sets and hot-reloads.
+// SetRuleSets sets the imported rule sets and hot-reloads (reverts on failure).
 func (m *Manager) SetRuleSets(sets ruleset.Sets) error {
-	m.mu.Lock()
-	m.rulesets = sets
-	m.mu.Unlock()
-	return m.rebuild()
+	return m.setAndRebuild("rule sets", func() func() {
+		prev := m.rulesets
+		m.rulesets = sets
+		return func() { m.rulesets = prev }
+	})
 }
 
 // SetInitialDNS sets the DNS config used by the first Start().
@@ -729,18 +475,11 @@ func (m *Manager) SetInitialDNS(d apitypes.DNSConfig) {
 
 // SetDNS sets the resolver policy and hot-reloads (reverts on failure).
 func (m *Manager) SetDNS(d apitypes.DNSConfig) error {
-	m.mu.Lock()
-	prev := m.dns
-	m.dns = d
-	m.mu.Unlock()
-	if err := m.rebuild(); err != nil {
-		m.mu.Lock()
-		m.dns = prev
-		m.mu.Unlock()
-		_ = m.rebuild()
-		return fmt.Errorf("apply DNS failed (reverted): %w", err)
-	}
-	return nil
+	return m.setAndRebuild("DNS", func() func() {
+		prev := m.dns
+		m.dns = d
+		return func() { m.dns = prev }
+	})
 }
 
 // SetInitialInbound sets the mixed-inbound auth used by the first Start().
@@ -752,18 +491,11 @@ func (m *Manager) SetInitialInbound(a apitypes.InboundAuth) {
 
 // SetInbound sets the mixed-inbound auth and hot-reloads (reverts on failure).
 func (m *Manager) SetInbound(a apitypes.InboundAuth) error {
-	m.mu.Lock()
-	prev := m.inbound
-	m.inbound = a
-	m.mu.Unlock()
-	if err := m.rebuild(); err != nil {
-		m.mu.Lock()
-		m.inbound = prev
-		m.mu.Unlock()
-		_ = m.rebuild() // best-effort restore
-		return fmt.Errorf("apply inbound auth failed (reverted): %w", err)
-	}
-	return nil
+	return m.setAndRebuild("inbound auth", func() func() {
+		prev := m.inbound
+		m.inbound = a
+		return func() { m.inbound = prev }
+	})
 }
 
 // SetInitialTUN sets the tun-inbound options used by the first Start().
@@ -775,18 +507,11 @@ func (m *Manager) SetInitialTUN(t apitypes.TUNConfig) {
 
 // SetTUN sets the tun-inbound options and hot-reloads (reverts on failure).
 func (m *Manager) SetTUN(t apitypes.TUNConfig) error {
-	m.mu.Lock()
-	prev := m.tun
-	m.tun = t
-	m.mu.Unlock()
-	if err := m.rebuild(); err != nil {
-		m.mu.Lock()
-		m.tun = prev
-		m.mu.Unlock()
-		_ = m.rebuild() // best-effort restore
-		return fmt.Errorf("apply TUN options failed (reverted): %w", err)
-	}
-	return nil
+	return m.setAndRebuild("TUN options", func() func() {
+		prev := m.tun
+		m.tun = t
+		return func() { m.tun = prev }
+	})
 }
 
 // ApplyProfile atomically applies a full policy snapshot (nodes + ACL lists +
@@ -862,13 +587,18 @@ func (m *Manager) rebuild() error {
 	}
 
 	// Free listeners before starting the new instance (same ports): brief blip.
+	// m.instance is cleared before Close() so that if Start() below fails, we
+	// don't leave a dangling reference to an already-closed box around — a
+	// later revert-and-rebuild would otherwise double-Close() it.
 	m.mu.Lock()
 	old := m.instance
+	m.instance = nil
 	m.mu.Unlock()
 	if old != nil {
 		old.Close()
 	}
 	if err := newInst.Start(); err != nil {
+		m.logger.Error("gateway rebuild: new box failed to start after closing the previous instance; gateway has no running box until the next successful rebuild: ", err)
 		return fmt.Errorf("start box: %w", err)
 	}
 	m.mu.Lock()
@@ -886,7 +616,10 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 	if err != nil {
 		return nil, err
 	}
-	instance, err := box.New(box.Options{Context: ctx, Options: options})
+	// DefaultLogWriter (our sing-box fork): sing-box formats and writes one line
+	// per connection ON the connection goroutine, so the sink must not be a file.
+	// nil => sing-box keeps its own stderr default (foreground runs).
+	instance, err := box.New(box.Options{Context: ctx, Options: options, DefaultLogWriter: m.logWriter})
 	if err != nil {
 		return nil, err
 	}
@@ -972,9 +705,9 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	if err := injectClashSecret(cfg, clashSecret); err != nil {
 		return nil, err
 	}
-	// Safety contracts last: TUN DNS/hijack, no loopback in Auto when remotes
-	// exist. Never widens the ACL allow-set.
-	if err := applyInvariants(cfg, mode, loopback); err != nil {
+	// Safety contracts last: TUN DNS/hijack, DNS-follows-route split, no loopback
+	// in Auto when remotes exist. Never widens the ACL allow-set.
+	if err := applyInvariants(cfg, mode, loopback, dns, ruleset.DNSSafeTags(sets)); err != nil {
 		return nil, err
 	}
 	return json.Marshal(cfg)
@@ -993,180 +726,6 @@ var privateCIDRs = []string{
 // egress direct (and always join the ACL allow-set when a gate is present).
 // The API surfaces these as read-only defaults in the No-Proxy view.
 func PrivateCIDRs() []string { return append([]string(nil), privateCIDRs...) }
-
-// injectDNS builds the sing-box dns block from our config. Empty servers => no
-// dns block (keep sing-box defaults / TUN's injected resolver). Server types map
-// straight to sing-box 1.12+ typed DNS servers; local needs no address.
-func injectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig, dataDir string) error {
-	if len(d.Servers) == 0 {
-		return nil
-	}
-	servers := make([]map[string]any, 0, len(d.Servers))
-	usesFakeIP := false
-	for _, s := range d.Servers {
-		m := map[string]any{"type": s.Type, "tag": s.Tag}
-		switch s.Type {
-		case "local":
-			// no address
-		case "fakeip":
-			// fakeip synthesizes answers from a private range — no address/detour.
-			inet4 := s.Inet4Range
-			if inet4 == "" {
-				inet4 = "198.18.0.0/15"
-			}
-			inet6 := s.Inet6Range
-			if inet6 == "" {
-				inet6 = "fc00::/18"
-			}
-			m["inet4_range"] = inet4
-			m["inet6_range"] = inet6
-			usesFakeIP = true
-		case "hosts":
-			// hosts answers from a predefined map — no address/detour.
-			if len(s.Records) > 0 {
-				m["predefined"] = s.Records
-			}
-		default:
-			m["server"] = s.Server
-			if s.Port > 0 {
-				m["server_port"] = s.Port
-			}
-			// Only "proxy" is a meaningful detour; "direct"/"" dial directly
-			// (sing-box rejects a detour to the empty `direct` outbound).
-			if s.Detour == "proxy" {
-				m["detour"] = "proxy"
-			}
-		}
-		servers = append(servers, m)
-	}
-	rules := make([]map[string]any, 0, len(d.Rules))
-	for _, r := range d.Rules {
-		if r.Server == "" || (len(r.DomainSuffix) == 0 && len(r.RuleSet) == 0) {
-			continue // never emit an empty-matcher rule
-		}
-		m := map[string]any{"server": r.Server}
-		if len(r.DomainSuffix) > 0 {
-			m["domain_suffix"] = r.DomainSuffix
-		}
-		if len(r.RuleSet) > 0 {
-			m["rule_set"] = r.RuleSet
-		}
-		rules = append(rules, m)
-	}
-	dns := map[string]any{"servers": servers}
-	if len(rules) > 0 {
-		dns["rules"] = rules
-	}
-	if d.Final != "" {
-		dns["final"] = d.Final
-	}
-	if d.Strategy != "" {
-		dns["strategy"] = d.Strategy
-	}
-	raw, err := json.Marshal(dns)
-	if err != nil {
-		return err
-	}
-	cfg["dns"] = raw
-
-	// fakeip needs its allocations persisted across rebuilds/restarts, otherwise
-	// live connections lose their fake<->real mapping. Enable cache_file (with
-	// store_fakeip) the same way remote rule_sets do.
-	if usesFakeIP {
-		if err := ensureCacheFile(cfg, dataDir); err != nil {
-			return err
-		}
-		if err := ensureStoreFakeIP(cfg, dataDir); err != nil {
-			return err
-		}
-	}
-
-	// Route outbound domain resolution through the dns router (required since
-	// sing-box 1.12), which also makes every lookup observable in the logs — the
-	// hook our DNS-tunnel / DGA detection consumes.
-	resolver := d.Final
-	if resolver == "" {
-		resolver = d.Servers[0].Tag
-	}
-	// default_domain_resolver must resolve to real addresses: a fakeip/hosts
-	// server can't serve as the outbound resolver. Fall back to the first
-	// server that returns real answers.
-	if isSynthResolver(d, resolver) {
-		resolver = ""
-		for _, s := range d.Servers {
-			if s.Type != "fakeip" && s.Type != "hosts" {
-				resolver = s.Tag
-				break
-			}
-		}
-	}
-	return setDefaultDomainResolver(cfg, resolver)
-}
-
-// isSynthResolver reports whether the named server tag is a fakeip/hosts server
-// (which synthesize answers and can't back default_domain_resolver).
-func isSynthResolver(d apitypes.DNSConfig, tag string) bool {
-	for _, s := range d.Servers {
-		if s.Tag == tag {
-			return s.Type == "fakeip" || s.Type == "hosts"
-		}
-	}
-	return false
-}
-
-// ensureStoreFakeIP flips experimental.cache_file.store_fakeip on so fakeip
-// address allocations survive rebuilds/restarts.
-func ensureStoreFakeIP(cfg map[string]json.RawMessage, dataDir string) error {
-	var exp map[string]json.RawMessage
-	if raw, ok := cfg["experimental"]; ok {
-		if err := json.Unmarshal(raw, &exp); err != nil {
-			return err
-		}
-	} else {
-		exp = map[string]json.RawMessage{}
-	}
-	var cf map[string]any
-	if raw, ok := exp["cache_file"]; ok {
-		if err := json.Unmarshal(raw, &cf); err != nil {
-			return err
-		}
-	} else {
-		cf = map[string]any{"enabled": true, "path": filepath.Join(dataDir, "cache.db")}
-	}
-	cf["store_fakeip"] = true
-	ncf, err := json.Marshal(cf)
-	if err != nil {
-		return err
-	}
-	exp["cache_file"] = ncf
-	newExp, err := json.Marshal(exp)
-	if err != nil {
-		return err
-	}
-	cfg["experimental"] = newExp
-	return nil
-}
-
-func setDefaultDomainResolver(cfg map[string]json.RawMessage, server string) error {
-	if server == "" {
-		return nil
-	}
-	var route map[string]json.RawMessage
-	if raw, ok := cfg["route"]; ok {
-		if err := json.Unmarshal(raw, &route); err != nil {
-			return err
-		}
-	} else {
-		route = map[string]json.RawMessage{}
-	}
-	route["default_domain_resolver"], _ = json.Marshal(server)
-	nr, err := json.Marshal(route)
-	if err != nil {
-		return err
-	}
-	cfg["route"] = nr
-	return nil
-}
 
 // preludeLen returns the number of leading prelude rules (sniff / hijack-dns).
 // New floor rules are inserted right after the prelude so they sit above the
@@ -1201,1299 +760,4 @@ func catchAllIdx(rules []json.RawMessage) int {
 		}
 	}
 	return len(rules)
-}
-
-// injectRuleSets registers enabled rule_set descriptors in route.rule_set and
-// emits block-role rejects into the L1 security floor (right after the prelude).
-// Allow-role rule_sets are NOT routed here — injectAllow (L3/L4) owns both the
-// allow decision and the egress choice for them.
-func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir string, hasExit bool) error {
-	var enabled []apitypes.RuleSet
-	for _, rs := range sets.Sets {
-		if rs.Enabled && rs.Tag != "" {
-			enabled = append(enabled, rs)
-		}
-	}
-	if len(enabled) == 0 {
-		return nil
-	}
-	routeRaw, ok := cfg["route"]
-	if !ok {
-		return nil
-	}
-	var route map[string]json.RawMessage
-	if err := json.Unmarshal(routeRaw, &route); err != nil {
-		return err
-	}
-
-	// (1) route.rule_set[] descriptors, dedup by tag (idempotent re-inject).
-	var descriptors []json.RawMessage
-	if raw, ok := route["rule_set"]; ok {
-		if err := json.Unmarshal(raw, &descriptors); err != nil {
-			return err
-		}
-	}
-	seen := map[string]bool{}
-	for _, d := range descriptors {
-		var m struct {
-			Tag string `json:"tag"`
-		}
-		_ = json.Unmarshal(d, &m)
-		if m.Tag != "" {
-			seen[m.Tag] = true
-		}
-	}
-	for _, rs := range enabled {
-		if seen[rs.Tag] {
-			continue
-		}
-		desc := map[string]any{"type": rs.Type, "tag": rs.Tag, "format": rs.Format}
-		if rs.Type == "local" {
-			desc["path"] = rs.Path
-		} else {
-			// The .srs fetch dials download_detour directly (it bypasses route.rules),
-			// so under default-deny it isn't the whitelist that blocks it — a direct
-			// dial to e.g. raw.githubusercontent.com is what fails behind the GFW.
-			// When an exit is configured, download THROUGH the proxy group so the
-			// fetch crosses the GFW; otherwise fall back to direct.
-			detour := rs.DownloadDetour
-			if detour == "" {
-				detour = "direct"
-			}
-			if detour == "direct" && hasExit {
-				detour = ProxyGroupTag
-			}
-			desc["url"] = rs.URL
-			desc["download_detour"] = detour
-			desc["update_interval"] = rs.UpdateInterval
-		}
-		raw, err := json.Marshal(desc)
-		if err != nil {
-			return err
-		}
-		descriptors = append(descriptors, raw)
-		seen[rs.Tag] = true
-	}
-	nrs, err := json.Marshal(descriptors)
-	if err != nil {
-		return err
-	}
-	route["rule_set"] = nrs
-
-	// (2) deny-role rule_sets -> reject (L1 floor), inserted right after the
-	// prelude so they sit above the ACL gate. Permit/route roles are handled
-	// by injectAllow.
-	var blockTags []string
-	for _, rs := range enabled {
-		if apitypes.RuleRoleIsDeny(rs.Role) {
-			blockTags = append(blockTags, rs.Tag)
-		}
-	}
-	if len(blockTags) > 0 {
-		var rules []json.RawMessage
-		if raw, ok := route["rules"]; ok {
-			if err := json.Unmarshal(raw, &rules); err != nil {
-				return err
-			}
-		}
-		at := preludeLen(rules)
-		blockRule, _ := json.Marshal(map[string]any{"rule_set": blockTags, "action": "reject"})
-		merged := make([]json.RawMessage, 0, len(rules)+1)
-		merged = append(merged, rules[:at]...)
-		merged = append(merged, blockRule)
-		merged = append(merged, rules[at:]...)
-		nr, err := json.Marshal(merged)
-		if err != nil {
-			return err
-		}
-		route["rules"] = nr
-	}
-	nroute, err := json.Marshal(route)
-	if err != nil {
-		return err
-	}
-	cfg["route"] = nroute
-
-	// Remote rule_set needs a cache so the frequent rebuilds don't re-download
-	// (and a cached copy survives a blocked URL). Ensure cache_file is on.
-	return ensureCacheFile(cfg, dataDir)
-}
-
-// ensureCacheFile turns on experimental.cache_file (persists downloaded .srs +
-// selected outbound across rebuilds/restarts).
-func ensureCacheFile(cfg map[string]json.RawMessage, dataDir string) error {
-	var exp map[string]json.RawMessage
-	if raw, ok := cfg["experimental"]; ok {
-		if err := json.Unmarshal(raw, &exp); err != nil {
-			return err
-		}
-	} else {
-		exp = map[string]json.RawMessage{}
-	}
-	if _, ok := exp["cache_file"]; !ok {
-		cf, _ := json.Marshal(map[string]any{"enabled": true, "path": filepath.Join(dataDir, "cache.db")})
-		exp["cache_file"] = cf
-	}
-	newExp, err := json.Marshal(exp)
-	if err != nil {
-		return err
-	}
-	cfg["experimental"] = newExp
-	return nil
-}
-
-// injectClashModeGlobal adds a route rule that routes everything to the proxy
-// group ONLY when the live Clash mode is "Global" — a no-rebuild toggle that
-// turns the ACL default-deny OFF (unlisted traffic egresses via proxy instead
-// of being blocked). It runs BEFORE injectAllow, so it lands just above the ACL
-// gate and BELOW the security floor (blacklist / rule-set-block /
-// process+device gates): in Global mode traffic that clears the floor matches
-// here and routes to proxy before the gate can block it, while blacklisted and
-// unknown-process/device connections are still rejected. In "Rule" mode the
-// rule is inert (clash_mode mismatch, matched case-insensitively) and the gate
-// applies unchanged. sing-box derives the selectable mode list from the
-// clash_mode values present in the rules, so this alone exposes ["Global","Rule"].
-func injectClashModeGlobal(cfg map[string]json.RawMessage, dataDir string) error {
-	routeRaw, ok := cfg["route"]
-	if !ok {
-		return nil
-	}
-	var route map[string]json.RawMessage
-	if err := json.Unmarshal(routeRaw, &route); err != nil {
-		return err
-	}
-	var rules []json.RawMessage
-	if raw, ok := route["rules"]; ok {
-		if err := json.Unmarshal(raw, &rules); err != nil {
-			return err
-		}
-	}
-	// Insert right before the default-deny catch-all (the bare network matcher).
-	catchIdx := catchAllIdx(rules)
-	globalRule, _ := json.Marshal(map[string]any{"clash_mode": "Global", "action": "route", "outbound": ProxyGroupTag})
-	merged := make([]json.RawMessage, 0, len(rules)+1)
-	merged = append(merged, rules[:catchIdx]...)
-	merged = append(merged, globalRule)
-	merged = append(merged, rules[catchIdx:]...)
-	nr, err := json.Marshal(merged)
-	if err != nil {
-		return err
-	}
-	route["rules"] = nr
-	nrt, err := json.Marshal(route)
-	if err != nil {
-		return err
-	}
-	cfg["route"] = nrt
-	// Seed the safe default mode; cache_file persists the live selection across
-	// restarts (sing-box loads it on start if present in the mode list).
-	if err := setClashDefaultMode(cfg, "Rule"); err != nil {
-		return err
-	}
-	return ensureCacheFile(cfg, dataDir)
-}
-
-// setClashDefaultMode sets experimental.clash_api.default_mode (the mode used on
-// first run, before any cached selection). No-op if clash_api is absent.
-func setClashDefaultMode(cfg map[string]json.RawMessage, mode string) error {
-	expRaw, ok := cfg["experimental"]
-	if !ok {
-		return nil
-	}
-	var exp map[string]json.RawMessage
-	if err := json.Unmarshal(expRaw, &exp); err != nil {
-		return err
-	}
-	caRaw, ok := exp["clash_api"]
-	if !ok {
-		return nil
-	}
-	var ca map[string]any
-	if err := json.Unmarshal(caRaw, &ca); err != nil {
-		return err
-	}
-	if _, set := ca["default_mode"]; !set {
-		ca["default_mode"] = mode
-	}
-	newCA, err := json.Marshal(ca)
-	if err != nil {
-		return err
-	}
-	exp["clash_api"] = newCA
-	newExp, err := json.Marshal(exp)
-	if err != nil {
-		return err
-	}
-	cfg["experimental"] = newExp
-	return nil
-}
-
-// applyMode rewrites the inbounds (and, for TUN, adds DNS + hijack) to match the
-// requested capture mode. The mixed inbound's listen/port is preserved from the
-// base config so 127.0.0.1:17070 stays available in every mode.
-func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.InboundAuth, tun apitypes.TUNConfig) error {
-	if mode == "" {
-		mode = ModeManual
-	}
-	listen, port := "127.0.0.1", 17070
-	if raw, ok := cfg["inbounds"]; ok {
-		var existing []map[string]any
-		if err := json.Unmarshal(raw, &existing); err == nil {
-			for _, in := range existing {
-				switch in["type"] {
-				case "mixed", "socks", "http":
-					if l, ok := in["listen"].(string); ok && l != "" {
-						listen = l
-					}
-					if p, ok := in["listen_port"].(float64); ok {
-						port = int(p)
-					}
-				}
-			}
-		}
-	}
-	mixed := map[string]any{"type": "mixed", "tag": "mixed-in", "listen": listen, "listen_port": port}
-	// Optional auth: require a username/password on the mixed inbound. Both empty
-	// leaves it open (no "users" field). sing-box rejects a lone half of the pair,
-	// which the store's validation already guards against.
-	if auth.Username != "" && auth.Password != "" {
-		mixed["users"] = []map[string]any{{"username": auth.Username, "password": auth.Password}}
-	}
-
-	var ins []map[string]any
-	switch mode {
-	case ModeSystem:
-		mixed["set_system_proxy"] = true
-		ins = []map[string]any{mixed}
-	case ModeTUN:
-		stack := tun.Stack
-		if stack == "" {
-			stack = "gvisor"
-		}
-		tunIn := map[string]any{
-			"type": "tun", "tag": "tun-in",
-			"address":      []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
-			"auto_route":   true,
-			"strict_route": tun.StrictRoute,
-			"stack":        stack,
-		}
-		if tun.MTU > 0 {
-			tunIn["mtu"] = tun.MTU
-		}
-		if len(tun.ExcludePackage) > 0 {
-			tunIn["exclude_package"] = tun.ExcludePackage
-		}
-		if len(tun.IncludePackage) > 0 {
-			tunIn["include_package"] = tun.IncludePackage
-		}
-		ins = []map[string]any{tunIn, mixed}
-		if err := ensureTunExtras(cfg); err != nil {
-			return err
-		}
-	default: // ModeManual
-		ins = []map[string]any{mixed}
-	}
-	raw, err := json.Marshal(ins)
-	if err != nil {
-		return err
-	}
-	cfg["inbounds"] = raw
-	return nil
-}
-
-// ensureTunExtras adds the pieces TUN capture needs that the base client config
-// omits. DNS sanitization + hijack/auto_detect are owned by the shared
-// invariant helpers (also re-run at the end of buildMergedConfig).
-func ensureTunExtras(cfg map[string]json.RawMessage) error {
-	if err := sanitizeTunDNS(cfg); err != nil {
-		return err
-	}
-	return ensureTunHijackAndInterface(cfg)
-}
-
-// tunDNSFallback is substituted for dns type=local under TUN.
-// Must NOT be a mainland UDP resolver (223.5.5.5 etc.): those return
-// GFW-poisoned answers for Google/YouTube. DoH via the proxy group yields
-// clean A/AAAA; bootstrap uses the literal IP so we don't need system DNS.
-const tunDNSFallbackTag = "tun-dns"
-
-func tunDNSFallbackServer() map[string]any {
-	return map[string]any{
-		"type":   "https",
-		"tag":    tunDNSFallbackTag,
-		"server": "8.8.8.8", // dns.google anycast — no name lookup to bootstrap
-		"detour": "proxy",
-	}
-}
-
-// sanitizeTunDNS ensures TUN mode never keeps a dns type=local server (or a
-// final/default_domain_resolver pointing at one). Missing dns → install DoH via
-// proxy; existing local servers are rewritten in place (same tag) so user
-// rules/final that reference the tag keep working.
-func sanitizeTunDNS(cfg map[string]json.RawMessage) error {
-	fallback := tunDNSFallbackServer()
-
-	raw, ok := cfg["dns"]
-	if !ok {
-		dns, _ := json.Marshal(map[string]any{
-			"servers": []map[string]any{fallback},
-			"final":   tunDNSFallbackTag,
-		})
-		cfg["dns"] = dns
-		return setDefaultDomainResolver(cfg, tunDNSFallbackTag)
-	}
-
-	var dns map[string]any
-	if err := json.Unmarshal(raw, &dns); err != nil {
-		return err
-	}
-	servers, _ := dns["servers"].([]any)
-	changed := false
-	firstReal := ""
-	out := make([]any, 0, len(servers)+1)
-	for _, s := range servers {
-		m, ok := s.(map[string]any)
-		if !ok {
-			out = append(out, s)
-			continue
-		}
-		typ, _ := m["type"].(string)
-		tag, _ := m["tag"].(string)
-		if typ == "local" {
-			if tag == "" {
-				tag = tunDNSFallbackTag
-			}
-			repl := tunDNSFallbackServer()
-			repl["tag"] = tag
-			out = append(out, repl)
-			if firstReal == "" {
-				firstReal = tag
-			}
-			changed = true
-			continue
-		}
-		if typ != "fakeip" && typ != "hosts" && tag != "" && firstReal == "" {
-			firstReal = tag
-		}
-		out = append(out, m)
-	}
-	if len(out) == 0 {
-		out = []any{fallback}
-		firstReal = tunDNSFallbackTag
-		changed = true
-	}
-	if firstReal == "" {
-		// Only synth servers left — append a real upstream the resolver can use.
-		out = append(out, fallback)
-		firstReal = tunDNSFallbackTag
-		changed = true
-	}
-	final, _ := dns["final"].(string)
-	finalType := ""
-	for _, s := range out {
-		if m, ok := s.(map[string]any); ok && m["tag"] == final {
-			finalType, _ = m["type"].(string)
-			break
-		}
-	}
-	// Under TUN, final must dial a real upstream. type=local loops; fakeip/hosts
-	// synthesize answers and can't back default_domain_resolver / hijack-dns.
-	if final == "" || finalType == "" || finalType == "local" || finalType == "fakeip" || finalType == "hosts" {
-		dns["final"] = firstReal
-		changed = true
-	}
-	if !changed {
-		// Still refresh default_domain_resolver in case it pointed at local.
-		if res, _ := dns["final"].(string); res != "" {
-			return setDefaultDomainResolver(cfg, res)
-		}
-		return nil
-	}
-	dns["servers"] = out
-	b, err := json.Marshal(dns)
-	if err != nil {
-		return err
-	}
-	cfg["dns"] = b
-	res, _ := dns["final"].(string)
-	return setDefaultDomainResolver(cfg, res)
-}
-
-// injectClashSecret sets experimental.clash_api.secret (so the secret isn't
-// baked into the repo's config; serve resolves/generates it at runtime).
-func injectClashSecret(cfg map[string]json.RawMessage, secret string) error {
-	if secret == "" {
-		return nil
-	}
-	expRaw, ok := cfg["experimental"]
-	if !ok {
-		return nil
-	}
-	var exp map[string]json.RawMessage
-	if err := json.Unmarshal(expRaw, &exp); err != nil {
-		return err
-	}
-	caRaw, ok := exp["clash_api"]
-	if !ok {
-		return nil
-	}
-	var ca map[string]any
-	if err := json.Unmarshal(caRaw, &ca); err != nil {
-		return err
-	}
-	ca["secret"] = secret
-	newCA, err := json.Marshal(ca)
-	if err != nil {
-		return err
-	}
-	exp["clash_api"] = newCA
-	newExp, err := json.Marshal(exp)
-	if err != nil {
-		return err
-	}
-	cfg["experimental"] = newExp
-	return nil
-}
-
-// injectManagement inserts a top-priority allow (right after the prelude, above
-// even the blacklist) that routes traffic whose SOURCE port is a management port
-// straight to direct. That is exactly the box's own SSH/API response traffic —
-// so a TUN/system-proxy capture + default-deny can't sever remote management.
-// Using source_port (not dest port) means it does NOT open arbitrary egress to
-// those ports; it only rescues locally-originated responses.
-func injectManagement(cfg map[string]json.RawMessage, ports []int) error {
-	if len(ports) == 0 {
-		return nil
-	}
-	routeRaw, ok := cfg["route"]
-	if !ok {
-		return nil
-	}
-	var route map[string]json.RawMessage
-	if err := json.Unmarshal(routeRaw, &route); err != nil {
-		return err
-	}
-	var rules []json.RawMessage
-	if raw, ok := route["rules"]; ok {
-		if err := json.Unmarshal(raw, &rules); err != nil {
-			return err
-		}
-	}
-	preludeEnd := 0
-	for preludeEnd < len(rules) {
-		var m struct {
-			Action string `json:"action"`
-		}
-		_ = json.Unmarshal(rules[preludeEnd], &m)
-		if m.Action == "sniff" || m.Action == "hijack-dns" {
-			preludeEnd++
-			continue
-		}
-		break
-	}
-	rule, _ := json.Marshal(map[string]any{"source_port": ports, "action": "route", "outbound": "direct"})
-	merged := make([]json.RawMessage, 0, len(rules)+1)
-	merged = append(merged, rules[:preludeEnd]...)
-	merged = append(merged, rule)
-	merged = append(merged, rules[preludeEnd:]...)
-	nr, err := json.Marshal(merged)
-	if err != nil {
-		return err
-	}
-	route["rules"] = nr
-	nrt, err := json.Marshal(route)
-	if err != nil {
-		return err
-	}
-	cfg["route"] = nrt
-	return nil
-}
-
-// injectEndpoints appends enabled WireGuard/Tailscale exits to endpoints[] and
-// returns their tags (to be added to the proxy group). WireGuard peers keep the
-// pasted allowed_ips; Tailscale gets a per-tag state dir under data/.
-func injectEndpoints(cfg map[string]json.RawMessage, list []apitypes.Endpoint, dataDir string) ([]string, error) {
-	var eps []json.RawMessage
-	if raw, ok := cfg["endpoints"]; ok {
-		if err := json.Unmarshal(raw, &eps); err != nil {
-			return nil, err
-		}
-	}
-	var tags []string
-	for _, e := range list {
-		if !e.Enabled || e.Tag == "" {
-			continue
-		}
-		var m map[string]any
-		switch e.Type {
-		case "wireguard":
-			host, portStr, err := net.SplitHostPort(e.PeerEndpoint)
-			if err != nil {
-				return nil, fmt.Errorf("endpoint %q: bad peer_endpoint: %w", e.Tag, err)
-			}
-			port, _ := strconv.Atoi(portStr)
-			peer := map[string]any{"address": host, "port": port, "public_key": e.PeerPublicKey, "allowed_ips": e.AllowedIPs}
-			if e.PeerPreSharedKey != "" {
-				peer["pre_shared_key"] = e.PeerPreSharedKey
-			}
-			if e.PersistentKeepalive > 0 {
-				peer["persistent_keepalive_interval"] = e.PersistentKeepalive
-			}
-			m = map[string]any{"type": "wireguard", "tag": e.Tag, "address": e.Address, "private_key": e.PrivateKey, "peers": []any{peer}}
-			if e.MTU > 0 {
-				m["mtu"] = e.MTU
-			}
-		case "tailscale":
-			m = map[string]any{"type": "tailscale", "tag": e.Tag, "auth_key": e.AuthKey, "state_directory": filepath.Join(dataDir, "ts-"+e.Tag)}
-			if e.Hostname != "" {
-				m["hostname"] = e.Hostname
-			}
-			if e.ExitNode != "" {
-				m["exit_node"] = e.ExitNode
-			}
-			if e.AcceptRoutes {
-				m["accept_routes"] = true
-			}
-		default:
-			continue
-		}
-		raw, err := json.Marshal(m)
-		if err != nil {
-			return nil, err
-		}
-		eps = append(eps, raw)
-		tags = append(tags, e.Tag)
-	}
-	if len(eps) > 0 {
-		nb, err := json.Marshal(eps)
-		if err != nil {
-			return nil, err
-		}
-		cfg["endpoints"] = nb
-	}
-	return tags, nil
-}
-
-// memberTags computes the proxy group's member tags for the given nodes +
-// extra (endpoint) tags, applying the same empty->"node" fallback and -2/-3
-// de-duplication that injectOutbounds uses. It is the single source of truth
-// for node tag naming (injectOutbounds zips its result back onto the outbounds)
-// and lets EffectiveRules tell whether a custom `node` rule points at a live
-// outbound. Node order in == tag order out.
-func memberTags(nodes []apitypes.Node, extraTags []string) []string {
-	used := map[string]bool{}
-	uniq := func(t string) string {
-		if t == "" {
-			t = "node"
-		}
-		base := t
-		for i := 2; used[t]; i++ {
-			t = fmt.Sprintf("%s-%d", base, i)
-		}
-		used[t] = true
-		return t
-	}
-	var tags []string
-	for _, n := range nodes {
-		if len(n.Outbound) == 0 {
-			continue
-		}
-		var ob map[string]any
-		if err := json.Unmarshal(n.Outbound, &ob); err != nil {
-			continue
-		}
-		tags = append(tags, uniq(stringOr(ob["tag"], n.Tag)))
-	}
-	tags = append(tags, extraTags...)
-	return tags
-}
-
-// groupMembers resolves a user group's member tags from the full node/endpoint
-// tag pool, per its filter (country / regex / manual). Order follows the pool.
-func groupMembers(g proxygroups.Group, tags []string) []string {
-	var m []string
-	switch g.Filter {
-	case proxygroups.FilterCountry:
-		for _, t := range tags {
-			if proxygroups.Country(t) == g.Value {
-				m = append(m, t)
-			}
-		}
-	case proxygroups.FilterRegex:
-		re, err := regexp.Compile(g.Value)
-		if err != nil {
-			return nil
-		}
-		for _, t := range tags {
-			if re.MatchString(t) {
-				m = append(m, t)
-			}
-		}
-	case proxygroups.FilterManual:
-		set := map[string]bool{}
-		for _, t := range tags {
-			set[t] = true
-		}
-		for _, n := range g.Nodes {
-			if set[n] {
-				m = append(m, n)
-			}
-		}
-	}
-	return m
-}
-
-// excludeSet builds a lookup of excluded ISO country codes (already normalized
-// upper-case by the store) for the shared Overseas group.
-func excludeSet(codes []string) map[string]bool {
-	m := make(map[string]bool, len(codes))
-	for _, c := range codes {
-		if c != "" {
-			m[c] = true
-		}
-	}
-	return m
-}
-
-// loopbackTags returns the set of member tags whose outbound server is
-// loopback/localhost. Mirrors the classification injectOutbounds feeds into
-// buildProxyGroups so EffectiveRules stays in sync.
-func loopbackTags(nodes []apitypes.Node) map[string]bool {
-	out := map[string]bool{}
-	tags := memberTags(nodes, nil)
-	ti := 0
-	for _, n := range nodes {
-		if len(n.Outbound) == 0 {
-			continue
-		}
-		var ob map[string]any
-		if err := json.Unmarshal(n.Outbound, &ob); err != nil {
-			continue
-		}
-		tag := tags[ti]
-		ti++
-		if isLoopbackHost(stringOr(ob["server"], n.Server)) {
-			out[tag] = true
-		}
-	}
-	return out
-}
-
-// isLoopbackHost reports whether a node server address targets the local
-// machine (127.0.0.0/8, ::1, localhost). Those are fine as manual exits
-// (e.g. Cloudflare WARP's local SOCKS) but must not sit in Auto/urltest: when
-// the local agent is down, urltest still latches onto them and all proxied
-// traffic (Google, etc.) blackholes.
-func isLoopbackHost(server string) bool {
-	host := strings.TrimSpace(server)
-	if host == "" {
-		return false
-	}
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	host = strings.Trim(host, "[]")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-// buildProxyGroups turns the member pool (node + endpoint tags) into sing-box
-// group outbounds and the top-level `proxy` selector. It returns the outbound
-// JSON to append AND the group tags (Auto + per-country + user groups, NOT the
-// proxy selector) — those extend the valid `node`-action targets. Layering:
-//   - Auto: urltest over non-loopback members (the default the proxy selector
-//     points at). Loopback-only pools fall back to the full tag list so a
-//     WARP-only setup still works.
-//   - Local: selector over loopback members (when any exist alongside remotes).
-//   - per-country urltest groups (when AutoCountry and ≥1 country is detected).
-//   - user groups (select|urltest) by country/regex/manual filter.
-//   - proxy: selector over [Auto, Local?, country…, user…], default = Auto.
-//
-// Empty pool => proxy is selector[direct] and there are no groups.
-// It is pure (no cfg mutation) so EffectiveRules can reuse it for the member set.
-// loopback marks tags whose outbound server is localhost; nil/empty is fine.
-func buildProxyGroups(tags []string, loopback map[string]bool, pg proxygroups.Config) (outs []json.RawMessage, groupTags []string) {
-	if len(tags) == 0 {
-		sel, _ := json.Marshal(map[string]any{"type": "selector", "tag": ProxyGroupTag, "outbounds": []string{"direct"}})
-		return []json.RawMessage{sel}, nil
-	}
-	used := map[string]bool{"direct": true, "blocked": true, ProxyGroupTag: true}
-	for _, t := range tags {
-		used[t] = true
-	}
-	uniq := func(name string) string {
-		if name == "" {
-			name = "group"
-		}
-		base, t := name, name
-		for i := 2; used[t]; i++ {
-			t = fmt.Sprintf("%s-%d", base, i)
-		}
-		used[t] = true
-		return t
-	}
-	add := func(typ, tag string, members []string) {
-		g := map[string]any{"type": typ, "tag": tag, "outbounds": members}
-		if typ == "urltest" {
-			// Failover is primarily driven by dial/IO failures (patched urltest
-			// retries other members immediately). The periodic probe is a backup
-			// only — keep it short so a quietly-dead node cannot stick for minutes.
-			g["url"] = "https://www.gstatic.com/generate_204"
-			g["interval"] = "30s"
-			g["idle_timeout"] = "30m"
-			g["interrupt_exist_connections"] = true
-		}
-		b, _ := json.Marshal(g)
-		outs = append(outs, b)
-		groupTags = append(groupTags, tag)
-	}
-
-	var remote, local []string
-	for _, t := range tags {
-		if loopback[t] {
-			local = append(local, t)
-		} else {
-			remote = append(remote, t)
-		}
-	}
-	autoMembers := remote
-	if len(autoMembers) == 0 {
-		autoMembers = tags // WARP-only / all-loopback: Auto must still have members
-	}
-
-	autoTag := uniq("Auto")
-	add("urltest", autoTag, autoMembers)
-	if len(local) > 0 && len(remote) > 0 {
-		add("selector", uniq("Local"), local)
-	}
-
-	// Shared "Overseas" group: urltest over every non-loopback node whose country
-	// is NOT excluded (default HK/MO/CN). Built ONLY when the exclusion actually
-	// removes ≥1 node — if nothing is excluded, Auto is already a safe superset
-	// and any rule targeting Overseas self-heals back to Auto. This gives
-	// geofenced services (Anthropic/OpenAI/Cursor) failover across allowed
-	// regions that can never land on a blocked one.
-	if ex := excludeSet(pg.ExcludeCountries); len(ex) > 0 {
-		var allowed []string
-		for _, t := range remote {
-			if !ex[proxygroups.Country(t)] {
-				allowed = append(allowed, t)
-			}
-		}
-		if len(allowed) > 0 && len(allowed) < len(remote) {
-			add("urltest", uniq(proxygroups.OverseasGroupTag), allowed)
-		}
-	}
-
-	if pg.AutoCountry {
-		buckets := map[string][]string{}
-		var order []string
-		real := 0
-		for _, t := range remote {
-			c := proxygroups.Country(t)
-			if c == "" {
-				c = "Other"
-			}
-			if _, ok := buckets[c]; !ok {
-				order = append(order, c)
-				if c != "Other" {
-					real++
-				}
-			}
-			buckets[c] = append(buckets[c], t)
-		}
-		if real > 0 { // skip country grouping when nothing is identifiable (== Auto)
-			for _, c := range order {
-				label := "Other"
-				if c != "Other" {
-					label = proxygroups.CountryName(c)
-				}
-				add("urltest", uniq(label), buckets[c])
-			}
-		}
-	}
-
-	for _, ug := range pg.Groups {
-		members := groupMembers(ug, tags)
-		if len(members) == 0 {
-			continue // an empty group is invalid in sing-box and useless anyway
-		}
-		typ := "urltest"
-		if ug.Type == proxygroups.TypeSelect {
-			typ = "selector"
-		}
-		add(typ, uniq(ug.Name), members)
-	}
-
-	sel, _ := json.Marshal(map[string]any{"type": "selector", "tag": ProxyGroupTag, "outbounds": groupTags, "default": autoTag})
-	outs = append(outs, sel)
-	return outs, groupTags
-}
-
-// injectOutbounds rewrites outbounds from the subscription nodes + the proxy
-// group tree, and returns the valid `node`-action targets: node + endpoint
-// outbound tags PLUS the group tags (Auto / country / user groups), and the
-// set of tags whose server is loopback (for applyInvariants).
-func injectOutbounds(cfg map[string]json.RawMessage, nodes []apitypes.Node, extraTags []string, pg proxygroups.Config) ([]string, map[string]bool, error) {
-	var outs []json.RawMessage
-	if raw, ok := cfg["outbounds"]; ok {
-		if err := json.Unmarshal(raw, &outs); err != nil {
-			return nil, nil, err
-		}
-	}
-	kept := outs[:0:0]
-	for _, raw := range outs {
-		var meta struct {
-			Tag string `json:"tag"`
-		}
-		_ = json.Unmarshal(raw, &meta)
-		if meta.Tag == ProxyGroupTag {
-			continue
-		}
-		kept = append(kept, raw)
-	}
-
-	// memberTags is the single source of truth for node tag naming; zip it back
-	// onto the (identically-skipped) nodes so outbound tags match the member set.
-	nodeTags := memberTags(nodes, nil)
-	var tags []string
-	loopback := map[string]bool{}
-	ti := 0
-	for _, n := range nodes {
-		if len(n.Outbound) == 0 {
-			continue
-		}
-		var ob map[string]any
-		if err := json.Unmarshal(n.Outbound, &ob); err != nil {
-			continue
-		}
-		tag := nodeTags[ti]
-		ti++
-		ob["tag"] = tag
-		raw, err := json.Marshal(ob)
-		if err != nil {
-			continue
-		}
-		kept = append(kept, raw)
-		tags = append(tags, tag)
-		if isLoopbackHost(stringOr(ob["server"], n.Server)) {
-			loopback[tag] = true
-		}
-	}
-	// WireGuard/Tailscale endpoint tags (defined in endpoints[]) are valid group
-	// members — append so groups can urltest across nodes + exits.
-	tags = append(tags, extraTags...)
-
-	groupOuts, groupTags := buildProxyGroups(tags, loopback, pg)
-	kept = append(kept, groupOuts...)
-
-	newOuts, err := json.Marshal(kept)
-	if err != nil {
-		return nil, nil, err
-	}
-	cfg["outbounds"] = newOuts
-	// Valid node-action targets = individual nodes/endpoints ∪ the group tags.
-	return append(append([]string(nil), tags...), groupTags...), loopback, nil
-}
-
-// injectBlacklist inserts reject rules for explicitly denied destinations right
-// after the prelude (leading sniff/hijack-dns rules) and before any allow rule,
-// so a blacklisted target is rejected first — even if it is also whitelisted or
-// matched by an allow rule-set. Emits one rule per matcher kind present; skips
-// empty kinds.
-func injectBlacklist(cfg map[string]json.RawMessage, bl blacklist.Rules) error {
-	routeRaw, ok := cfg["route"]
-	if !ok {
-		return nil
-	}
-	var route map[string]json.RawMessage
-	if err := json.Unmarshal(routeRaw, &route); err != nil {
-		return err
-	}
-	var rules []json.RawMessage
-	if raw, ok := route["rules"]; ok {
-		if err := json.Unmarshal(raw, &rules); err != nil {
-			return err
-		}
-	}
-
-	var reject []json.RawMessage
-	if sfx, rgx := splitDomainMatchers(bl.Domains); len(sfx) > 0 || len(rgx) > 0 {
-		if len(sfx) > 0 {
-			r, _ := json.Marshal(map[string]any{"domain_suffix": sfx, "action": "reject"})
-			reject = append(reject, r)
-		}
-		if len(rgx) > 0 {
-			r, _ := json.Marshal(map[string]any{"domain_regex": rgx, "action": "reject"})
-			reject = append(reject, r)
-		}
-	}
-	if len(bl.Keywords) > 0 {
-		r, _ := json.Marshal(map[string]any{"domain_keyword": bl.Keywords, "action": "reject"})
-		reject = append(reject, r)
-	}
-	if len(bl.Regexes) > 0 {
-		r, _ := json.Marshal(map[string]any{"domain_regex": bl.Regexes, "action": "reject"})
-		reject = append(reject, r)
-	}
-	if len(bl.IPs) > 0 {
-		r, _ := json.Marshal(map[string]any{"ip_cidr": bl.IPs, "action": "reject"})
-		reject = append(reject, r)
-	}
-	if len(reject) == 0 {
-		return nil
-	}
-
-	// Insert right after the prelude (leading sniff/hijack-dns rules), which is
-	// above every allow rule and thus wins under sing-box's first-match routing.
-	preludeEnd := 0
-	for preludeEnd < len(rules) {
-		var meta struct {
-			Action string `json:"action"`
-		}
-		_ = json.Unmarshal(rules[preludeEnd], &meta)
-		if meta.Action == "sniff" || meta.Action == "hijack-dns" {
-			preludeEnd++
-			continue
-		}
-		break
-	}
-	merged := make([]json.RawMessage, 0, len(rules)+len(reject))
-	merged = append(merged, rules[:preludeEnd]...)
-	merged = append(merged, reject...)
-	merged = append(merged, rules[preludeEnd:]...)
-
-	newRules, err := json.Marshal(merged)
-	if err != nil {
-		return err
-	}
-	route["rules"] = newRules
-	newRoute, err := json.Marshal(route)
-	if err != nil {
-		return err
-	}
-	cfg["route"] = newRoute
-	return nil
-}
-
-// injectProcessDeviceFloor emits the opt-in anti-exfil gates as L1 floor rejects
-// (inserted right after the prelude, above the ACL gate). If a process
-// allow-list is set, any process NOT in it is rejected; if a device (source)
-// allow-list is set, any source IP NOT in it is rejected. Empty lists emit
-// nothing. These use `reject` (they short-circuit before the destination allow
-// decision): a binary/device that isn't explicitly allowed never egresses.
-// Entries with a path separator match process_path; others match process_name.
-func injectProcessDeviceFloor(cfg map[string]json.RawMessage, wl whitelist.Rules) error {
-	if len(wl.Processes) == 0 && len(wl.Devices) == 0 {
-		return nil
-	}
-	routeRaw, ok := cfg["route"]
-	if !ok {
-		return nil
-	}
-	var route map[string]json.RawMessage
-	if err := json.Unmarshal(routeRaw, &route); err != nil {
-		return err
-	}
-	var rules []json.RawMessage
-	if raw, ok := route["rules"]; ok {
-		if err := json.Unmarshal(raw, &rules); err != nil {
-			return err
-		}
-	}
-
-	var floor []json.RawMessage
-	if len(wl.Processes) > 0 {
-		var names, paths []string
-		for _, p := range wl.Processes {
-			if strings.ContainsAny(p, "/\\") {
-				paths = append(paths, p)
-			} else {
-				names = append(names, p)
-			}
-		}
-		rule := map[string]any{"invert": true, "action": "reject"}
-		if len(names) > 0 {
-			rule["process_name"] = names
-		}
-		if len(paths) > 0 {
-			rule["process_path"] = paths
-		}
-		r, _ := json.Marshal(rule)
-		floor = append(floor, r)
-	}
-	if len(wl.Devices) > 0 {
-		r, _ := json.Marshal(map[string]any{"source_ip_cidr": wl.Devices, "invert": true, "action": "reject"})
-		floor = append(floor, r)
-	}
-
-	at := preludeLen(rules)
-	merged := make([]json.RawMessage, 0, len(rules)+len(floor))
-	merged = append(merged, rules[:at]...)
-	merged = append(merged, floor...)
-	merged = append(merged, rules[at:]...)
-	nr, err := json.Marshal(merged)
-	if err != nil {
-		return err
-	}
-	route["rules"] = nr
-	nrt, err := json.Marshal(route)
-	if err != nil {
-		return err
-	}
-	cfg["route"] = nrt
-	return nil
-}
-
-// injectAllow builds the Permit gate (L3) and the Route egress (L4), then flips
-// the catch-all default egress. Permit and Route are orthogonal:
-//
-//	allow-set (L3) = whitelist domains+ips ∪ role=permit(+route) rule_sets ∪
-//	                 custom/pack rules with Permit ∪ private CIDRs (when gate open)
-//	direct (L4)    = route-direct rule_sets + no-proxy domains+ips + private CIDRs
-//	proxy  (L4)    = route-proxy rule_sets
-//	catch-all      = Final when gate present OR posture=Split; else blocked
-//
-// Route-only sources (no-proxy, route-direct/proxy without permit, custom with
-// Permit=false) NEVER join the allow-set. When the allow-set is empty under
-// Strict, NO gate is emitted and the catch-all stays blocked (fail-closed).
-// Split skips the L3 gate (default-allow) and always flips catch-all to Final.
-//
-// Custom routing rules (cr) are the ordered, top-priority slice of L4. A node
-// egress whose target tag isn't live is skipped (self-heal).
-func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets ruleset.Sets, dl directlist.Rules, cr customrules.Rules, memberTags []string, final, posture string) error {
-	routeRaw, ok := cfg["route"]
-	if !ok {
-		return nil
-	}
-	var route map[string]json.RawMessage
-	if err := json.Unmarshal(routeRaw, &route); err != nil {
-		return err
-	}
-
-	var directSetTags, proxySetTags, permitSetTags []string
-	for _, rs := range sets.Sets {
-		if !rs.Enabled || rs.Tag == "" {
-			continue
-		}
-		if apitypes.RuleRoleGrantsPermit(rs.Role) {
-			permitSetTags = append(permitSetTags, rs.Tag)
-		}
-		switch apitypes.RuleRoleRouteEgress(rs.Role) {
-		case "direct":
-			directSetTags = append(directSetTags, rs.Tag)
-		case "proxy":
-			proxySetTags = append(proxySetTags, rs.Tag)
-		}
-	}
-
-	wlSfx, wlRgx := splitDomainMatchers(wl.Domains)
-	dlSfx, dlRgx := splitDomainMatchers(dl.Domains)
-
-	members := map[string]bool{}
-	for _, t := range memberTags {
-		members[t] = true
-	}
-	var customEgress []json.RawMessage
-	var customSubRules []map[string]any
-	hasCustomPermit := false
-	for _, rule := range cr.Rules {
-		if !rule.Enabled {
-			continue
-		}
-		apitypes.NormalizeCustomRule(&rule)
-		key, ok := customrules.SingboxMatchKey(rule.Match)
-		if !ok || rule.Value == "" {
-			continue
-		}
-		eg := rule.RouteEgress()
-		if eg == apitypes.CustomEgressNode && !members[rule.Node] {
-			continue
-		}
-		if rule.GrantsPermit() {
-			customSubRules = append(customSubRules, map[string]any{key: []string{rule.Value}})
-			hasCustomPermit = true
-		}
-		if eg == "" {
-			continue
-		}
-		var outbound string
-		switch eg {
-		case apitypes.CustomEgressDirect:
-			outbound = "direct"
-		case apitypes.CustomEgressProxy:
-			outbound = ProxyGroupTag
-			if rule.Node != "" && members[rule.Node] {
-				outbound = rule.Node
-			}
-		case apitypes.CustomEgressBlock:
-			outbound = "blocked"
-		case apitypes.CustomEgressNode:
-			outbound = rule.Node
-		default:
-			continue
-		}
-		r, _ := json.Marshal(map[string]any{key: []string{rule.Value}, "action": "route", "outbound": outbound})
-		customEgress = append(customEgress, r)
-	}
-
-	splitOpen := posture == apitypes.PostureSplit
-	// Gate ONLY when the user actually permitted something (Strict). Private
-	// CIDRs and no-proxy / route-only rule sets must NOT open the gate alone.
-	hasUserPermit := len(wlSfx) > 0 || len(wlRgx) > 0 || len(wl.IPs) > 0 ||
-		len(permitSetTags) > 0 || hasCustomPermit
-	if !hasUserPermit && !splitOpen {
-		return nil
-	}
-
-	allowSfx := append([]string(nil), wlSfx...)
-	allowRgx := append([]string(nil), wlRgx...)
-	allowIPs := append(append([]string(nil), wl.IPs...), privateCIDRs...)
-	directIPs := append(append([]string(nil), dl.IPs...), privateCIDRs...)
-
-	// L4: custom → no-proxy → route-proxy RS → route-direct RS.
-	var egress []json.RawMessage
-	egress = append(egress, customEgress...)
-	if len(dlSfx) > 0 {
-		r, _ := json.Marshal(map[string]any{"domain_suffix": dlSfx, "action": "route", "outbound": "direct"})
-		egress = append(egress, r)
-	}
-	if len(dlRgx) > 0 {
-		r, _ := json.Marshal(map[string]any{"domain_regex": dlRgx, "action": "route", "outbound": "direct"})
-		egress = append(egress, r)
-	}
-	if len(directIPs) > 0 {
-		r, _ := json.Marshal(map[string]any{"ip_cidr": directIPs, "action": "route", "outbound": "direct"})
-		egress = append(egress, r)
-	}
-	if len(proxySetTags) > 0 {
-		r, _ := json.Marshal(map[string]any{"rule_set": proxySetTags, "action": "route", "outbound": ProxyGroupTag})
-		egress = append(egress, r)
-	}
-	if len(directSetTags) > 0 {
-		r, _ := json.Marshal(map[string]any{"rule_set": directSetTags, "action": "route", "outbound": "direct"})
-		egress = append(egress, r)
-	}
-
-	var inserted []json.RawMessage
-	if !splitOpen {
-		var subRules []map[string]any
-		if len(allowSfx) > 0 {
-			subRules = append(subRules, map[string]any{"domain_suffix": allowSfx})
-		}
-		if len(allowRgx) > 0 {
-			subRules = append(subRules, map[string]any{"domain_regex": allowRgx})
-		}
-		if len(allowIPs) > 0 {
-			subRules = append(subRules, map[string]any{"ip_cidr": allowIPs})
-		}
-		if len(permitSetTags) > 0 {
-			subRules = append(subRules, map[string]any{"rule_set": permitSetTags})
-		}
-		subRules = append(subRules, customSubRules...)
-		gate, _ := json.Marshal(map[string]any{
-			"type": "logical", "mode": "or", "rules": subRules,
-			"invert": true, "action": "route", "outbound": "blocked",
-		})
-		inserted = append(inserted, gate)
-	}
-	inserted = append(inserted, egress...)
-
-	var rules []json.RawMessage
-	if raw, ok := route["rules"]; ok {
-		if err := json.Unmarshal(raw, &rules); err != nil {
-			return err
-		}
-	}
-	catchIdx := catchAllIdx(rules)
-
-	merged := make([]json.RawMessage, 0, len(rules)+len(inserted))
-	merged = append(merged, rules[:catchIdx]...)
-	merged = append(merged, inserted...)
-	merged = append(merged, rules[catchIdx:]...)
-
-	newCatchIdx := catchIdx + len(inserted)
-	if newCatchIdx < len(merged) {
-		var catchRule map[string]any
-		if err := json.Unmarshal(merged[newCatchIdx], &catchRule); err == nil {
-			if _, hasNet := catchRule["network"]; hasNet {
-				catchRule["action"] = "route"
-				catchRule["outbound"] = resolveFinal(final, memberTags)
-				if b, err := json.Marshal(catchRule); err == nil {
-					merged[newCatchIdx] = b
-				}
-			}
-		}
-	}
-
-	nr, err := json.Marshal(merged)
-	if err != nil {
-		return err
-	}
-	route["rules"] = nr
-	nrt, err := json.Marshal(route)
-	if err != nil {
-		return err
-	}
-	cfg["route"] = nrt
-	return nil
-}
-
-func sliceHas(ss []string, want string) bool {
-	for _, s := range ss {
-		if s == want {
-			return true
-		}
-	}
-	return false
-}
-
-// resolveFinal picks the catch-all outbound (self-heals unknown node tags).
-func resolveFinal(outbound string, memberTags []string) string {
-	return finalroute.Resolve(outbound, memberTags)
-}
-//
-//	*.example.com -> subdomains of example.com
-//	foo*          -> prefix match
-func globToRegex(g string) string {
-	var b strings.Builder
-	b.WriteByte('^')
-	for _, r := range g {
-		switch r {
-		case '*':
-			b.WriteString(".*")
-		case '?':
-			b.WriteByte('.')
-		default:
-			b.WriteString(regexp.QuoteMeta(string(r)))
-		}
-	}
-	b.WriteByte('$')
-	return b.String()
-}
-
-// splitDomainMatchers partitions domain entries into plain suffix matches and
-// glob patterns. A plain entry keeps domain_suffix semantics (matches the
-// domain + its subdomains); an entry containing * or ? becomes a domain_regex.
-// This is how whitelist/blacklist domains gain prefix/suffix/wildcard support
-// without a schema change — the match type is encoded in the value itself.
-func splitDomainMatchers(domains []string) (suffixes, regexes []string) {
-	for _, d := range domains {
-		if strings.ContainsAny(d, "*?") {
-			regexes = append(regexes, globToRegex(d))
-		} else {
-			suffixes = append(suffixes, d)
-		}
-	}
-	return
-}
-
-func stringOr(v any, fallback string) string {
-	if s, ok := v.(string); ok && s != "" {
-		return s
-	}
-	return fallback
 }

@@ -17,8 +17,10 @@ export default {
     columnTime: 'Time',
     columnHost: 'Host',
     columnProcess: 'Process',
+    columnDuration: 'Duration',
     columnOut: 'Out',
     badgeBlocked: 'blocked',
+    slowHint: 'Open a long time but moved almost no data — likely stalled, not just a big transfer.',
     empty: 'No records',
   },
   zh: {
@@ -39,8 +41,10 @@ export default {
     columnTime: '时间',
     columnHost: '主机',
     columnProcess: '进程',
+    columnDuration: '耗时',
     columnOut: '出站',
     badgeBlocked: '已拦截',
+    slowHint: '打开了很久但几乎没传数据——大概率是卡住了，不是单纯的大流量传输。',
     empty: '暂无记录',
   },
 };

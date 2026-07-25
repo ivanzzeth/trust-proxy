@@ -87,6 +87,7 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const [value, setValue] = useState('');
   const [action, setAction] = useState<CRAction>('proxy');
   const [node, setNode] = useState('');
+  const [permit, setPermit] = useState(true);
   const [ruleSearch, setRuleSearch] = useState('');
   const deferredRuleSearch = useDeferredValue(ruleSearch);
 
@@ -106,8 +107,16 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
       toast.error(t('pages.customRules.nodeRequired'));
       return;
     }
-    add.mutate({ match, value: v, action, node: action === 'node' || action === 'proxy' ? node || undefined : undefined, enabled: true });
+    add.mutate({
+      match,
+      value: v,
+      action,
+      node: action === 'node' || action === 'proxy' ? node || undefined : undefined,
+      enabled: true,
+      permit: action === 'block' ? false : permit,
+    });
     setValue('');
+    setPermit(true);
   };
 
   // Switching a rule's action to "node" needs a node; default to the first live one.
@@ -161,6 +170,15 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
                   {nodes.map((n) => <SelectItem key={n} value={n}>{n}</SelectItem>)}
                 </SelectContent>
               </Select>
+            )}
+            {action !== 'block' && (
+              <label
+                className="flex items-center gap-1.5 text-xs text-muted-foreground"
+                title={t(permit ? 'pages.customRules.permitToggleOnHint' : 'pages.customRules.permitToggleOffHint')}
+              >
+                <Switch checked={permit} onCheckedChange={setPermit} />
+                {t('pages.customRules.permitToggle')}
+              </label>
             )}
             <Button disabled={!value.trim() || add.isPending} onClick={submit}>
               <Plus className="size-4" /> {t('pages.customRules.addButton')}
@@ -309,6 +327,18 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
                               {r.node && !nodes.includes(r.node) && <SelectItem value={r.node}>{r.node}</SelectItem>}
                             </SelectContent>
                           </Select>
+                        )}
+                        {r.action !== 'block' && (
+                          <label
+                            className="flex items-center gap-1 text-xs text-muted-foreground"
+                            title={t(r.permit ?? true ? 'pages.customRules.permitToggleOnHint' : 'pages.customRules.permitToggleOffHint')}
+                          >
+                            <Switch
+                              checked={r.permit ?? true}
+                              onCheckedChange={(v) => patch.mutate({ id: r.id, patch: { permit: v } })}
+                            />
+                            {t('pages.customRules.permitToggle')}
+                          </label>
                         )}
                         {stale && <Badge variant="danger">{t('pages.customRules.stale')}</Badge>}
                       </div>

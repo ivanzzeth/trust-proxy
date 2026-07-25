@@ -66,6 +66,9 @@ sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 
 | **L3 Permit 闸** | `NOT(permit-set) → blocked` | `injectAllow` |
 | **L4 Route** | custom → no-proxy → `route-proxy` RS → `route-direct` RS | `injectAllow` |
 | **catch-all** | 有闸 → Final；无闸 → `blocked` | `injectAllow` |
+| **L5 DNS 跟随路由** | 镜像最终路由表 → `direct` 的域名用 `dns-direct` 解析；`proxy` 的域名用远端解析器 | `injectDirectDNS`（在 `applyInvariants` 里最后跑） |
+
+**DNS 必须跟随 Route（第三条铁律）**：解析器的**出网路径**要和流量的出网路径一致。远端解析器（`detour:proxy` 的 DoH）在**出口节点所在地区**看世界，它给国内 CDN 的答案是韩国/印度/新加坡边缘节点——再按 `geosite-cn → direct` 直连过去，等于「中国→韩国→中国」，国内站点 TLS/首字节 0.8～16s（实测 taobao 15.8s）。故 `injectDirectDNS`：① 合成 `dns-direct` 服务器（无 detour ⇒ 走 direct，默认 `223.5.5.5`，`direct_server` 可改）②把最终路由表按顺序镜像成 `dns.rules`（用户自建规则优先，镜像只补空白）③给每个**会自己拨号的 outbound**（`direct` + 各节点协议）钉 `domain_resolver: dns-direct`——TUN 下 `override_destination` 重解析走的就是这一跳；节点主机名（如 `isp.decodo.com`）也不再「经自己解析自己」而死锁。仅当默认解析器 `detour=proxy` 时才启用（`local`/直连解析器本来就一致）；`disable_direct_split` 可关。GFW 污染不是问题：只有**走 direct 的域名**才用国内解析器。
 
 **许可集（L3）** = 白名单域名/IP ∪ `RuleRoleGrantsPermit` 规则集 ∪ custom/pack `GrantsPermit()` ∪（闸已开时）私网 CIDR。**不含** no-proxy、`route-*` only。空许可集 → 不建闸 → 全拒。
 
@@ -104,7 +107,7 @@ internal/detect/           检测引擎（事件环形缓冲 + 字节计数 + �
 internal/threatfeed/       威胁情报 feed 加载器（abuse.ch，定时刷新 → engine.SetFeedThreats）
 internal/ruleset/          规则集存储 + 公开规则库 catalog（JSON 存 data/rulesets.json）
 internal/profile/          配置档存储（快照订阅/白名单/规则集/模式，data/profiles.json）
-internal/dnscfg/           DNS 解析策略存储（servers/rules/strategy + fakeip/hosts → 注入 sing-box dns 块，data/dns.json）
+internal/dnscfg/           DNS 解析策略存储（servers/rules/strategy + fakeip/hosts + **direct_server/disable_direct_split** → 注入 sing-box dns 块，data/dns.json）
 internal/blacklist/        出网黑名单（域名/关键字/正则/IP → reject，injectBlacklist 注入在 sniff 之后、白名单之前）
 internal/directlist/       no-proxy 旁路（域名/IP → direct，**仅 L4 Route**，不开闸；私网段引擎内置）
 internal/proxygroups/      代理分组（Config{AutoCountry,ExcludeCountries,Groups}）+ 国家解析(country.go：旗emoji/中英/国码→ISO)；injectOutbounds 据此建 Auto(urltest全部)+**🌏 Overseas 共享组**(urltest,成员=国家∉ExcludeCountries 的节点;**仅当排除真的去掉≥1节点才建**,否则 Auto 已安全、指向它的规则 self-heal 回 Auto)+按国家 urltest 组+用户组(select/urltest,filter country/regex/manual)，proxy 改 selector(default Auto)。**Overseas 组**是「地区受限服务 failover」的载体:Anthropic/OpenAI 拒 HK/CN,geofenced 包(Claude/OpenAI/Cursor)走 Overseas→在允许地区间自动切、绝不落被封地区。ExcludeCountries 默认 HK/MO/CN(`DefaultExcludeCountries`,旧 store 加载时一次性迁移;nil=未设→填默认、非nil空=不排除),Proxies 页可改。sing-box 只有 selector/urltest,无 load-balance
@@ -114,6 +117,7 @@ internal/inbound/          入站鉴权（mixed users，applyMode 注入）
 internal/tuncfg/           TUN 高级选项（stack/mtu/strict_route/exclude·include_package，applyMode 用）
 internal/endpoints/        WireGuard/Tailscale 出口（wg-quick 解析；injectEndpoints 注入 endpoints[] + 标签加入 proxy 组）
 internal/history/          每条完成连接的持久化历史（append JSONL + 聚合，detect.SetOnFinalize 喂）
+internal/logging/          日志栈：**zerolog**(编码) → **diode**(无锁 ring,不阻塞写者) → **lumberjack**(轮转/保留/gzip)；daemon 下把 fd 1/2 重定向进同一个 ring 以收走 sing-box 自己的行
 internal/nodes/            多节点注册表（大脑侧，data/nodes.json；反代 /api/nodes/{id}/* → 各探针 /api，注入 token）
 internal/api/              我们自己的后端 /api（stdlib mux；订阅/白名单/规则集/配置档 CRUD + 模式/状态/自动阻断 + 代理 Clash connections/proxies/logs + serve dashboard）
 dashboard/                 我们自建的控制台（shadcn/ui + Tailwind v4 + React19 + Vite，走 /api 单一 origin）
@@ -225,6 +229,10 @@ make webui       # 构建官方 dashboard -> webui/dist（pnpm install→generat
 **数据目录**：`serve` 默认把所有运行时数据放 **`~/.trust-proxy`**（`--data` 可覆盖；`~` 会展开）。含 subscriptions/whitelist/blacklist/events/history + **`cache.db`（clash mode/urltest/rule_set 缓存）** + `ts-<tag>`（Tailscale 状态）+ `clash-secret`。注意 `cache.db`/`ts-*` 的路径由 `gateway.Manager.dataDir` 注入（不再是 cwd 相对的 `data/`）。**旧部署迁移**：`mv ./data/* ~/.trust-proxy/` 或显式 `--data ./data`。
 **后台守护**：`serve --daemon`（`-d`）re-exec 脱离终端（`daemonize`，`TP_DAEMON=1` 标记子进程），`--log`/`--pid` 默认 `<data>/serve.{log,pid}`；停止 `trust-proxy proxy stop --pid <data>/serve.pid`（`proxy stop` 通用杀 pid 文件）。同目录勿并跑两实例（`cache.db` 单写锁）。
 
+**日志（`internal/logging`）**：`zerolog` → `diode` → `lumberjack`，全部用现成库，不手搓。轮转参数：`--log-max-size`(MB,默认 32)、`--log-keep`(默认 3)、`--log-max-age`(天,0=只按个数)、`--log-compress`(默认开)；`--log-max-size 0` 关闭轮转。
+**为什么中间要有 ring**：sing-box 的 logger 是**在连接协程里同步 `writer.Write()`**（`log/observable.go`），info 级别每条连接/每个 DNS 应答一行——直接落盘等于每个连接付一次磁盘写，轮转（rename+gzip）还会卡转发。diode 把它变成无锁 ring push（实测 1889 ns/op → 203 ns/op，18 并发），ring 满了**丢日志并报告条数**，绝不对流量施加背压。
+**为什么要重定向 fd 1/2**：sing-box 不给注入 writer（只有附加式 `PlatformLogWriter`，停不掉它对 stderr 的同步写），所以 daemon 子进程把 fd 1/2 换成 pipe（热路径只剩一次内核 memcpy）再汇入 ring。前台运行不接管 stdio——终端本身就是日志。
+
 验证（不影响本机 Surge：无 TUN、不改系统代理、端口错开）：
 ```bash
 curl -x socks5h://127.0.0.1:17070 https://api.ipify.org          # 代理出网
@@ -248,6 +256,8 @@ curl -x socks5h://127.0.0.1:17070 https://example.com            # 正常 -> 200
 - **官方 dashboard 走 Connect/protobuf**（`service/api`），只在 sing-box `testing` 分支 → 子模块必须跟 testing。
   想用稳定版 v1.13.x：改用 `with_clash_api` + Clash 面板（zashboard/metacubexd）。
 - **域名管控是 sing-box 原生**：`sniff` 取 SNI + `domain*` 规则 `reject`，零代码。动态「按行为决定挡谁」才是自研。
+- **坑：「DNS 全走出口节点」把国内站点搞垮（已修）**。为了躲 GFW 污染，早期把**所有**解析塞进 `detour:proxy` 的 DoH（`sanitizeTunDNS` 的 `tun-dns` 也是这么兜底的）。后果：`www.baidu.com→164.52.120.52`(印度)、`www.taobao.com→155.102.23.40`(韩国)、`i1.hdslb.com→61.110.192.59`(韩国)，而这些域名命中 `geosite-cn` 走 **direct**——从国内直连境外边缘节点，实测 TLS 0.85~5.3s、taobao 总耗时 15.8s；同域名国内解析器答 `111.123.42.154/183.2.172.177`(国内)。**症状是「开着网关国内站巨慢、杀掉进程立刻飞快」，与 manual/TUN 无关**（manual 下 socks 请求同样由 `direct` 出站按 `default_domain_resolver` 重解析）。修法见上「DNS 跟随路由」；回归覆盖：`gateway_dnsdirect_test.go` + `selftest` 的 `== dns follows route ==`（两个 loopback stub 解析器，谁被查到就证明走了哪条路）。
+- **坑：VM 里量不出真实解析结果**。宿主机跑着 TUN 网关时，VM 的**所有** 53 端口查询都会被宿主 hijack-dns 接管（`dig @223.5.5.5` 也返回宿主 DoH 的境外答案）。故 VM 里验证 DNS 行为必须用 **loopback stub 解析器**（不出 VM、不受宿主干扰）；真实地理答案只能在宿主机上读（read-only curl/ip-api）。
 - dashboard：pnpm、必须先 generate、有 vendor 子模块、UI 路径 `/dashboard/`。
 - 可再生目录已 gitignore：`webui/{dist,node_modules,src/gen,vendor/iterm2-color-schemes}`。
 

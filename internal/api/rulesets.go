@@ -105,14 +105,17 @@ func (s *Server) handleAddRuleSet(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	prev := s.rs.Get()
 	sets, err := s.rs.Add(rs)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := s.applyRuleSets(sets); err != nil {
-		// Roll back the just-added set so the store matches the running plane.
-		sets, _ = s.rs.Remove(rs.Tag)
+		// Roll back to the exact previous snapshot: Add is tag-idempotent (it
+		// may have overwritten an existing tag), so Remove(tag) would wrongly
+		// delete a pre-existing set instead of restoring it.
+		_, _ = s.rs.Set(prev) // best-effort restore
 		writeErr(w, http.StatusBadGateway, "apply rule set: "+err.Error())
 		return
 	}
@@ -130,6 +133,7 @@ func (s *Server) handlePatchRuleSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	prev := s.rs.Get()
 	var (
 		sets ruleset.Sets
 		err  error
@@ -149,6 +153,7 @@ func (s *Server) handlePatchRuleSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.applyRuleSets(sets); err != nil {
+		_, _ = s.rs.Set(prev) // best-effort restore so the store matches the running plane
 		writeErr(w, http.StatusBadGateway, "apply rule set: "+err.Error())
 		return
 	}
@@ -160,12 +165,14 @@ func (s *Server) handleDeleteRuleSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "rule sets not available")
 		return
 	}
+	prev := s.rs.Get()
 	sets, err := s.rs.Remove(r.PathValue("tag"))
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	if err := s.applyRuleSets(sets); err != nil {
+		_, _ = s.rs.Set(prev) // best-effort restore so the store matches the running plane
 		writeErr(w, http.StatusBadGateway, "apply rule set: "+err.Error())
 		return
 	}
@@ -173,6 +180,10 @@ func (s *Server) handleDeleteRuleSet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) applyRuleSets(sets ruleset.Sets) error {
+	// Off the hot path: keep detection's permit-role rule-set index (see
+	// ruleset.MatchesPermit / cmd/serve.go's SetTrustedDest) in sync with
+	// whatever gets applied here, success or rollback alike.
+	go ruleset.WarmPermitCache(sets, nil)
 	if s.rsApplier == nil {
 		return nil
 	}

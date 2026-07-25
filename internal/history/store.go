@@ -42,6 +42,15 @@ type Record struct {
 	Down     int64  `json:"dn"`
 	Denied   bool   `json:"x,omitempty"`
 	Level    string `json:"l,omitempty"`
+	// DurationMS is how long the connection was open — the key signal for
+	// spotting a stalled/slow connection (long duration, few bytes moved).
+	DurationMS int64 `json:"ms,omitempty"`
+	// DNSMs/ConnectMs/TLSMs break DurationMS down into phases (see
+	// detect.Event's doc comments for exactly what each covers); all 0 when
+	// no breakdown was available for this connection (e.g. UDP).
+	DNSMs     int64 `json:"dns_ms,omitempty"`
+	ConnectMs int64 `json:"connect_ms,omitempty"`
+	TLSMs     int64 `json:"tls_ms,omitempty"`
 }
 
 type Talker struct {
@@ -74,10 +83,22 @@ type Store struct {
 	size int64
 	now  func() time.Time
 
-	totalUp, totalDown       int64
-	conns, blocked, alerts   int64
-	talkers                  map[string]*Talker
-	hours                    map[int64]*HourBucket
+	// readMu serializes RecentPage's disk reads with each other only — kept
+	// separate from mu so a slow multi-MB history read (dashboard polling
+	// every few seconds) never blocks Record(), which every connection close
+	// calls synchronously (see detect.countConn.Close). Sharing one mutex
+	// between the two used to mean a single connection close in the whole
+	// gateway could stall for as long as the concurrent history read took —
+	// on a multi-hour, many-MB history file, that was seconds, not
+	// milliseconds, and it manifested as pervasive, hard-to-place slowness
+	// system-wide (every mode, not just TUN) whenever the console's
+	// History/Connections page was open and polling.
+	readMu sync.Mutex
+
+	totalUp, totalDown     int64
+	conns, blocked, alerts int64
+	talkers                map[string]*Talker
+	hours                  map[int64]*HourBucket
 }
 
 // NewStore opens (creating) the JSONL at path and rebuilds aggregates from it.
@@ -112,6 +133,7 @@ func (s *Store) Record(e detect.Event) {
 	r := Record{
 		Time: e.Time, Host: e.Host, Dest: e.Destination, Process: e.Process,
 		Outbound: e.Outbound, Up: e.Upload, Down: e.Download, Denied: e.Denied, Level: e.Level,
+		DurationMS: e.DurationMS, DNSMs: e.DNSMs, ConnectMs: e.ConnectMs, TLSMs: e.TLSMs,
 	}
 	line, err := json.Marshal(r)
 	if err != nil {
@@ -243,6 +265,19 @@ type Page struct {
 
 // RecentPage returns newest-first records matching q (host/dest/process/outbound
 // substring), with offset/limit for UI pagination. total is the filtered count.
+//
+// Deliberately does NOT hold s.mu (the fast Record()/append lock) for the
+// read+parse below — s.path never changes after NewStore, and Record() is on
+// the hot path (called synchronously from every connection's Close(), see
+// detect.countConn.Close). Reading potentially tens of MB of JSONL takes
+// meaningfully long; holding the shared append lock for that would stall
+// every connection close gateway-wide for the duration. readMu only
+// serializes concurrent RecentPage calls with each other (avoid a
+// thundering-herd of redundant disk reads under UI polling), not with
+// Record() — the tradeoff is a rare, low-stakes race with an in-flight
+// rotate() (could miss/duplicate a handful of records right at the rotation
+// boundary), acceptable for a UI view that isn't the source of truth for
+// Stats()'s aggregates.
 func (s *Store) RecentPage(limit, offset int, q string) ([]Record, int) {
 	if limit <= 0 || limit > 2000 {
 		limit = 50
@@ -250,23 +285,34 @@ func (s *Store) RecentPage(limit, offset int, q string) ([]Record, int) {
 	if offset < 0 {
 		offset = 0
 	}
-	b, err := os.ReadFile(s.path)
-	if err != nil {
-		return []Record{}, 0
-	}
+	s.readMu.Lock()
+	defer s.readMu.Unlock()
+
 	var recs []Record
-	sc := bufio.NewScanner(b2r(b))
-	sc.Buffer(make([]byte, 64*1024), 1024*1024)
-	for sc.Scan() {
-		var r Record
-		if json.Unmarshal(sc.Bytes(), &r) != nil {
-			continue
+	appendFrom := func(path string) {
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return
 		}
-		if q != "" && !(contains(r.Host, q) || contains(r.Dest, q) || contains(r.Process, q) || contains(r.Outbound, q)) {
-			continue
+		sc := bufio.NewScanner(b2r(b))
+		sc.Buffer(make([]byte, 64*1024), 1024*1024)
+		for sc.Scan() {
+			var r Record
+			if json.Unmarshal(sc.Bytes(), &r) != nil {
+				continue
+			}
+			if q != "" && !(contains(r.Host, q) || contains(r.Dest, q) || contains(r.Process, q) || contains(r.Outbound, q)) {
+				continue
+			}
+			recs = append(recs, r)
 		}
-		recs = append(recs, r)
 	}
+	// The rotated-away half is older and comes first so overall order stays
+	// chronological; without it, history past the rotation boundary would be
+	// permanently unreachable via the API even though it's still on disk.
+	appendFrom(s.path + ".1")
+	appendFrom(s.path)
+
 	total := len(recs)
 	// newest first
 	out := make([]Record, 0, limit)

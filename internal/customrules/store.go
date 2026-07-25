@@ -220,57 +220,53 @@ func (s *Store) Add(r apitypes.CustomRule) (Rules, error) {
 // Update applies a partial patch to the rule with id, revalidates, and persists.
 // If the change alters the identity fields, the ID is recomputed.
 func (s *Store) Update(id string, p apitypes.PatchCustomRuleRequest) (Rules, error) {
-	s.mu.Lock()
-	idx := -1
-	for i := range s.data.Rules {
-		if s.data.Rules[i].ID == id {
-			idx = i
-			break
+	return s.mutateChecked(func() error {
+		idx := -1
+		for i := range s.data.Rules {
+			if s.data.Rules[i].ID == id {
+				idx = i
+				break
+			}
 		}
-	}
-	if idx < 0 {
-		s.mu.Unlock()
-		return s.Get(), fmt.Errorf("rule %q not found", id)
-	}
-	r := s.data.Rules[idx]
-	if p.Enabled != nil {
-		r.Enabled = *p.Enabled
-	}
-	if p.Match != nil {
-		r.Match = *p.Match
-	}
-	if p.Value != nil {
-		r.Value = *p.Value
-	}
-	if p.Action != nil {
-		r.Action = *p.Action
-		r.Egress = *p.Action
-	}
-	if p.Egress != nil {
-		r.Egress = *p.Egress
-		if *p.Egress != apitypes.CustomEgressNone {
-			r.Action = *p.Egress
+		if idx < 0 {
+			return fmt.Errorf("rule %q not found", id)
 		}
-	}
-	if p.Permit != nil {
-		r.Permit = p.Permit
-	}
-	if p.Node != nil {
-		r.Node = *p.Node
-	}
-	if p.Pack != nil {
-		r.Pack = *p.Pack
-	}
-	if err := validate(&r); err != nil {
-		s.mu.Unlock()
-		return s.Get(), err
-	}
-	r.ID = idFor(r)
-	s.data.Rules[idx] = r
-	snap := snapshot(s.data)
-	err := s.save()
-	s.mu.Unlock()
-	return snap, err
+		r := s.data.Rules[idx]
+		if p.Enabled != nil {
+			r.Enabled = *p.Enabled
+		}
+		if p.Match != nil {
+			r.Match = *p.Match
+		}
+		if p.Value != nil {
+			r.Value = *p.Value
+		}
+		if p.Action != nil {
+			r.Action = *p.Action
+			r.Egress = *p.Action
+		}
+		if p.Egress != nil {
+			r.Egress = *p.Egress
+			if *p.Egress != apitypes.CustomEgressNone {
+				r.Action = *p.Egress
+			}
+		}
+		if p.Permit != nil {
+			r.Permit = p.Permit
+		}
+		if p.Node != nil {
+			r.Node = *p.Node
+		}
+		if p.Pack != nil {
+			r.Pack = *p.Pack
+		}
+		if err := validate(&r); err != nil {
+			return err
+		}
+		r.ID = idFor(r)
+		s.data.Rules[idx] = r
+		return nil
+	})
 }
 
 // Remove deletes the rule with the given id.
@@ -380,5 +376,20 @@ func (s *Store) mutate(fn func()) (Rules, error) {
 	snap := snapshot(s.data)
 	err := s.save()
 	s.mu.Unlock()
+	return snap, err
+}
+
+// mutateChecked is like mutate, but fn may need to read/validate existing
+// state before deciding whether to proceed (e.g. Update needs the lock held
+// to look up the target rule and validate the patched result). If fn returns
+// an error, the store is left untouched and no save happens.
+func (s *Store) mutateChecked(fn func() error) (Rules, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := fn(); err != nil {
+		return snapshot(s.data), err
+	}
+	snap := snapshot(s.data)
+	err := s.save()
 	return snap, err
 }

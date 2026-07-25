@@ -147,7 +147,11 @@ func NewStore(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &s.data); err != nil {
 		return nil, err
 	}
-	if s.migrateRoles() {
+	changed := s.migrateRoles()
+	if s.data.sanitize() > 0 {
+		changed = true
+	}
+	if changed {
 		_ = s.save()
 	}
 	return s, nil
@@ -166,6 +170,22 @@ func (s *Store) migrateRoles() bool {
 		}
 	}
 	return changed
+}
+
+// sanitize disables (but doesn't delete — the tag/URL are still worth
+// keeping visible for the user to fix) any set left with an unrecognized
+// role after migrateRoles, so a poisoned store fails visibly-off rather than
+// silently sitting inert with undefined gateway behavior. Returns the count
+// changed.
+func (r *Sets) sanitize() int {
+	fixed := 0
+	for i := range r.Sets {
+		if r.Sets[i].Enabled && !apitypes.ValidRuleRole(r.Sets[i].Role) {
+			r.Sets[i].Enabled = false
+			fixed++
+		}
+	}
+	return fixed
 }
 
 func (s *Store) save() error {
@@ -201,6 +221,9 @@ func (s *Store) Add(rs apitypes.RuleSet) (Sets, error) {
 	if rs.Tag == "" {
 		return s.Get(), fmt.Errorf("rule set tag is required")
 	}
+	if !apitypes.ValidRuleRole(rs.Role) {
+		return s.Get(), fmt.Errorf("invalid role %q", rs.Role)
+	}
 	if rs.DownloadDetour == "" {
 		rs.DownloadDetour = "direct"
 	}
@@ -233,6 +256,9 @@ func (s *Store) Remove(tag string) (Sets, error) {
 
 // SetRole / SetEnabled patch a single set.
 func (s *Store) SetRole(tag, role string) (Sets, error) {
+	if !apitypes.ValidRuleRole(role) {
+		return s.Get(), fmt.Errorf("invalid role %q", role)
+	}
 	return s.mutate(func() {
 		for i := range s.data.Sets {
 			if s.data.Sets[i].Tag == tag {

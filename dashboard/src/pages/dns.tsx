@@ -192,6 +192,32 @@ export default function DNS() {
                 </Select>
               </label>
             </div>
+            {/* DNS follows route: the servers above answer for proxied domains,
+                this one for direct-routed domains. Without it a resolver behind
+                the exit node hands domestic sites the exit region's CDN edges. */}
+            <div className="space-y-1.5 border-t pt-3">
+              <p className="text-xs font-medium">{t('pages.dns.directSplitTitle')}</p>
+              <p className="text-xs text-muted-foreground">{t('pages.dns.directSplitHint')}</p>
+              <label className="space-y-1 text-xs text-muted-foreground">
+                {t('pages.dns.directServerLabel')}
+                <Input
+                  className="h-8"
+                  placeholder="223.5.5.5"
+                  value={cfg.direct_server ?? ''}
+                  onChange={(e) => patch({ direct_server: e.target.value.trim() })}
+                  disabled={cfg.disable_direct_split ?? false}
+                />
+              </label>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="size-3.5"
+                  checked={cfg.disable_direct_split ?? false}
+                  onChange={(e) => patch({ disable_direct_split: e.target.checked })}
+                />
+                {t('pages.dns.disableSplitLabel')}
+              </label>
+            </div>
           </CardContent>
         </Card>
       </div>

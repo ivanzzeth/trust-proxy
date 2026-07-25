@@ -7,8 +7,8 @@ package api
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"fmt"
 	"io/fs"
-	"log"
 	"net/http"
 	"os"
 	"path"
@@ -26,6 +26,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/inbound"
+	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
@@ -136,86 +137,86 @@ type EndpointsApplier interface {
 
 // Options configures the API server.
 type Options struct {
-	Addr        string
-	Store       *subscription.Store
-	Applier     Applier
-	Whitelist   *whitelist.Store
-	WLApplier   WhitelistApplier
-	Blacklist   *blacklist.Store
-	BLApplier   BlacklistApplier
-	Directlist  *directlist.Store
-	DLApplier   DirectListApplier
-	CustomRules *customrules.Store
-	CRApplier   CustomRulesApplier
-	RulesView   RulesViewer
-	ProxyGroups *proxygroups.Store
-	PGApplier   ProxyGroupsApplier
-	Detect      *detect.Engine
-	Mode        ModeController
-	RuleSets    *ruleset.Store
-	RSApplier   RuleSetApplier
-	Profiles    *profile.Store
-	ProfApplier ProfileApplier
-	Posture     *posture.Store
-	Final       *finalroute.Store
+	Addr         string
+	Store        *subscription.Store
+	Applier      Applier
+	Whitelist    *whitelist.Store
+	WLApplier    WhitelistApplier
+	Blacklist    *blacklist.Store
+	BLApplier    BlacklistApplier
+	Directlist   *directlist.Store
+	DLApplier    DirectListApplier
+	CustomRules  *customrules.Store
+	CRApplier    CustomRulesApplier
+	RulesView    RulesViewer
+	ProxyGroups  *proxygroups.Store
+	PGApplier    ProxyGroupsApplier
+	Detect       *detect.Engine
+	Mode         ModeController
+	RuleSets     *ruleset.Store
+	RSApplier    RuleSetApplier
+	Profiles     *profile.Store
+	ProfApplier  ProfileApplier
+	Posture      *posture.Store
+	Final        *finalroute.Store
 	FinalApplier FinalApplier
-	DNS         *dnscfg.Store
-	DNSApplier  DNSApplier
-	Inbound     *inbound.Store
-	InbApplier  InboundApplier
-	TUN         *tuncfg.Store
-	TUNApplier  TUNApplier
-	Endpoints   *endpoints.Store
-	EPApplier   EndpointsApplier
-	History     *history.Store
-	Detections  *detect.Store // durable alert findings (JSONL)
-	Nodes       *nodes.Store  // brain: registry of remote gateways (reverse-proxied)
-	Token       string        // if set, /api/* requires this bearer token (probe mode)
-	Clash       *clash.Client // low-level Clash primitives, proxied to the browser
-	ConsoleDir  string        // on-disk dashboard dir (dev); used when ConsoleFS is nil
-	ConsoleFS   fs.FS         // embedded dashboard build (release); wins over ConsoleDir
+	DNS          *dnscfg.Store
+	DNSApplier   DNSApplier
+	Inbound      *inbound.Store
+	InbApplier   InboundApplier
+	TUN          *tuncfg.Store
+	TUNApplier   TUNApplier
+	Endpoints    *endpoints.Store
+	EPApplier    EndpointsApplier
+	History      *history.Store
+	Detections   *detect.Store // durable alert findings (JSONL)
+	Nodes        *nodes.Store  // brain: registry of remote gateways (reverse-proxied)
+	Token        string        // if set, /api/* requires this bearer token (probe mode)
+	Clash        *clash.Client // low-level Clash primitives, proxied to the browser
+	ConsoleDir   string        // on-disk dashboard dir (dev); used when ConsoleFS is nil
+	ConsoleFS    fs.FS         // embedded dashboard build (release); wins over ConsoleDir
 }
 
 // Server exposes /api/* and serves the console.
 type Server struct {
-	httpSrv     *http.Server
-	store       *subscription.Store
-	applier     Applier
-	wl          *whitelist.Store
-	wlApplier   WhitelistApplier
-	bl          *blacklist.Store
-	blApplier   BlacklistApplier
-	dl          *directlist.Store
-	dlApplier   DirectListApplier
-	cr          *customrules.Store
-	crApplier   CustomRulesApplier
-	rulesView   RulesViewer
-	pgroups     *proxygroups.Store
-	pgApplier   ProxyGroupsApplier
-	detect      *detect.Engine
-	mode        ModeController
-	rs          *ruleset.Store
-	rsApplier   RuleSetApplier
-	profStore   *profile.Store
-	profApplier ProfileApplier
-	posture     *posture.Store
-	final       *finalroute.Store
+	httpSrv      *http.Server
+	store        *subscription.Store
+	applier      Applier
+	wl           *whitelist.Store
+	wlApplier    WhitelistApplier
+	bl           *blacklist.Store
+	blApplier    BlacklistApplier
+	dl           *directlist.Store
+	dlApplier    DirectListApplier
+	cr           *customrules.Store
+	crApplier    CustomRulesApplier
+	rulesView    RulesViewer
+	pgroups      *proxygroups.Store
+	pgApplier    ProxyGroupsApplier
+	detect       *detect.Engine
+	mode         ModeController
+	rs           *ruleset.Store
+	rsApplier    RuleSetApplier
+	profStore    *profile.Store
+	profApplier  ProfileApplier
+	posture      *posture.Store
+	final        *finalroute.Store
 	finalApplier FinalApplier
-	dns         *dnscfg.Store
-	dnsApplier  DNSApplier
-	inbound     *inbound.Store
-	inbApplier  InboundApplier
-	tun         *tuncfg.Store
-	tunApplier  TUNApplier
-	eps         *endpoints.Store
-	epApplier   EndpointsApplier
-	history     *history.Store
-	detections  *detect.Store
-	nodes       *nodes.Store
-	token       string
-	clash       *clash.Client
-	consoleDir  string
-	consoleFS   fs.FS
+	dns          *dnscfg.Store
+	dnsApplier   DNSApplier
+	inbound      *inbound.Store
+	inbApplier   InboundApplier
+	tun          *tuncfg.Store
+	tunApplier   TUNApplier
+	eps          *endpoints.Store
+	epApplier    EndpointsApplier
+	history      *history.Store
+	detections   *detect.Store
+	nodes        *nodes.Store
+	token        string
+	clash        *clash.Client
+	consoleDir   string
+	consoleFS    fs.FS
 }
 
 // NewServer builds the API server.
@@ -447,7 +448,7 @@ func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {
 	}
 	sub, err := s.store.Add(req.Name, req.URL, req.UserAgent, req.Via, req.Content)
 	if err != nil {
-		log.Println("subscription add refresh:", err)
+		logging.L().Warn().Err(err).Msg("subscription add refresh")
 	}
 	writeJSON(w, http.StatusCreated, sub)
 }
@@ -467,7 +468,7 @@ func (s *Server) handleRefreshSub(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusNotFound, err.Error())
 			return
 		}
-		log.Println("subscription refresh:", err)
+		logging.L().Warn().Err(err).Msg("subscription refresh")
 	}
 	writeJSON(w, http.StatusOK, sub)
 }
@@ -476,6 +477,18 @@ func (s *Server) handleApplySub(w http.ResponseWriter, r *http.Request) {
 	sub, ok := s.store.Get(r.PathValue("id"))
 	if !ok {
 		writeErr(w, http.StatusNotFound, "subscription not found")
+		return
+	}
+	if len(sub.Nodes) == 0 {
+		// Applying an empty node list collapses the proxy group to
+		// selector[direct] (gateway.injectOutbounds) — silently downgrading
+		// every route that was going through a real node to direct. A
+		// subscription only ever has 0 nodes because its last fetch/parse
+		// failed or the link is dead, never because the user wants no exit
+		// nodes, so refuse outright rather than let one bad refresh wipe out
+		// working routing.
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf(
+			"refusing to apply %q: it has 0 nodes (last_error=%q) — fix the URL/fetch and refresh first", sub.Name, sub.LastError))
 		return
 	}
 	if s.applier == nil {
@@ -487,7 +500,7 @@ func (s *Server) handleApplySub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.store.SetApplied(sub.ID); err != nil {
-		log.Println("mark applied:", err)
+		logging.L().Warn().Err(err).Msg("mark subscription applied")
 	}
 	sub, _ = s.store.Get(sub.ID)
 	writeJSON(w, http.StatusOK, sub)
@@ -583,11 +596,6 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 // ---- whitelist (egress allow-list) ----------------------------------------
 
-type whitelistReq struct {
-	Type  string `json:"type"` // "domain" | "ip"
-	Value string `json:"value"`
-}
-
 func (s *Server) handleGetWhitelist(w http.ResponseWriter, r *http.Request) {
 	if s.wl == nil {
 		writeErr(w, http.StatusServiceUnavailable, "whitelist not available")
@@ -609,9 +617,8 @@ func (s *Server) mutateWhitelist(w http.ResponseWriter, r *http.Request, add boo
 		writeErr(w, http.StatusServiceUnavailable, "whitelist not available")
 		return
 	}
-	var req whitelistReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Value == "" {
-		writeErr(w, http.StatusBadRequest, "type and value are required")
+	typ, value, ok := decodeListReq(w, r)
+	if !ok {
 		return
 	}
 	prev := s.wl.Get() // for rollback if the apply fails
@@ -619,30 +626,30 @@ func (s *Server) mutateWhitelist(w http.ResponseWriter, r *http.Request, add boo
 		rules whitelist.Rules
 		err   error
 	)
-	switch req.Type {
+	switch typ {
 	case "domain":
 		if add {
-			rules, err = s.wl.AddDomain(req.Value)
+			rules, err = s.wl.AddDomain(value)
 		} else {
-			rules, err = s.wl.RemoveDomain(req.Value)
+			rules, err = s.wl.RemoveDomain(value)
 		}
 	case "ip":
 		if add {
-			rules, err = s.wl.AddIP(req.Value)
+			rules, err = s.wl.AddIP(value)
 		} else {
-			rules, err = s.wl.RemoveIP(req.Value)
+			rules, err = s.wl.RemoveIP(value)
 		}
 	case "process":
 		if add {
-			rules, err = s.wl.AddProcess(req.Value)
+			rules, err = s.wl.AddProcess(value)
 		} else {
-			rules, err = s.wl.RemoveProcess(req.Value)
+			rules, err = s.wl.RemoveProcess(value)
 		}
 	case "device":
 		if add {
-			rules, err = s.wl.AddDevice(req.Value)
+			rules, err = s.wl.AddDevice(value)
 		} else {
-			rules, err = s.wl.RemoveDevice(req.Value)
+			rules, err = s.wl.RemoveDevice(value)
 		}
 	default:
 		writeErr(w, http.StatusBadRequest, "type must be domain, ip, process or device")
@@ -652,22 +659,17 @@ func (s *Server) mutateWhitelist(w http.ResponseWriter, r *http.Request, add boo
 		writeErr(w, http.StatusBadRequest, err.Error()) // validation error (bad IP/domain)
 		return
 	}
+	var apply func(whitelist.Rules) error
 	if s.wlApplier != nil {
-		if err := s.wlApplier.SetWhitelist(rules); err != nil {
-			_, _ = s.wl.Set(prev) // un-poison the store so it matches the running plane
-			writeErr(w, http.StatusBadGateway, "apply whitelist: "+err.Error())
-			return
-		}
+		apply = s.wlApplier.SetWhitelist
+	}
+	if applyOrRollback(w, rules, prev, apply, s.wl.Set, "apply whitelist: ") {
+		return
 	}
 	writeJSON(w, http.StatusOK, rules)
 }
 
 // ---- blacklist (egress deny-list) -----------------------------------------
-
-type blacklistReq struct {
-	Type  string `json:"type"` // "domain" | "keyword" | "regex" | "ip"
-	Value string `json:"value"`
-}
 
 func (s *Server) handleGetBlacklist(w http.ResponseWriter, r *http.Request) {
 	if s.bl == nil {
@@ -690,9 +692,8 @@ func (s *Server) mutateBlacklist(w http.ResponseWriter, r *http.Request, add boo
 		writeErr(w, http.StatusServiceUnavailable, "blacklist not available")
 		return
 	}
-	var req blacklistReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Value == "" {
-		writeErr(w, http.StatusBadRequest, "type and value are required")
+	typ, value, ok := decodeListReq(w, r)
+	if !ok {
 		return
 	}
 	prev := s.bl.Get() // for rollback if the apply fails
@@ -700,30 +701,30 @@ func (s *Server) mutateBlacklist(w http.ResponseWriter, r *http.Request, add boo
 		rules blacklist.Rules
 		err   error
 	)
-	switch req.Type {
+	switch typ {
 	case "domain":
 		if add {
-			rules, err = s.bl.AddDomain(req.Value)
+			rules, err = s.bl.AddDomain(value)
 		} else {
-			rules, err = s.bl.RemoveDomain(req.Value)
+			rules, err = s.bl.RemoveDomain(value)
 		}
 	case "keyword":
 		if add {
-			rules, err = s.bl.AddKeyword(req.Value)
+			rules, err = s.bl.AddKeyword(value)
 		} else {
-			rules, err = s.bl.RemoveKeyword(req.Value)
+			rules, err = s.bl.RemoveKeyword(value)
 		}
 	case "regex":
 		if add {
-			rules, err = s.bl.AddRegex(req.Value)
+			rules, err = s.bl.AddRegex(value)
 		} else {
-			rules, err = s.bl.RemoveRegex(req.Value)
+			rules, err = s.bl.RemoveRegex(value)
 		}
 	case "ip":
 		if add {
-			rules, err = s.bl.AddIP(req.Value)
+			rules, err = s.bl.AddIP(value)
 		} else {
-			rules, err = s.bl.RemoveIP(req.Value)
+			rules, err = s.bl.RemoveIP(value)
 		}
 	default:
 		writeErr(w, http.StatusBadRequest, "type must be domain, keyword, regex or ip")
@@ -733,22 +734,17 @@ func (s *Server) mutateBlacklist(w http.ResponseWriter, r *http.Request, add boo
 		writeErr(w, http.StatusBadRequest, err.Error()) // validation error (bad IP/regex)
 		return
 	}
+	var apply func(blacklist.Rules) error
 	if s.blApplier != nil {
-		if err := s.blApplier.SetBlacklist(rules); err != nil {
-			_, _ = s.bl.Set(prev) // un-poison the store so it matches the running plane
-			writeErr(w, http.StatusBadGateway, "apply blacklist: "+err.Error())
-			return
-		}
+		apply = s.blApplier.SetBlacklist
+	}
+	if applyOrRollback(w, rules, prev, apply, s.bl.Set, "apply blacklist: ") {
+		return
 	}
 	writeJSON(w, http.StatusOK, rules)
 }
 
 // ---- directlist (no-proxy / bypass, routing layer) ------------------------
-
-type directlistReq struct {
-	Type  string `json:"type"` // "domain" | "ip"
-	Value string `json:"value"`
-}
 
 func (s *Server) handleGetDirectlist(w http.ResponseWriter, r *http.Request) {
 	if s.dl == nil {
@@ -778,9 +774,8 @@ func (s *Server) mutateDirectlist(w http.ResponseWriter, r *http.Request, add bo
 		writeErr(w, http.StatusServiceUnavailable, "directlist not available")
 		return
 	}
-	var req directlistReq
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Value == "" {
-		writeErr(w, http.StatusBadRequest, "type and value are required")
+	typ, value, ok := decodeListReq(w, r)
+	if !ok {
 		return
 	}
 	prev := s.dl.Get() // for rollback if the apply fails
@@ -788,18 +783,18 @@ func (s *Server) mutateDirectlist(w http.ResponseWriter, r *http.Request, add bo
 		rules directlist.Rules
 		err   error
 	)
-	switch req.Type {
+	switch typ {
 	case "domain":
 		if add {
-			rules, err = s.dl.AddDomain(req.Value)
+			rules, err = s.dl.AddDomain(value)
 		} else {
-			rules, err = s.dl.RemoveDomain(req.Value)
+			rules, err = s.dl.RemoveDomain(value)
 		}
 	case "ip":
 		if add {
-			rules, err = s.dl.AddIP(req.Value)
+			rules, err = s.dl.AddIP(value)
 		} else {
-			rules, err = s.dl.RemoveIP(req.Value)
+			rules, err = s.dl.RemoveIP(value)
 		}
 	default:
 		writeErr(w, http.StatusBadRequest, "type must be domain or ip")
@@ -809,12 +804,12 @@ func (s *Server) mutateDirectlist(w http.ResponseWriter, r *http.Request, add bo
 		writeErr(w, http.StatusBadRequest, err.Error()) // validation error (bad IP)
 		return
 	}
+	var apply func(directlist.Rules) error
 	if s.dlApplier != nil {
-		if err := s.dlApplier.SetDirectList(rules); err != nil {
-			_, _ = s.dl.Set(prev) // un-poison the store so it matches the running plane
-			writeErr(w, http.StatusBadGateway, "apply directlist: "+err.Error())
-			return
-		}
+		apply = s.dlApplier.SetDirectList
+	}
+	if applyOrRollback(w, rules, prev, apply, s.dl.Set, "apply directlist: ") {
+		return
 	}
 	writeJSON(w, http.StatusOK, rules)
 }

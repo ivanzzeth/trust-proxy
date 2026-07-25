@@ -20,6 +20,9 @@ func TestCountry(t *testing.T) {
 		"my random relay": "MY", // "my" keyword — acceptable heuristic
 		"Frankfurt DE":    "DE",
 		"unlabeled-node":  "",
+		// Bare single CJK characters must not false-positive on unrelated
+		// words that merely contain that character.
+		"维港观景台中转节点": "",
 	}
 	for tag, want := range cases {
 		if got := Country(tag); got != want {

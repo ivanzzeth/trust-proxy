@@ -22,6 +22,11 @@ export default {
     noSplitRules: 'No split rules — everything resolves via "final".',
     finalLabel: 'Final (fallback) server',
     strategyLabel: 'Strategy',
+    directSplitTitle: 'Direct-route resolver',
+    directSplitHint:
+      'Domains that egress direct are resolved here instead — dialed directly, so mainland destinations get mainland answers rather than the exit node\'s CDN edges. Empty = 223.5.5.5.',
+    directServerLabel: 'Resolver for direct-routed domains',
+    disableSplitLabel: 'Resolve everything above (not recommended)',
   },
   zh: {
     title: 'DNS',
@@ -45,5 +50,10 @@ export default {
     noSplitRules: '暂无分流规则 — 全部通过 "final" 兜底解析。',
     finalLabel: '最终（兜底）服务器',
     strategyLabel: '解析策略',
+    directSplitTitle: '直连侧解析器',
+    directSplitHint:
+      '走 direct 出网的域名改由这里解析（直连拨号），国内站点才拿到国内 CDN 结果，而不是出口节点所在地区的边缘节点。留空 = 223.5.5.5。',
+    directServerLabel: '直连域名的解析服务器',
+    disableSplitLabel: '全部用上面的服务器解析（不推荐）',
   },
 };

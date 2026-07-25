@@ -6,6 +6,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 const beaconWindow = 20 // per-destination connection timestamps kept
@@ -35,11 +37,7 @@ func (e *Engine) SetDGA(v bool) {
 }
 
 // SetUploadAlert sets the upload byte threshold for the exfil alert.
-func (e *Engine) SetUploadAlert(bytes int64) {
-	e.mu.Lock()
-	e.uploadAlertBytes = bytes
-	e.mu.Unlock()
-}
+func (e *Engine) SetUploadAlert(bytes int64) { e.uploadAlertBytes.Store(bytes) }
 
 // recordBeacon appends a connection time for key and returns a non-empty alert
 // reason when the inter-arrival pattern looks like a regular C2 heartbeat.
@@ -96,14 +94,40 @@ func (e *Engine) analyzeDomain(host string, now time.Time) []string {
 		return nil
 	}
 	var reasons []string
+
+	// sld is the registrable label and parent its eTLD+1, resolved via the
+	// public suffix list so multi-label TLDs (x.co.uk, x.com.cn) don't fall
+	// back to treating "co"/"com" as the attacker-controlled label — that
+	// silently skipped the real label on exactly the .com.cn domains this
+	// gateway sees most. subLabels holds whatever sits left of the
+	// registrable domain (empty when h has no subdomain).
 	sld := labels[len(labels)-2]
-	// DGA: long, high-entropy second-level label that is digit-heavy or
+	parent := sld
+	if len(labels) >= 3 {
+		parent = labels[len(labels)-2] + "." + labels[len(labels)-1]
+	}
+	subLabels := labels[:len(labels)-2]
+	if etld1, err := publicsuffix.EffectiveTLDPlusOne(h); err == nil {
+		parent = etld1
+		if i := strings.IndexByte(etld1, '.'); i >= 0 {
+			sld = etld1[:i]
+		} else {
+			sld = etld1
+		}
+		if rest := strings.TrimSuffix(h, "."+etld1); rest != h && rest != "" {
+			subLabels = strings.Split(rest, ".")
+		} else {
+			subLabels = nil
+		}
+	}
+
+	// DGA: long, high-entropy registrable label that is digit-heavy or
 	// vowel-starved (kq3v9z7x1p2m.com), unlike real brands.
 	if len(sld) >= 12 && shannon(sld) >= 3.8 && (digitRatio(sld) >= 0.25 || vowelRatio(sld) <= 0.2) {
 		reasons = append(reasons, fmt.Sprintf("DGA-like domain %q (entropy %.1f) — possible malware C2", sld, shannon(sld)))
 	}
 	// Tunnel: a single long, high-entropy subdomain label encodes data.
-	for _, lab := range labels[:len(labels)-2] {
+	for _, lab := range subLabels {
 		if len(lab) >= 25 && shannon(lab) >= 4.0 {
 			reasons = append(reasons, fmt.Sprintf("long high-entropy subdomain label (%d chars) — possible DNS tunnel", len(lab)))
 			break
@@ -111,7 +135,6 @@ func (e *Engine) analyzeDomain(host string, now time.Time) []string {
 	}
 	// Volume: many distinct subdomains under one parent within the window.
 	if len(labels) >= 3 {
-		parent := labels[len(labels)-2] + "." + labels[len(labels)-1]
 		if len(e.dnsParents) > 8192 {
 			e.dnsParents = map[string]*parentState{} // coarse bound
 		}

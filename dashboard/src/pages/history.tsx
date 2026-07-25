@@ -4,7 +4,7 @@ import { ArrowDown, ArrowUp, Ban, Waypoints } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '@/lib/api';
-import { cn, fmtBytes } from '@/lib/utils';
+import { cn, fmtBytes, fmtDuration, fmtLatencyBreakdown } from '@/lib/utils';
 import { DEFAULT_PAGE_SIZE } from '@/hooks/use-paged-list';
 import { PageHeader } from '@/components/page-header';
 import { ListSearch, PaginationBar } from '@/components/pagination-bar';
@@ -123,33 +123,46 @@ export default function History() {
                 <TableHead>{t('pages.history.columnProcess')}</TableHead>
                 <TableHead className="text-right">↑</TableHead>
                 <TableHead className="text-right">↓</TableHead>
+                <TableHead className="text-right">{t('pages.history.columnDuration')}</TableHead>
                 <TableHead>{t('pages.history.columnOut')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {recent.length === 0 && (
                 <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={6} className="py-10 text-center text-muted-foreground">{t('pages.history.empty')}</TableCell>
+                  <TableCell colSpan={7} className="py-10 text-center text-muted-foreground">{t('pages.history.empty')}</TableCell>
                 </TableRow>
               )}
-              {recent.map((r, i) => (
-                <TableRow key={`${r.t}-${r.h}-${r.d}-${i}`} data-state={r.l === 'alert' ? 'alert' : undefined}>
-                  <TableCell className="tnum text-xs text-muted-foreground">
-                    {r.t ? new Date(r.t).toLocaleTimeString() : '—'}
-                  </TableCell>
-                  <TableCell>
-                    <span className="flex items-center gap-1.5">
-                      {r.x && <Badge variant="danger">{t('pages.history.badgeBlocked')}</Badge>}
-                      {r.h}
-                    </span>
-                    <div className="tnum text-xs text-muted-foreground">{r.d}</div>
-                  </TableCell>
-                  <TableCell className="max-w-[180px] truncate text-xs text-muted-foreground" title={r.p}>{r.p || '—'}</TableCell>
-                  <TableCell className="tnum text-right text-xs">{fmtBytes(r.u)}</TableCell>
-                  <TableCell className="tnum text-right text-xs">{fmtBytes(r.dn)}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{r.o}</TableCell>
-                </TableRow>
-              ))}
+              {recent.map((r, i) => {
+                // Stalled-connection signature: open a long time but moved
+                // almost nothing — flag it so a slow page load is easy to spot.
+                const slow = (r.ms ?? 0) >= 3000 && r.u + r.dn < 8192;
+                const breakdown = fmtLatencyBreakdown(r.ms ?? 0, r.dns_ms, r.connect_ms, r.tls_ms);
+                const durationTitle = [breakdown, slow ? t('pages.history.slowHint') : null].filter(Boolean).join(' — ') || undefined;
+                return (
+                  <TableRow key={`${r.t}-${r.h}-${r.d}-${i}`} data-state={r.l === 'alert' ? 'alert' : undefined}>
+                    <TableCell className="tnum text-xs text-muted-foreground">
+                      {r.t ? new Date(r.t).toLocaleTimeString() : '—'}
+                    </TableCell>
+                    <TableCell>
+                      <span className="flex items-center gap-1.5">
+                        {r.x && <Badge variant="danger">{t('pages.history.badgeBlocked')}</Badge>}
+                        {r.h}
+                      </span>
+                      <div className="tnum text-xs text-muted-foreground">{r.d}</div>
+                    </TableCell>
+                    <TableCell className="max-w-[180px] truncate text-xs text-muted-foreground" title={r.p}>{r.p || '—'}</TableCell>
+                    <TableCell className="tnum text-right text-xs">{fmtBytes(r.u)}</TableCell>
+                    <TableCell className="tnum text-right text-xs">{fmtBytes(r.dn)}</TableCell>
+                    <TableCell className="tnum text-right text-xs">
+                      <span className={slow ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'} title={durationTitle}>
+                        {fmtDuration(r.ms ?? 0)}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{r.o}</TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
           <PaginationBar

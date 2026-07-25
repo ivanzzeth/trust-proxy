@@ -35,6 +35,9 @@ export default {
     columnMatch: 'Match',
     columnValue: 'Value',
     columnAction: 'Action',
+    permitToggle: 'Permit',
+    permitToggleOnHint: 'This rule also grants Permit (opens the allow-set for this match) — the usual choice.',
+    permitToggleOffHint: 'Route-only: picks the egress but never opens the allow-set. The destination must already be permitted elsewhere (whitelist, a permit pack, …) or it stays blocked.',
     match: {
       domain: 'domain (exact)',
       domain_suffix: 'domain suffix',
@@ -85,6 +88,9 @@ export default {
     columnMatch: '匹配',
     columnValue: '值',
     columnAction: '动作',
+    permitToggle: '许可',
+    permitToggleOnHint: '此规则同时授予 Permit（为该匹配开闸）——通常选这个。',
+    permitToggleOffHint: '仅路由：只选出口，永不开闸。该目的地须已被其它方式许可（白名单、许可包等），否则仍会被拦截。',
     match: {
       domain: '域名（精确）',
       domain_suffix: '域名后缀',

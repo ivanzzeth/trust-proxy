@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 
@@ -115,13 +114,18 @@ var proxyStopCmd = &cobra.Command{
 	Use:   "stop",
 	Short: "Stop a daemonized proxy server (reads --pid file)",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		b, err := os.ReadFile(proxyPid)
+		pid, err := readPidFile(proxyPid)
 		if err != nil {
 			return fmt.Errorf("read pid file %s: %w", proxyPid, err)
 		}
-		pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-		if err != nil {
-			return fmt.Errorf("bad pid file: %w", err)
+		alive, confirmedOther := checkPid(pid)
+		if !alive {
+			_ = os.Remove(proxyPid)
+			fmt.Printf("pid %d is not running (stale pid file removed)\n", pid)
+			return nil
+		}
+		if confirmedOther {
+			return fmt.Errorf("refusing to signal pid %d: it does not look like a trust-proxy process (pid file %s is likely stale/reused) — remove it manually if you're sure", pid, proxyPid)
 		}
 		p, err := os.FindProcess(pid)
 		if err != nil {

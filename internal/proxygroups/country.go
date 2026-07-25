@@ -75,8 +75,13 @@ func CountryName(code string) string {
 // names are matched as case-insensitive substrings (multi-char / CJK, safe).
 // Order matters: longer / more-specific first.
 var names = []struct{ match, code string }{
-	{"hong kong", "HK"}, {"hongkong", "HK"}, {"香港", "HK"}, {"港", "HK"},
-	{"taiwan", "TW"}, {"台湾", "TW"}, {"臺灣", "TW"}, {"台灣", "TW"}, {"台", "TW"},
+	// Bare single CJK characters ("港", "台") are deliberately excluded here:
+	// as Contains-matched substrings they'd false-positive on any tag
+	// containing that character as part of an unrelated word (e.g. a generic
+	// word using 港 that isn't naming Hong Kong). The multi-character forms
+	// below already cover how node tags actually spell out these countries.
+	{"hong kong", "HK"}, {"hongkong", "HK"}, {"香港", "HK"},
+	{"taiwan", "TW"}, {"台湾", "TW"}, {"臺灣", "TW"}, {"台灣", "TW"},
 	{"singapore", "SG"}, {"新加坡", "SG"}, {"狮城", "SG"},
 	{"japan", "JP"}, {"日本", "JP"}, {"东京", "JP"}, {"大阪", "JP"},
 	{"korea", "KR"}, {"韩国", "KR"}, {"首尔", "KR"},

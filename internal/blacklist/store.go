@@ -6,22 +6,13 @@ package blacklist
 import (
 	"encoding/json"
 	"fmt"
-	"net"
 	"os"
-	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
-)
 
-// validCIDR reports whether s is a usable ip_cidr entry (a CIDR or a bare IP).
-func validCIDR(s string) bool {
-	if _, _, err := net.ParseCIDR(s); err == nil {
-		return true
-	}
-	return net.ParseIP(s) != nil
-}
+	"github.com/ivanzzeth/trust-proxy/internal/liststore"
+)
 
 // Rules is the deny-list snapshot.
 //   - Domains: matched as domain_suffix (reject).
@@ -69,36 +60,15 @@ func NewStore(path string) (*Store, error) {
 // returns the count removed.
 func (r *Rules) sanitize() int {
 	removed := 0
-	r.IPs = filter(r.IPs, validCIDR, &removed)
-	r.Regexes = filter(r.Regexes, func(s string) bool {
+	r.IPs = liststore.Filter(r.IPs, liststore.ValidCIDR, &removed)
+	r.Regexes = liststore.Filter(r.Regexes, func(s string) bool {
 		_, err := regexp.Compile(s)
 		return err == nil
 	}, &removed)
 	return removed
 }
 
-func filter(list []string, keep func(string) bool, removed *int) []string {
-	out := list[:0:0]
-	for _, x := range list {
-		if keep(x) {
-			out = append(out, x)
-		} else {
-			*removed++
-		}
-	}
-	return out
-}
-
-func (s *Store) save() error {
-	b, err := json.MarshalIndent(s.data, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return err
-	}
-	return os.WriteFile(s.path, b, 0o644)
-}
+func (s *Store) save() error { return liststore.SaveJSON(s.path, s.data) }
 
 // Get returns a copy of the current rules.
 func (s *Store) Get() Rules {
@@ -121,27 +91,6 @@ func (s *Store) Set(r Rules) (Rules, error) {
 	return s.mutate(func() { s.data = snapshot(r) })
 }
 
-func add(list []string, v string) []string {
-	for _, x := range list {
-		if x == v {
-			return list
-		}
-	}
-	list = append(list, v)
-	sort.Strings(list)
-	return list
-}
-
-func remove(list []string, v string) []string {
-	out := list[:0:0]
-	for _, x := range list {
-		if x != v {
-			out = append(out, x)
-		}
-	}
-	return out
-}
-
 // AddDomain / RemoveDomain / AddKeyword / ... mutate and persist, returning the
 // new snapshot. Validation errors leave the store unchanged.
 func (s *Store) AddDomain(d string) (Rules, error) {
@@ -152,20 +101,20 @@ func (s *Store) AddDomain(d string) (Rules, error) {
 	if strings.Trim(d, "*?.") == "" {
 		return s.Get(), fmt.Errorf("domain pattern too broad: %q", d)
 	}
-	return s.mutate(func() { s.data.Domains = add(s.data.Domains, d) })
+	return s.mutate(func() { s.data.Domains = liststore.Add(s.data.Domains, d) })
 }
 func (s *Store) RemoveDomain(d string) (Rules, error) {
-	return s.mutate(func() { s.data.Domains = remove(s.data.Domains, d) })
+	return s.mutate(func() { s.data.Domains = liststore.Remove(s.data.Domains, d) })
 }
 func (s *Store) AddKeyword(k string) (Rules, error) {
 	k = strings.ToLower(strings.TrimSpace(k))
 	if k == "" {
 		return s.Get(), fmt.Errorf("empty keyword")
 	}
-	return s.mutate(func() { s.data.Keywords = add(s.data.Keywords, k) })
+	return s.mutate(func() { s.data.Keywords = liststore.Add(s.data.Keywords, k) })
 }
 func (s *Store) RemoveKeyword(k string) (Rules, error) {
-	return s.mutate(func() { s.data.Keywords = remove(s.data.Keywords, k) })
+	return s.mutate(func() { s.data.Keywords = liststore.Remove(s.data.Keywords, k) })
 }
 func (s *Store) AddRegex(re string) (Rules, error) {
 	re = strings.TrimSpace(re)
@@ -175,27 +124,22 @@ func (s *Store) AddRegex(re string) (Rules, error) {
 	if _, err := regexp.Compile(re); err != nil {
 		return s.Get(), fmt.Errorf("invalid regex %q: %w", re, err)
 	}
-	return s.mutate(func() { s.data.Regexes = add(s.data.Regexes, re) })
+	return s.mutate(func() { s.data.Regexes = liststore.Add(s.data.Regexes, re) })
 }
 func (s *Store) RemoveRegex(re string) (Rules, error) {
-	return s.mutate(func() { s.data.Regexes = remove(s.data.Regexes, re) })
+	return s.mutate(func() { s.data.Regexes = liststore.Remove(s.data.Regexes, re) })
 }
 func (s *Store) AddIP(ip string) (Rules, error) {
 	ip = strings.TrimSpace(ip)
-	if !validCIDR(ip) {
+	if !liststore.ValidCIDR(ip) {
 		return s.Get(), fmt.Errorf("invalid ip/cidr: %q (use an IP or CIDR, not a domain)", ip)
 	}
-	return s.mutate(func() { s.data.IPs = add(s.data.IPs, ip) })
+	return s.mutate(func() { s.data.IPs = liststore.Add(s.data.IPs, ip) })
 }
 func (s *Store) RemoveIP(ip string) (Rules, error) {
-	return s.mutate(func() { s.data.IPs = remove(s.data.IPs, ip) })
+	return s.mutate(func() { s.data.IPs = liststore.Remove(s.data.IPs, ip) })
 }
 
 func (s *Store) mutate(fn func()) (Rules, error) {
-	s.mu.Lock()
-	fn()
-	snap := snapshot(s.data)
-	err := s.save()
-	s.mu.Unlock()
-	return snap, err
+	return liststore.Mutate(&s.mu, s.path, &s.data, fn, snapshot)
 }

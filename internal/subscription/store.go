@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,6 +27,10 @@ type Store struct {
 	mu   sync.Mutex
 	data map[string]*apitypes.Subscription
 	http *http.Client
+
+	// ensureReachable, if set, is called with a subscription URL's hostname
+	// before every fetch. See SetEnsureReachable.
+	ensureReachable func(host string) error
 }
 
 // NewStore opens (or creates) the store at path.
@@ -39,6 +44,33 @@ func NewStore(path string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// SetEnsureReachable registers a hook run (best-effort) before every URL
+// fetch, given the subscription URL's hostname.
+//
+// Why this exists: in TUN mode the gateway captures ALL of this machine's
+// outbound traffic at the network layer — including this Store's own HTTP
+// fetches, which have nothing to do with sing-box's internal dialer. Without
+// this hook, a subscription refresh gets captured by our own TUN and routed
+// out through whichever proxy node currently happens to be applied, instead
+// of this machine's real network path. Some subscription providers actively
+// detect "this request looks like it's coming via a VPN/proxy" (by source IP
+// reputation) and refuse to serve real node data — which looks exactly like
+// a fetch failure with no obvious cause. The fix isn't to escape our own TUN
+// capture (that runs into OS/firewall-level interface-binding quirks that
+// proved unreliable in testing) — it's to make sure OUR OWN fetch traffic,
+// once captured like everything else, is routed DIRECT rather than through a
+// remote proxy node. Direct egress already reliably reaches the real
+// internet under this gateway's TUN capture (that's how any other
+// permitted-direct traffic works); routing our own control-plane fetches the
+// same way sidesteps the "looks like a VPN" problem entirely. The callback is
+// expected to permit + route-direct the host on the live gateway (see
+// cmd/serve.go).
+func (s *Store) SetEnsureReachable(fn func(host string) error) {
+	s.mu.Lock()
+	s.ensureReachable = fn
+	s.mu.Unlock()
 }
 
 func (s *Store) load() error {
@@ -102,6 +134,16 @@ func (s *Store) Get(id string) (apitypes.Subscription, bool) {
 func idFor(url string) string {
 	sum := sha256.Sum256([]byte(url))
 	return hex.EncodeToString(sum[:])[:12]
+}
+
+// hostOf extracts the hostname from a subscription URL (empty for file://
+// URLs or anything unparseable — those don't need ensureReachable).
+func hostOf(rawURL string) string {
+	u, err := neturl.Parse(rawURL)
+	if err != nil || u.Scheme == "file" {
+		return ""
+	}
+	return u.Hostname()
 }
 
 // DefaultUserAgent is what we send when fetching a subscription. Many airports
@@ -183,15 +225,45 @@ func (s *Store) Refresh(id string) (apitypes.Subscription, error) {
 	if content != "" {
 		nodes = Parse([]byte(content)) // manual: parse pasted text, no fetch
 	} else {
+		s.mu.Lock()
+		ensure := s.ensureReachable
+		s.mu.Unlock()
+		if ensure != nil {
+			if host := hostOf(url); host != "" {
+				if err := ensure(host); err != nil {
+					// Best-effort: still attempt the fetch even if we
+					// couldn't (re)permit the host — it may already be
+					// reachable for other reasons (manual/system mode, an
+					// existing whitelist entry, etc).
+					_ = err
+				}
+			}
+		}
 		nodes, ferr = s.fetchAndParse(url, ua, via)
 	}
 
 	s.mu.Lock()
 	sub = s.data[id]
 	sub.UpdatedAt = time.Now().Format(time.RFC3339)
-	if ferr != nil {
+	switch {
+	case ferr != nil:
 		sub.LastError = ferr.Error()
-	} else {
+	case len(nodes) == 0:
+		// The fetch "succeeded" (no ferr) but parsed to zero nodes — almost
+		// always a bad response (empty body, captive portal, an incompatible
+		// format, a flaky airport endpoint), not the subscriber intentionally
+		// emptying their node list. Never overwrite a previously-good node
+		// list with this: applying it would silently collapse the proxy
+		// group to direct-only. Surface it as an error either way so a
+		// brand-new subscription that never had nodes doesn't sit there
+		// silently at 0 with no explanation.
+		if len(sub.Nodes) > 0 {
+			ferr = fmt.Errorf("refresh returned 0 nodes; kept previous %d node(s)", len(sub.Nodes))
+		} else {
+			ferr = fmt.Errorf("fetched OK but found 0 parseable nodes — check the subscription URL/format")
+		}
+		sub.LastError = ferr.Error()
+	default:
 		sub.LastError = ""
 		sub.Nodes = nodes
 		sub.NodeCount = len(nodes)

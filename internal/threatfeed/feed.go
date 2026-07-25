@@ -15,8 +15,8 @@ import (
 )
 
 // DefaultFeeds are no-auth, permissively-licensed indicator lists (one
-// indicator per line, `#` comments). Feodo = botnet C2 IPs; URLhaus = malware
-// distribution hosts (we take the host part as a domain/IP indicator).
+// indicator per line, `#` comments). Currently just abuse.ch's Feodo Tracker
+// (botnet C2 IPs); add more URLs here (or via --threat-feeds) as needed.
 var DefaultFeeds = []string{
 	"https://feodotracker.abuse.ch/downloads/ipblocklist.txt",
 }

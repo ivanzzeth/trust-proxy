@@ -3,6 +3,8 @@ package gateway
 import (
 	"encoding/json"
 	"fmt"
+
+	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
 // applyInvariants enforces the safety contracts every merged config must
@@ -15,10 +17,15 @@ import (
 //     upstream (fakeip/hosts alone can't back hijack-dns). Prevents the
 //     hijack→system-resolver→TUN feedback loop.
 //  2. TUN routing: hijack-dns prelude + auto_detect_interface must be present.
-//  3. Proxy groups: when ≥1 non-loopback node exists, Auto / Overseas / country
+//  3. DNS follows route: when the default resolver sits behind the proxy,
+//     direct-routed domains (and every direct dial) must resolve through a
+//     directly-dialed resolver instead — otherwise domestic destinations get the
+//     exit node's region's CDN answers and are dialed direct to the far side of
+//     the planet. See injectDirectDNS.
+//  4. Proxy groups: when ≥1 non-loopback node exists, Auto / Overseas / country
 //     urltest groups must not list loopback members (dead WARP etc.). A Local
 //     selector holds those tags. Idempotent with buildProxyGroups.
-func applyInvariants(cfg map[string]json.RawMessage, mode string, loopback map[string]bool) error {
+func applyInvariants(cfg map[string]json.RawMessage, mode string, loopback map[string]bool, dns apitypes.DNSConfig, dnsSafeTags map[string]bool) error {
 	if mode == ModeTUN {
 		if err := sanitizeTunDNS(cfg); err != nil {
 			return fmt.Errorf("invariant tun-dns: %w", err)
@@ -29,6 +36,14 @@ func applyInvariants(cfg map[string]json.RawMessage, mode string, loopback map[s
 		if err := assertDNSRealUpstream(cfg); err != nil {
 			return fmt.Errorf("invariant tun-dns-assert: %w", err)
 		}
+	}
+	// After the TUN DNS fixups (they choose the resolver this splits away from)
+	// and after every route inject: the split mirrors the final route table.
+	if err := injectDirectDNS(cfg, dns, dnsSafeTags); err != nil {
+		return fmt.Errorf("invariant dns-follows-route: %w", err)
+	}
+	if err := assertDirectResolverSplit(cfg, dns); err != nil {
+		return fmt.Errorf("invariant dns-follows-route-assert: %w", err)
 	}
 	if err := repairProxyGroupLoopbacks(cfg, loopback); err != nil {
 		return fmt.Errorf("invariant proxy-groups: %w", err)

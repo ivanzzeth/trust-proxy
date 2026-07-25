@@ -269,11 +269,24 @@ type DNSRule struct {
 }
 
 // DNSConfig is the whole resolver policy (injected into sing-box's dns block).
+//
+// DirectServer/DisableDirectSplit control "DNS follows route": when the resolver
+// above is reached through the exit node (Detour="proxy"), domains that egress
+// DIRECT are instead resolved by DirectServer — dialed direct — so domestic
+// destinations get domestic answers instead of the exit region's CDN edges.
 type DNSConfig struct {
 	Servers  []DNSServer `json:"servers"`
 	Rules    []DNSRule   `json:"rules"`
 	Final    string      `json:"final,omitempty"`
 	Strategy string      `json:"strategy,omitempty"` // "" | prefer_ipv4 | prefer_ipv6 | ipv4_only | ipv6_only
+	// DirectServer resolves direct-routed domains; "" = 223.5.5.5. Accepts
+	// "ip", "ip:port" or a hostname (an IP is strongly preferred — a hostname
+	// resolver has to be reachable before any name can be resolved).
+	DirectServer string `json:"direct_server,omitempty"`
+	// DisableDirectSplit opts out of the split entirely: every domain, direct or
+	// proxied, is resolved by the servers above. Domestic sites get overseas CDN
+	// answers — only set this if you know why you want it.
+	DisableDirectSplit bool `json:"disable_direct_split,omitempty"`
 }
 
 // InboundAuth is the optional username/password required on the mixed proxy

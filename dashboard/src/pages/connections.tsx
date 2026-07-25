@@ -6,7 +6,7 @@ import { Ban, Globe, Cpu, MonitorSmartphone, Network, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api, isIP, splitHost, toCIDR, type DetectionKind, type DetectionAction, WLType } from '@/lib/api';
-import { cn, fmtBytes } from '@/lib/utils';
+import { cn, fmtBytes, fmtDuration, fmtLatencyBreakdown } from '@/lib/utils';
 import { matchesQuery, usePagedList, DEFAULT_PAGE_SIZE } from '@/hooks/use-paged-list';
 import { PageHeader } from '@/components/page-header';
 import { ListSearch, PaginationBar } from '@/components/pagination-bar';
@@ -29,6 +29,10 @@ interface Row {
   chain: string;
   up: number;
   down: number;
+  durationMs: number;
+  dnsMs?: number;
+  connectMs?: number;
+  tlsMs?: number;
   reasons?: string[];
   liveId?: string;
 }
@@ -125,6 +129,7 @@ export default function Connections() {
       chain: (c.chains || []).join(' → '),
       up: c.upload,
       down: c.download,
+      durationMs: Math.max(0, Date.now() - new Date(c.start).getTime()),
       liveId: c.id,
     }));
     const closedRows: Row[] = events.map((e) => ({
@@ -138,6 +143,10 @@ export default function Connections() {
       chain: `${e.outbound} · ${e.network}`,
       up: e.upload,
       down: e.download,
+      durationMs: e.duration_ms ?? 0,
+      dnsMs: e.dns_ms,
+      connectMs: e.connect_ms,
+      tlsMs: e.tls_ms,
       reasons: e.reasons,
     }));
     return { liveRows, closedRows };
@@ -301,6 +310,7 @@ export default function Connections() {
                 <TableHead>{t('pages.connections.colEgress')}</TableHead>
                 <TableHead className="text-right">↑</TableHead>
                 <TableHead className="text-right">↓</TableHead>
+                <TableHead className="text-right">{t('pages.connections.colDuration')}</TableHead>
                 <TableHead>{t('pages.connections.colDetail')}</TableHead>
                 <TableHead className="text-right">{t('pages.connections.colAddToWhitelist')}</TableHead>
               </TableRow>
@@ -308,12 +318,18 @@ export default function Connections() {
             <TableBody>
               {page.total === 0 && (
                 <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={9} className="py-12 text-center text-muted-foreground">
+                  <TableCell colSpan={10} className="py-12 text-center text-muted-foreground">
                     {t('pages.connections.empty')}
                   </TableCell>
                 </TableRow>
               )}
-              {page.pageItems.map((r) => (
+              {page.pageItems.map((r) => {
+                // Stalled-connection signature: open a long time but moved
+                // almost nothing — flag it so a slow page load is easy to spot.
+                const slow = r.durationMs >= 3000 && r.up + r.down < 8192;
+                const breakdown = fmtLatencyBreakdown(r.durationMs, r.dnsMs, r.connectMs, r.tlsMs);
+                const durationTitle = [breakdown, slow ? t('pages.connections.slowHint') : null].filter(Boolean).join(' — ') || undefined;
+                return (
                 <TableRow key={r.key}>
                   <TableCell>{badge(r)}</TableCell>
                   <TableCell className="tnum text-xs text-muted-foreground">
@@ -331,6 +347,11 @@ export default function Connections() {
                   </TableCell>
                   <TableCell className="tnum text-right text-xs">{fmtBytes(r.up)}</TableCell>
                   <TableCell className="tnum text-right text-xs">{fmtBytes(r.down)}</TableCell>
+                  <TableCell className="tnum text-right text-xs">
+                    <span className={slow ? 'text-amber-600 dark:text-amber-400' : 'text-muted-foreground'} title={durationTitle}>
+                      {fmtDuration(r.durationMs)}
+                    </span>
+                  </TableCell>
                   <TableCell className="max-w-[240px]">
                     {r.reasons && r.reasons.length > 0 ? (
                       <span className="text-xs text-destructive">{r.reasons.join('; ')}</span>
@@ -376,7 +397,8 @@ export default function Connections() {
                     </div>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
           <PaginationBar
