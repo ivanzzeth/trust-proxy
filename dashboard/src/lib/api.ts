@@ -22,6 +22,7 @@ export function onNodeChange(cb: () => void): () => void {
 // A builds a node-scoped /api URL; L builds a brain-local one (node registry).
 const A = (p: string) => `/api${nodePrefix}${p}`;
 export const logsURL = (level: string) => A(`/logs?level=${encodeURIComponent(level)}`);
+export const trafficURL = () => A('/traffic');
 
 async function unwrap<T>(r: Response): Promise<T> {
   if (!r.ok) {
@@ -95,7 +96,8 @@ export interface PackRuleSet {
 export interface PackPreset {
   name: string;
   description: string;
-  exit?: 'overseas' | 'auto' | 'direct'; // how the pack egresses (display hint)
+  warning?: string;
+  exit?: 'overseas' | 'auto' | 'direct';
   rule_sets?: PackRuleSet[];
   rules: CustomRule[];
 }
@@ -167,6 +169,35 @@ export interface DetectEvent {
   denied?: boolean;
   reasons?: string[];
 }
+export type DetectionKind = 'intel' | 'exfil' | 'beacon' | 'dga';
+export type DetectionAction = 'alert' | 'blocked' | 'banned';
+export interface Detection {
+  id: number;
+  time: string;
+  kind: DetectionKind;
+  host: string;
+  destination: string;
+  process?: string;
+  upload?: number;
+  download?: number;
+  action: DetectionAction;
+  reasons?: string[];
+  event_id?: number;
+}
+export interface DetectionsPage {
+  items: Detection[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+export interface DetectionsStats {
+  alerts_24h: number;
+  blocked_24h: number;
+  banned_24h: number;
+  by_kind: Record<string, number>;
+  intel_domains: number;
+  intel_ips: number;
+}
 export interface LiveConn {
   id: string;
   upload: number;
@@ -199,7 +230,7 @@ export interface RuleSet {
   path?: string;
   download_detour: string;
   update_interval: string;
-  role: 'block' | 'allow-direct' | 'allow-proxy';
+  role: string;
   enabled: boolean;
 }
 export interface CatalogEntry {
@@ -341,6 +372,16 @@ export const api = {
   killConn: (id: string) => del<void>(`/connections/${id}`),
   killAll: () => del<void>('/connections'),
   events: (alertsOnly?: boolean) => get<DetectEvent[]>('/events' + (alertsOnly ? '?level=alert' : '')),
+  detections: (opts?: { kind?: string; q?: string; offset?: number; limit?: number }) => {
+    const p = new URLSearchParams();
+    if (opts?.kind) p.set('kind', opts.kind);
+    if (opts?.q) p.set('q', opts.q);
+    if (opts?.offset != null) p.set('offset', String(opts.offset));
+    if (opts?.limit != null) p.set('limit', String(opts.limit));
+    const qs = p.toString();
+    return get<DetectionsPage>('/detections' + (qs ? `?${qs}` : ''));
+  },
+  detectionsStats: () => get<DetectionsStats>('/detections/stats'),
 
   whitelist: () =>
     get<Whitelist>('/whitelist').then((w) => ({
@@ -420,6 +461,10 @@ export const api = {
 
   clashMode: () => get<ClashMode>('/clash-mode'),
   setClashMode: (mode: string) => put<{ mode: string }>('/clash-mode', { mode }),
+
+  posture: () => get<{ active: string; seeded_split: boolean }>('/posture'),
+  setPosture: (active: string) =>
+    put<{ active: string; seeded_split: boolean; forced_clash_rule?: boolean }>('/posture', { active }),
 
   profiles: () => get<Profile[]>('/profiles'),
   addProfile: (name: string) => post<Profile>('/profiles', { name }),

@@ -25,7 +25,8 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api, currentNode, setNode } from '@/lib/api';
-import { cn, fmtBytes } from '@/lib/utils';
+import { cn, fmtBytes, fmtRate } from '@/lib/utils';
+import { useTrafficRate } from '@/hooks/use-traffic-rate';
 import { Logo } from '@/components/logo';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
@@ -210,14 +211,68 @@ function TunHelpDialog({
   );
 }
 
+// PostureSwitcher toggles Strict (default-deny) ↔ Split (default-allow; L4 routes still apply).
+// Dual-slot policy: each side keeps its own ACL/packs/DNS/etc.
+function PostureSwitcher() {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ['posture'], queryFn: api.posture, refetchInterval: 5000 });
+  const m = useMutation({
+    mutationFn: (active: string) => api.setPosture(active),
+    onSuccess: (res) => {
+      qc.clear();
+      if (res.forced_clash_rule) toast.message(t('top.postureForcedRule'));
+    },
+    onError: (e) => toast.error(String((e as Error).message)),
+  });
+  if (!data) return null;
+  const cur = data.active;
+  return (
+    <TooltipProvider delayDuration={200}>
+      <div className="flex items-center gap-1 rounded-lg border bg-card p-0.5">
+        <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{t('top.posture')}</span>
+        {(['strict', 'split'] as const).map((mode) => {
+          const active = mode === cur;
+          const isSplit = mode === 'split';
+          return (
+            <Tooltip key={mode}>
+              <TooltipTrigger asChild>
+                <button
+                  disabled={m.isPending}
+                  onClick={() => m.mutate(mode)}
+                  className={cn(
+                    'rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer',
+                    active
+                      ? isSplit
+                        ? 'bg-sky-600 text-white shadow-sm'
+                        : 'bg-primary text-primary-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  {t(`top.posture${mode === 'strict' ? 'Strict' : 'Split'}`)}
+                </button>
+              </TooltipTrigger>
+              <TooltipContent className="max-w-xs">
+                {isSplit ? t('top.postureSplitTip') : t('top.postureStrictTip')}
+              </TooltipContent>
+            </Tooltip>
+          );
+        })}
+      </div>
+    </TooltipProvider>
+  );
+}
+
 // RoutingSwitcher toggles the live Clash routing mode: Rule (whitelist
 // default-deny, the safe default) <-> Global (default-deny OFF, unlisted traffic
 // egresses via proxy; security floor stays on). Global is styled amber as a
-// standing warning. The switch is live (no data-plane rebuild), so no guard.
+// standing warning. Disabled while Split posture is active (Global fights CN-direct).
 function RoutingSwitcher() {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['clash-mode'], queryFn: api.clashMode, refetchInterval: 5000 });
+  const { data: posture } = useQuery({ queryKey: ['posture'], queryFn: api.posture, refetchInterval: 5000 });
+  const split = posture?.active === 'split';
   const m = useMutation({
     mutationFn: (mode: string) => api.setClashMode(mode),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['clash-mode'] }),
@@ -232,11 +287,12 @@ function RoutingSwitcher() {
         {data.modes.map((mode) => {
           const active = mode.toLowerCase() === cur;
           const isGlobal = mode.toLowerCase() === 'global';
+          const disabled = m.isPending || (split && isGlobal);
           return (
             <Tooltip key={mode}>
               <TooltipTrigger asChild>
                 <button
-                  disabled={m.isPending}
+                  disabled={disabled}
                   onClick={() => m.mutate(mode)}
                   className={cn(
                     'rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer',
@@ -245,13 +301,18 @@ function RoutingSwitcher() {
                         ? 'bg-amber-500 text-white shadow-sm'
                         : 'bg-primary text-primary-foreground shadow-sm'
                       : 'text-muted-foreground hover:text-foreground',
+                    disabled && !active && 'opacity-40 cursor-not-allowed',
                   )}
                 >
                   {mode}
                 </button>
               </TooltipTrigger>
               <TooltipContent>
-                {isGlobal ? t('top.routingGlobalTip') : t('top.routingRuleTip')}
+                {split && isGlobal
+                  ? t('top.routingGlobalDisabledSplit')
+                  : isGlobal
+                    ? t('top.routingGlobalTip')
+                    : t('top.routingRuleTip')}
               </TooltipContent>
             </Tooltip>
           );
@@ -271,6 +332,18 @@ function GlobalModeBanner() {
     <div className="flex items-center gap-2 border-b border-amber-500/50 bg-amber-500/15 px-6 py-2 text-sm">
       <AlertTriangle className="size-4 shrink-0 text-amber-500" />
       <span>{t('top.globalBanner')}</span>
+    </div>
+  );
+}
+
+function SplitModeBanner() {
+  const { t } = useTranslation();
+  const { data } = useQuery({ queryKey: ['posture'], queryFn: api.posture, refetchInterval: 5000 });
+  if (data?.active !== 'split') return null;
+  return (
+    <div className="flex items-center gap-2 border-b border-sky-500/40 bg-sky-500/10 px-6 py-2 text-sm">
+      <Globe className="size-4 shrink-0 text-sky-600" />
+      <span>{t('top.splitBanner')}</span>
     </div>
   );
 }
@@ -354,6 +427,7 @@ function RevertBanner() {
 function TrafficPill() {
   const { t } = useTranslation();
   const { data } = useQuery({ queryKey: ['conns'], queryFn: api.connections, refetchInterval: 2000 });
+  const { up, down } = useTrafficRate();
   const live = data?.connections?.length ?? 0;
   return (
     <div className="hidden items-center gap-3 rounded-lg border bg-card px-3 py-1.5 text-xs sm:flex">
@@ -362,11 +436,17 @@ function TrafficPill() {
         <span className="tnum">{live}</span>
         <span className="text-muted-foreground">{t('top.live')}</span>
       </span>
-      <span className="flex items-center gap-1 text-muted-foreground">
+      <span className="flex items-center gap-1.5" title={t('top.total')}>
+        <span className="text-muted-foreground">{t('top.up')}</span>
+        <span className="tnum font-medium text-foreground">{fmtRate(up)}</span>
+        <span className="text-muted-foreground">{t('top.down')}</span>
+        <span className="tnum font-medium text-foreground">{fmtRate(down)}</span>
+      </span>
+      <span className="flex items-center gap-1 text-muted-foreground" title={t('top.total')}>
         <ArrowDownUp className="size-3" />
-        <span className="tnum text-foreground">{fmtBytes(data?.uploadTotal ?? 0)}</span>
+        <span className="tnum">{fmtBytes(data?.uploadTotal ?? 0)}</span>
         <span>/</span>
-        <span className="tnum text-foreground">{fmtBytes(data?.downloadTotal ?? 0)}</span>
+        <span className="tnum">{fmtBytes(data?.downloadTotal ?? 0)}</span>
       </span>
     </div>
   );
@@ -446,10 +526,12 @@ export function AppShell() {
           <NodeSwitcher />
           <TrafficPill />
           <AutoBlock />
+          <PostureSwitcher />
           <RoutingSwitcher />
           <ModeSwitcher />
         </header>
         <RevertBanner />
+        <SplitModeBanner />
         <GlobalModeBanner />
         <main className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto max-w-[1400px] px-6 py-6">

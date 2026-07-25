@@ -58,7 +58,8 @@ func ensureTunHijackAndInterface(cfg map[string]json.RawMessage) error {
 	hasHijack, sniffIdx := false, -1
 	for i, r := range rules {
 		var meta struct {
-			Action string `json:"action"`
+			Action              string `json:"action"`
+			OverrideDestination bool   `json:"override_destination"`
 		}
 		_ = json.Unmarshal(r, &meta)
 		if meta.Action == "hijack-dns" {
@@ -66,6 +67,18 @@ func ensureTunHijackAndInterface(cfg map[string]json.RawMessage) error {
 		}
 		if meta.Action == "sniff" && sniffIdx < 0 {
 			sniffIdx = i
+			// TUN: client may have resolved via MagicDNS/ISP (bypasses hijack) to a
+			// GFW-poisoned IP. Override destination with sniffed SNI so dial uses
+			// sing-box DNS (DoH via proxy) instead of the poisoned address.
+			if !meta.OverrideDestination {
+				var m map[string]any
+				if err := json.Unmarshal(r, &m); err == nil {
+					m["override_destination"] = true
+					if nb, err := json.Marshal(m); err == nil {
+						rules[i] = nb
+					}
+				}
+			}
 		}
 	}
 	if !hasHijack {

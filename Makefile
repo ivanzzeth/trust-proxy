@@ -10,7 +10,13 @@ WEBUI_DIR    := webui
 #   with_tailscale -> Tailscale exit endpoints (big dep; ~+18MB binary)
 TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard with_tailscale
 
-.PHONY: run build build-embed tidy webui webui-dev dashboard dashboard-dev deps clean e2e
+.PHONY: run build build-embed tidy webui webui-dev dashboard dashboard-dev deps clean e2e redeploy
+
+# Redeploy defaults (override: make redeploy MODE=manual)
+DATA_DIR  ?= $(HOME)/.trust-proxy
+CONFIG    ?= configs/config.json
+MODE      ?= tun
+PID_FILE  ?= $(DATA_DIR)/serve.pid
 
 ## Boot the embedded sing-box with configs/config.json
 run: build
@@ -23,6 +29,16 @@ build:
 ## Single self-contained binary: build the dashboard then embed it (embed_ui)
 build-embed: dashboard
 	go build -tags "$(TAGS) embed_ui" -o trust-proxy .
+
+## Build embedded UI + binary, then restart the daemon.
+## One sudo wraps stop+start (one password). Override MODE=manual to skip root if unused.
+redeploy: build-embed
+	@echo "==> restarting serve (data=$(DATA_DIR) mode=$(MODE))"
+	sudo sh -c '$(CURDIR)/trust-proxy proxy stop --pid "$(PID_FILE)" 2>/dev/null || true; \
+		sleep 1; \
+		cd "$(CURDIR)" && ./trust-proxy serve --daemon --data "$(DATA_DIR)" -c "$(CONFIG)" --mode "$(MODE)"'
+	@echo "==> done. UI http://127.0.0.1:9096/  (hard-refresh if needed)"
+	@echo "    stop:  sudo $(CURDIR)/trust-proxy proxy stop --pid $(PID_FILE)"
 
 tidy:
 	go mod tidy

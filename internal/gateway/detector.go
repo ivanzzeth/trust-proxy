@@ -28,9 +28,10 @@ var _ adapter.ConnectionTracker = (*detector)(nil)
 func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) net.Conn {
 	ev := d.engine.Track("tcp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound))
 	c := d.engine.Wrap(conn, ev)
-	// Auto-disposal: only high-confidence (threat-intel) hits are dropped —
-	// heuristics like beaconing/large-upload are alert-only, never auto-blocked.
+	// Auto-disposal: threat-intel hits (and mid-stream exfil via Wrap) drop the
+	// connection and persist the destination onto the blacklist.
 	if ev.Block && d.engine.AutoBlock() {
+		d.engine.BanFromEvent(ev, "threat-intel auto-block")
 		_ = c.Close()
 	}
 	return c

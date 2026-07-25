@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ivanzzeth/trust-proxy/internal/customrules"
+	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
 func TestDGAandTunnel(t *testing.T) {
@@ -163,6 +166,124 @@ func TestLargeUploadAlert(t *testing.T) {
 	e.finalize(ev)
 	if ev.Level != "alert" {
 		t.Fatalf("should alert on large upload, got %q reasons=%v", ev.Level, ev.Reasons)
+	}
+	if ev.Block {
+		t.Fatal("without auto-block, large upload must not set Block")
+	}
+}
+
+func TestLargeUpload_PackPermitIsTrusted(t *testing.T) {
+	// Regression: Allow packs open L3 via customrules.Permit, but trustedDest
+	// used to only check whitelist.json — Cursor Agent uploads then got
+	// auto-banned (e.g. agentn.global.api5.cursor.sh).
+	e := New(100)
+	e.SetUploadAlert(1024)
+	e.SetAutoBlock(true)
+	var cursor []apitypes.CustomRule
+	for _, p := range customrules.Presets {
+		if p.Name == "Cursor" {
+			cursor = p.Rules
+			break
+		}
+	}
+	if len(cursor) == 0 {
+		t.Fatal("Cursor preset missing")
+	}
+	rules := customrules.Rules{Rules: cursor}
+	e.SetTrustedDest(func(host, dest string) bool {
+		return customrules.MatchesPermit(rules, host, dest)
+	})
+	banned := false
+	e.SetOnBan(func(domain, ip, reason string) { banned = true })
+
+	ev := e.Track("tcp", "agentn.global.api5.cursor.sh", "1.2.3.4:443", "x", "Cursor", "", "proxy/proxy")
+	ev.Upload = 50 << 20
+	e.finalize(ev)
+	if ev.Level != "alert" {
+		t.Fatal("large upload still alerts")
+	}
+	if ev.Block || banned {
+		t.Fatalf("Cursor pack host must not auto-ban: block=%v banned=%v", ev.Block, banned)
+	}
+}
+
+func TestLargeUpload_NonWhitelistAutoBan(t *testing.T) {
+	e := New(100)
+	e.SetUploadAlert(1024)
+	e.SetAutoBlock(true)
+	e.SetTrustedDest(func(host, dest string) bool { return host == "trusted.example" })
+	var bannedDomain, bannedIP, bannedReason string
+	e.SetOnBan(func(domain, ip, reason string) {
+		bannedDomain, bannedIP, bannedReason = domain, ip, reason
+	})
+
+	ev := e.Track("tcp", "evil.example", "9.9.9.9:443", "x", "", "", "proxy/proxy")
+	ev.Upload = 2048
+	e.finalize(ev)
+	if !ev.Block {
+		t.Fatal("non-whitelist large upload must Block when auto-block on")
+	}
+	if bannedDomain != "evil.example" || bannedIP != "9.9.9.9" {
+		t.Fatalf("ban sink got domain=%q ip=%q", bannedDomain, bannedIP)
+	}
+	if bannedReason == "" {
+		t.Fatal("expected ban reason")
+	}
+
+	// Whitelisted destination: alert only.
+	bannedDomain, bannedIP = "", ""
+	ev2 := e.Track("tcp", "trusted.example", "8.8.8.8:443", "x", "", "", "proxy/proxy")
+	ev2.Upload = 4096
+	e.finalize(ev2)
+	if ev2.Level != "alert" {
+		t.Fatal("whitelist large upload still alerts")
+	}
+	if ev2.Block {
+		t.Fatal("whitelist large upload must not Block")
+	}
+	if bannedDomain != "" || bannedIP != "" {
+		t.Fatal("whitelist upload must not ban")
+	}
+}
+
+func TestLargeUpload_MidStreamKill(t *testing.T) {
+	e := New(100)
+	e.SetUploadAlert(100)
+	e.SetAutoBlock(true)
+	e.SetTrustedDest(func(host, dest string) bool { return false })
+	banned := false
+	e.SetOnBan(func(domain, ip, reason string) { banned = true })
+
+	ev := e.Track("tcp", "exfil.example", "1.2.3.4:443", "x", "", "", "proxy/proxy")
+	if !e.checkExfilMidStream(ev, 50) {
+		// under threshold
+	} else {
+		t.Fatal("under threshold must not kill")
+	}
+	if !e.checkExfilMidStream(ev, 200) {
+		t.Fatal("over threshold must kill")
+	}
+	if !ev.Block || !banned {
+		t.Fatalf("block=%v banned=%v", ev.Block, banned)
+	}
+	// Second call: already Block, no re-kill needed
+	if e.checkExfilMidStream(ev, 300) {
+		t.Fatal("already blocked must not re-trigger kill")
+	}
+}
+
+func TestThreatIntel_BanFromEvent(t *testing.T) {
+	e := New(100)
+	e.LoadThreats([]string{"malware.test"}, nil)
+	var got string
+	e.SetOnBan(func(domain, ip, reason string) { got = domain })
+	ev := e.Track("tcp", "malware.test", "5.6.7.8:443", "x", "", "", "direct")
+	if !ev.Block {
+		t.Fatal("expected Block")
+	}
+	e.BanFromEvent(ev, "threat-intel auto-block")
+	if got != "malware.test" {
+		t.Fatalf("ban domain=%q", got)
 	}
 }
 

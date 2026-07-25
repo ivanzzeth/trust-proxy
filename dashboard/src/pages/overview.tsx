@@ -5,56 +5,95 @@ import { AlertTriangle, Ban, Radio, ShieldAlert, Waypoints } from 'lucide-react'
 import { useTranslation } from 'react-i18next';
 
 import { api } from '@/lib/api';
-import { cn, fmtBytes } from '@/lib/utils';
+import { cn, fmtBytes, fmtRate } from '@/lib/utils';
+import { useTrafficRate } from '@/hooks/use-traffic-rate';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { alertsHref } from '@/lib/alerts';
 
 export default function Overview() {
   const { t } = useTranslation();
   const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 5000 });
   const { data: snap } = useQuery({ queryKey: ['conns'], queryFn: api.connections, refetchInterval: 2000 });
-  const { data: events = [] } = useQuery({ queryKey: ['events'], queryFn: () => api.events(false), refetchInterval: 3000 });
+  const { data: detStats } = useQuery({
+    queryKey: ['detections-stats'],
+    queryFn: api.detectionsStats,
+    refetchInterval: 5000,
+  });
+  const { data: detRecent } = useQuery({
+    queryKey: ['detections', 'recent'],
+    queryFn: () => api.detections({ limit: 8, offset: 0 }),
+    refetchInterval: 5000,
+  });
   const { data: subs = [] } = useQuery({ queryKey: ['subs'], queryFn: api.subs });
   const { data: wl } = useQuery({ queryKey: ['whitelist'], queryFn: api.whitelist });
 
   const live = snap?.connections?.length ?? 0;
-  const alerts = events.filter((e) => e.level === 'alert');
-  const denied = events.filter((e) => e.denied).length;
+  const { up, down } = useTrafficRate();
+  const alerts24 = detStats?.alerts_24h ?? 0;
+  const blocked24 = detStats?.blocked_24h ?? 0;
+  const banned24 = detStats?.banned_24h ?? 0;
+  const intelDomains = detStats?.intel_domains ?? st?.threats.domains ?? 0;
+  const intelIps = detStats?.intel_ips ?? st?.threats.ips ?? 0;
   const appliedSub = subs.find((s) => s.applied);
+  const recent = detRecent?.items ?? [];
 
   return (
     <div>
       <PageHeader title={t('pages.overview.title')} description={t('pages.overview.description')} />
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <StatLink to={alertsHref()}>
+          <Stat
+            icon={ShieldAlert}
+            label={t('pages.overview.alerts24h')}
+            value={String(alerts24)}
+            sub={t('pages.overview.clickAlerts')}
+            tone={alerts24 ? 'danger' : 'muted'}
+          />
+        </StatLink>
+        <StatLink to={alertsHref()}>
+          <Stat
+            icon={Ban}
+            label={t('pages.overview.blocked24h')}
+            value={String(blocked24)}
+            sub={t('pages.overview.clickBlocked')}
+            tone={blocked24 ? 'warning' : 'muted'}
+          />
+        </StatLink>
+        <StatLink to={alertsHref()}>
+          <Stat
+            icon={AlertTriangle}
+            label={t('pages.overview.banned24h')}
+            value={String(banned24)}
+            sub={t('pages.overview.clickBanned')}
+            tone={banned24 ? 'danger' : 'muted'}
+          />
+        </StatLink>
+        <Stat
+          icon={Radio}
+          label={t('pages.overview.threatIntel')}
+          value={String(intelDomains + intelIps)}
+          sub={t('pages.overview.domainsAndIps', { domains: intelDomains, ips: intelIps })}
+          tone="warning"
+        />
+      </div>
+
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-2">
+        <Stat
+          icon={Waypoints}
+          label={t('pages.overview.liveConnections')}
+          value={String(live)}
+          sub={`↑ ${fmtRate(up)} · ↓ ${fmtRate(down)} · Σ ↑ ${fmtBytes(snap?.uploadTotal ?? 0)} / ↓ ${fmtBytes(snap?.downloadTotal ?? 0)}`}
+          tone="primary"
+        />
         <Stat
           icon={Radio}
           label={t('pages.overview.captureMode')}
           value={st ? st.mode : '—'}
           sub={st?.autoBlock ? t('pages.overview.autoBlockOn') : t('pages.overview.autoBlockOff')}
           tone={st?.autoBlock ? 'primary' : 'muted'}
-        />
-        <Stat
-          icon={Waypoints}
-          label={t('pages.overview.liveConnections')}
-          value={String(live)}
-          sub={`↑ ${fmtBytes(snap?.uploadTotal ?? 0)} · ↓ ${fmtBytes(snap?.downloadTotal ?? 0)}`}
-          tone="primary"
-        />
-        <Stat
-          icon={ShieldAlert}
-          label={t('pages.overview.alerts')}
-          value={String(alerts.length)}
-          sub={t('pages.overview.blockedAttempts', { count: denied })}
-          tone={alerts.length ? 'danger' : 'muted'}
-        />
-        <Stat
-          icon={Ban}
-          label={t('pages.overview.threatIntel')}
-          value={st ? String(st.threats.domains + st.threats.ips) : '—'}
-          sub={st ? t('pages.overview.domainsAndIps', { domains: st.threats.domains, ips: st.threats.ips }) : ''}
-          tone="warning"
         />
       </div>
 
@@ -64,20 +103,23 @@ export default function Overview() {
             <CardTitle className="flex items-center gap-2 text-sm">
               <AlertTriangle className="size-4 text-destructive" /> {t('pages.overview.recentAlerts')}
             </CardTitle>
-            <Link to="/connections" className="text-xs text-primary hover:underline">
+            <Link to={alertsHref()} className="text-xs text-primary hover:underline">
               {t('pages.overview.viewAll')}
             </Link>
           </CardHeader>
           <CardContent className="pt-0">
-            {alerts.length === 0 ? (
+            {recent.length === 0 ? (
               <p className="py-8 text-center text-sm text-muted-foreground">{t('pages.overview.noAlerts')}</p>
             ) : (
               <div className="divide-y divide-border/60">
-                {alerts.slice(0, 8).map((e) => (
+                {recent.map((e) => (
                   <div key={e.id} className="flex items-center gap-3 py-2.5">
                     <span className="size-1.5 shrink-0 rounded-full bg-destructive" />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-medium">{e.host}</div>
+                      <div className="truncate text-sm font-medium">
+                        <span className="mr-2 text-xs uppercase text-muted-foreground">{e.kind}</span>
+                        {e.host || e.destination}
+                      </div>
                       <div className="truncate text-xs text-destructive">{(e.reasons ?? []).join('; ')}</div>
                     </div>
                     <span className="tnum shrink-0 text-xs text-muted-foreground">
@@ -110,6 +152,14 @@ export default function Overview() {
         </Card>
       </div>
     </div>
+  );
+}
+
+function StatLink({ to, children }: { to: string; children: ReactNode }) {
+  return (
+    <Link to={to} className="block rounded-xl outline-none transition hover:opacity-90 focus-visible:ring-2 focus-visible:ring-ring">
+      {children}
+    </Link>
   );
 }
 

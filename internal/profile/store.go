@@ -81,6 +81,9 @@ func (s *Store) Add(p apitypes.Profile) (apitypes.Profile, error) {
 		return apitypes.Profile{}, fmt.Errorf("profile name is required")
 	}
 	p.ID = idFor(p.Name)
+	if p.Version == 0 {
+		p.Version = apitypes.ProfilePolicyVersion
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	replaced := false

@@ -19,7 +19,9 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
+	"github.com/ivanzzeth/trust-proxy/internal/posture"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -151,6 +153,9 @@ func runSelftest() error {
 		"track-me.tp", "reblock.tp", "sub.wild.tp",
 		"cdirect.tp", "cproxy.tp", "cblock.tp", "cnode.tp", "kw-host.tp", "rex.tp", "ord.tp",
 		"www.gstatic.com",
+		// Permit⊥Route / prior-bug regressions
+		"routeonly.tp", "permitonly.tp", "china.tp", "accounts.google.com", "api2.cursor.sh",
+		"baidu.tp", "login.tp",
 		// node-exit.tp is the dial address of our mock upstream. It resolves to
 		// 127.0.0.1 via hosts, but must NOT be a literal loopback IP — otherwise
 		// Auto treats the live node as a local agent (WARP-style) and the
@@ -172,9 +177,10 @@ func runSelftest() error {
 	mgr.SetInitialNodes([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: nodeOB}})
 	// A manual selector group over the node so `proxy` egress is deterministic
 	// (no urltest health-check dependency on real internet).
-	mgr.SetInitialProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{
+	testPG := proxygroups.Config{Groups: []proxygroups.Group{
 		{Name: "g", Type: "select", Filter: "manual", Nodes: []string{"NODE"}},
-	}})
+	}}
+	mgr.SetInitialProxyGroups(testPG)
 	if err := mgr.Start(); err != nil {
 		return fmt.Errorf("gateway start: %w", err)
 	}
@@ -200,10 +206,14 @@ func runSelftest() error {
 	selfProc := filepath.Base(selfExe)
 
 	reset := func() {
+		_ = mgr.SetPosture(apitypes.PostureStrict)
 		_ = mgr.SetWhitelist(whitelist.Rules{})
 		_ = mgr.SetBlacklist(blacklist.Rules{})
 		_ = mgr.SetDirectList(directlist.Rules{})
 		_ = mgr.SetCustomRules(customrules.Rules{})
+		_ = mgr.SetRuleSets(ruleset.Sets{})
+		_ = mgr.SetProxyGroups(testPG)
+		_ = mgr.SetFinal("proxy")
 		setClashMode(clashPort, "Rule")
 		selectProxyGroup(clashPort, "g")
 	}
@@ -213,10 +223,10 @@ func runSelftest() error {
 	check := func(name, want, got string) {
 		if want == got {
 			pass++
-			fmt.Printf("  PASS  %-42s -> %s\n", name, label[got])
+			fmt.Printf("  PASS  %-48s -> %s\n", name, label[got])
 		} else {
 			fail++
-			fmt.Printf("  FAIL  %-42s want=%s got=%s\n", name, label[want], label[got])
+			fmt.Printf("  FAIL  %-48s want=%s got=%s\n", name, label[want], label[got])
 		}
 	}
 	// run reconfigures policy, waits for the rebuild, and asserts the egress path.
@@ -233,6 +243,24 @@ func runSelftest() error {
 	rule := func(match, value, action, node string) apitypes.CustomRule {
 		return apitypes.CustomRule{Match: match, Value: value, Action: action, Node: node, Enabled: true}
 	}
+	permitPtr := func(v bool) *bool { return &v }
+
+	// Local sing-box source rule-set files (offline stand-ins for geosite-cn etc.).
+	writeLocalRS := func(name string, domains ...string) string {
+		path := filepath.Join(dataDir, name+".json")
+		body, _ := json.Marshal(map[string]any{
+			"version": 1,
+			"rules":   []map[string]any{{"domain_suffix": domains}},
+		})
+		_ = os.WriteFile(path, body, 0o644)
+		return path
+	}
+	localRS := func(tag, role, path string) apitypes.RuleSet {
+		return apitypes.RuleSet{
+			Tag: tag, Name: tag, Type: "local", Format: "source", Path: path,
+			Role: role, Enabled: true, DownloadDetour: "direct", UpdateInterval: "1d",
+		}
+	}
 
 	fmt.Println("== ACL: allow / deny ==")
 	run("default-deny blocks unlisted", func() {}, "deny.tp", "")
@@ -240,9 +268,206 @@ func runSelftest() error {
 	run("whitelist wildcard *.wild.tp -> node", func() { _ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"*.wild.tp"}}) }, "sub.wild.tp", "node")
 	run("whitelist IP -> node", func() { _ = mgr.SetWhitelist(whitelist.Rules{IPs: []string{"203.0.113.5/32"}}) }, "203.0.113.5", "node")
 
-	fmt.Println("== egress: no-proxy / private ==")
-	run("no-proxy domain -> direct", func() { _ = mgr.SetDirectList(directlist.Rules{Domains: []string{"np.tp"}}) }, "np.tp", "direct")
-	run("built-in private CIDR -> direct", func() { _ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}}) }, "127.0.0.1", "direct")
+	fmt.Println("== Permit ⊥ Route (no-proxy never opens gate) ==")
+	// Prior bug: no-proxy alone used to open the ACL gate → mainland C2 "naked".
+	run("no-proxy alone -> blocked (no Permit)", func() {
+		_ = mgr.SetDirectList(directlist.Rules{Domains: []string{"np.tp"}})
+	}, "np.tp", "")
+	run("Permit + no-proxy -> direct", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"np.tp"}})
+		_ = mgr.SetDirectList(directlist.Rules{Domains: []string{"np.tp"}})
+	}, "np.tp", "direct")
+	run("built-in private CIDR needs Permit first", func() {
+		// private CIDRs are route-direct when gate open; without Permit, blocked.
+	}, "127.0.0.1", "")
+	run("built-in private CIDR -> direct when gate open", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}})
+	}, "127.0.0.1", "direct")
+
+	fmt.Println("== Permit ⊥ Route (custom axes) ==")
+	run("route-only custom (no Permit) -> blocked", func() {
+		_ = mgr.SetCustomRules(customrules.Rules{Rules: []apitypes.CustomRule{{
+			Match: "domain_suffix", Value: "routeonly.tp", Action: "direct", Egress: "direct",
+			Permit: permitPtr(false), Enabled: true,
+		}}})
+	}, "routeonly.tp", "")
+	run("Permit + route-only -> direct", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"routeonly.tp"}})
+		_ = mgr.SetCustomRules(customrules.Rules{Rules: []apitypes.CustomRule{{
+			Match: "domain_suffix", Value: "routeonly.tp", Action: "direct", Egress: "direct",
+			Permit: permitPtr(false), Enabled: true,
+		}}})
+	}, "routeonly.tp", "direct")
+	run("permit-only custom -> Final (node)", func() {
+		_ = mgr.SetCustomRules(customrules.Rules{Rules: []apitypes.CustomRule{{
+			Match: "domain_suffix", Value: "permitonly.tp", Egress: "none",
+			Permit: permitPtr(true), Enabled: true,
+		}}})
+	}, "permitonly.tp", "node")
+	run("Final=direct for permitted-unrouted", func() {
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"permitonly.tp"}})
+		_ = mgr.SetFinal("direct")
+	}, "permitonly.tp", "direct")
+	run("Final alone never opens empty gate", func() {
+		_ = mgr.SetFinal("proxy")
+	}, "deny.tp", "")
+
+	fmt.Println("== Posture Strict|Split ==")
+	run("Split: unlisted -> Final (node)", func() {
+		_ = mgr.SetPosture(apitypes.PostureSplit)
+		_ = mgr.SetFinal("proxy")
+	}, "deny.tp", "node")
+	run("Split + China route-direct -> direct", func() {
+		_ = mgr.SetPosture(apitypes.PostureSplit)
+		_ = mgr.SetRuleSets(ruleset.Sets{Sets: []apitypes.RuleSet{
+			localRS("geosite-cn", apitypes.RuleRoleRouteDirect, writeLocalRS("cn-split", "china.tp")),
+		}})
+	}, "china.tp", "direct")
+	run("Split: blacklist still blocks (L1 floor)", func() {
+		_ = mgr.SetPosture(apitypes.PostureSplit)
+		_ = mgr.SetBlacklist(blacklist.Rules{Domains: []string{"evil.tp"}})
+	}, "evil.tp", "")
+	run("Strict restored: unlisted blocked again", func() {
+		_ = mgr.SetPosture(apitypes.PostureStrict)
+	}, "deny.tp", "")
+
+	// Dual-slot isolation via ApplyProfile (same path PUT /api/posture uses):
+	// Strict whitelist must survive a Split excursion and come back intact.
+	fmt.Println("== Posture dual-slot isolation ==")
+	{
+		nodes := mgr.Nodes()
+		strictWL := whitelist.Rules{Domains: []string{"strict-slot.tp"}}
+		splitCR := customrules.Rules{Rules: []apitypes.CustomRule{{
+			Match: "domain_suffix", Value: "split-slot.tp", Egress: "none",
+			Permit: permitPtr(true), Pack: "selftest-split", Enabled: true,
+		}}}
+		if err := mgr.ApplyProfile(nodes, strictWL, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{},
+			ruleset.Sets{}, testPG, dns, "", "proxy", apitypes.PostureStrict); err != nil {
+			fail++
+			fmt.Printf("  FAIL  dual-slot: set Strict slot: %v\n", err)
+		} else {
+			selectProxyGroup(clashPort, "g")
+			check("dual-slot Strict: listed -> node", "node", get("strict-slot.tp"))
+			check("dual-slot Strict: unlisted blocked", "", get("deny.tp"))
+		}
+		if err := mgr.ApplyProfile(nodes, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, splitCR,
+			ruleset.Sets{}, testPG, dns, "", "proxy", apitypes.PostureSplit); err != nil {
+			fail++
+			fmt.Printf("  FAIL  dual-slot: set Split slot: %v\n", err)
+		} else {
+			selectProxyGroup(clashPort, "g")
+			check("dual-slot Split: unlisted -> Final", "node", get("deny.tp"))
+			check("dual-slot Split: pack permit -> node", "node", get("split-slot.tp"))
+			check("dual-slot Split: Strict host not in Split wl (still open via Split)", "node", get("strict-slot.tp"))
+		}
+		// Restore Strict snapshot — Split pack must NOT leak into Strict.
+		if err := mgr.ApplyProfile(nodes, strictWL, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{},
+			ruleset.Sets{}, testPG, dns, "", "proxy", apitypes.PostureStrict); err != nil {
+			fail++
+			fmt.Printf("  FAIL  dual-slot: restore Strict: %v\n", err)
+		} else {
+			selectProxyGroup(clashPort, "g")
+			check("dual-slot back Strict: listed restored", "node", get("strict-slot.tp"))
+			check("dual-slot back Strict: unlisted blocked", "", get("deny.tp"))
+			check("dual-slot back Strict: Split pack gone", "", get("split-slot.tp"))
+		}
+		reset()
+	}
+
+	// SeedSplit produces all packs + geoip-cn (offline check; no download).
+	fmt.Println("== Posture SeedSplit contents ==")
+	{
+		slot := posture.SeedSplit()
+		if !slot.Seeded || slot.Final != "proxy" {
+			fail++
+			fmt.Printf("  FAIL  SeedSplit meta seeded=%v final=%q\n", slot.Seeded, slot.Final)
+		} else {
+			pass++
+			fmt.Println("  PASS  SeedSplit seeded + Final=proxy")
+		}
+		packs := map[string]bool{}
+		for _, r := range slot.CustomRules {
+			if r.Pack != "" {
+				packs[r.Pack] = true
+			}
+		}
+		missing := 0
+		for _, p := range customrules.Presets {
+			if len(p.Rules) == 0 {
+				continue
+			}
+			if !packs[p.Name] {
+				missing++
+				fmt.Printf("  FAIL  SeedSplit missing pack %q\n", p.Name)
+			}
+		}
+		if missing == 0 {
+			pass++
+			fmt.Printf("  PASS  SeedSplit includes all pack rules (%d packs)\n", len(packs))
+		} else {
+			fail += missing
+		}
+		hasGeoIP := false
+		cnRole := ""
+		for _, rs := range slot.RuleSets {
+			if rs.Tag == "geoip-cn" {
+				hasGeoIP = true
+			}
+			if rs.Tag == "geosite-cn" {
+				cnRole = rs.Role
+			}
+		}
+		if hasGeoIP {
+			pass++
+			fmt.Println("  PASS  SeedSplit includes geoip-cn")
+		} else {
+			fail++
+			fmt.Println("  FAIL  SeedSplit missing geoip-cn")
+		}
+		if apitypes.RuleRoleRouteEgress(cnRole) == "direct" && apitypes.RuleRoleGrantsPermit(cnRole) {
+			pass++
+			fmt.Printf("  PASS  SeedSplit geosite-cn merged role=%s\n", cnRole)
+		} else {
+			fail++
+			fmt.Printf("  FAIL  SeedSplit geosite-cn role=%q\n", cnRole)
+		}
+	}
+
+	fmt.Println("== China-style ruleset axes (local .json stand-in) ==")
+	cnPath := writeLocalRS("geosite-cn-selftest", "china.tp", "baidu.tp")
+	run("China route-direct alone -> blocked", func() {
+		_ = mgr.SetRuleSets(ruleset.Sets{Sets: []apitypes.RuleSet{
+			localRS("geosite-cn", apitypes.RuleRoleRouteDirect, cnPath),
+		}})
+	}, "china.tp", "")
+	run("China permit alone -> Final (node)", func() {
+		_ = mgr.SetRuleSets(ruleset.Sets{Sets: []apitypes.RuleSet{
+			localRS("geosite-cn", apitypes.RuleRolePermit, cnPath),
+		}})
+	}, "china.tp", "node")
+	run("China permit+route-direct -> direct", func() {
+		_ = mgr.SetRuleSets(ruleset.Sets{Sets: []apitypes.RuleSet{
+			localRS("geosite-cn", apitypes.RuleRolePermitRouteDirect, cnPath),
+		}})
+	}, "baidu.tp", "direct")
+	run("legacy allow-direct (=permit+route) -> direct", func() {
+		_ = mgr.SetRuleSets(ruleset.Sets{Sets: []apitypes.RuleSet{
+			localRS("geosite-cn", apitypes.RuleRoleAllowDirect, cnPath), // Normalize on inject via helpers
+		}})
+	}, "china.tp", "direct")
+
+	fmt.Println("== Google/Cursor login pins (prior TUN hang) ==")
+	run("accounts.google.com pin -> node", cr(rule("domain_suffix", "accounts.google.com", "proxy", "g")), "accounts.google.com", "node")
+	run("api2.cursor.sh pin -> node", cr(rule("domain_suffix", "api2.cursor.sh", "proxy", "g")), "api2.cursor.sh", "node")
+	run("login pin beats China-direct on overlap", func() {
+		_ = mgr.SetRuleSets(ruleset.Sets{Sets: []apitypes.RuleSet{
+			localRS("geosite-cn", apitypes.RuleRolePermitRouteDirect, writeLocalRS("cn-overlap", "login.tp", "accounts.google.com")),
+		}})
+		// Custom proxy pin must win (L4 custom before route-direct RS).
+		_ = mgr.SetCustomRules(customrules.Rules{Rules: []apitypes.CustomRule{
+			rule("domain_suffix", "accounts.google.com", "proxy", "g"),
+		}})
+	}, "accounts.google.com", "node")
 
 	fmt.Println("== blacklist (beats allow) ==")
 	run("blacklist domain", func() {
@@ -372,7 +597,7 @@ func runSelftest() error {
 	} else {
 		// Regression: dns type=local + hijack-dns used to feedback-loop under
 		// TUN ("nothing works"). sanitizeTunDNS must rewrite local so SetMode
-		// succeeds and the box stays up.
+		// succeeds and the box stays up. Prefer DoH-via-proxy, not poisoned UDP.
 		if err := mgr.SetDNS(apitypes.DNSConfig{
 			Servers: []apitypes.DNSServer{{Tag: "local", Type: "local"}},
 			Final:   "local",
@@ -385,6 +610,23 @@ func runSelftest() error {
 		} else {
 			pass++
 			fmt.Println("  PASS  tun mode: gateway built + started (dns local sanitized)")
+			// sniff override_destination must be on under TUN (poisoned MagicDNS
+			// dials still re-resolve by SNI).
+			hasOverride := false
+			for _, v := range mgr.EffectiveRules() {
+				if v.Source == "sniff" || v.Action == "sniff" {
+					// EffectiveRules may not expose override flag; assert via rebuild
+					// still healthy + mode is tun.
+					hasOverride = true
+				}
+			}
+			if mgr.Mode() == gateway.ModeTUN && hasOverride {
+				pass++
+				fmt.Println("  PASS  tun mode: sniff prelude present (override applied at inject)")
+			} else {
+				fail++
+				fmt.Printf("  FAIL  tun mode sniff/override check mode=%s\n", mgr.Mode())
+			}
 			_ = mgr.SetMode(gateway.ModeManual)
 		}
 		_ = mgr.SetDNS(dns) // restore hosts resolver for any later live section

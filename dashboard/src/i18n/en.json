@@ -17,7 +17,7 @@
     "logs": "Logs",
     "fleet": "Fleet",
     "settings": "Settings",
-    "acls": "ACLs",
+    "acls": "Policy",
     "vpn": "VPN",
     "grpMonitor": "Monitor",
     "grpPolicy": "Policy",
@@ -27,9 +27,20 @@
   "top": {
     "capture": "Capture",
     "routing": "Routing",
+    "posture": "Posture",
+    "postureStrict": "Strict",
+    "postureSplit": "Split",
+    "postureStrictTip": "Default-deny: only permitted destinations can leave. Routing still picks the exit.",
+    "postureSplitTip": "Default-allow: unmatched traffic uses Final (proxy by default). Route rules still pick exits; blacklist floor stays on.",
+    "postureForcedRule": "Clash routing forced back to Rule — Global would bypass Split’s route rules.",
+    "splitBanner": "Split: gate open — unmatched traffic → Final (proxy). Explicit routes still apply (direct / Overseas / …). Blacklist & threat intel still block.",
+    "routingGlobalDisabledSplit": "Global is disabled in Split — it would ignore your route rules.",
     "autoBlock": "Auto-block",
-    "autoBlockTip": "Auto-block drops any connection whose destination matches a threat-intel indicator — malware/C2 domains & IPs from abuse.ch feeds + built-in ({{domains}} domain / {{ips}} IP loaded). Heuristic detections (beaconing / DGA / large upload) only raise alerts; they never auto-drop.",
+    "autoBlockTip": "Auto-block drops threat-intel hits and large uploads (≥10 MiB) to destinations NOT on the Permit whitelist — then adds them to the Deny list so retries can't reconnect (including LAN/private). Heuristics (beaconing / DGA) only alert.",
     "live": "live",
+    "up": "↑",
+    "down": "↓",
+    "total": "total",
     "keepMode": "Keep current mode",
     "guard": "Mode guard: reverting to {{to}} in {{sec}}s — confirm you still have access.",
     "captureMode": "Capture mode: {{mode}}",
@@ -96,27 +107,30 @@
   },
   "pages": {
     "acls": {
-      "desc": "Access control: what egress is allowed (whitelist) and what is explicitly denied (blacklist). Deny always wins over allow. No-Proxy picks the egress (direct vs proxy) — it never grants access.",
-      "allow": "Allow",
+      "desc": "Strict policy: Permit (may leave?) is orthogonal to Route (which exit?). Route never opens the gate. Deny beats Permit. Subjects optionally restrict which processes/devices may egress.",
+      "permit": "Permit",
+      "route": "Route",
       "deny": "Deny",
-      "direct": "No-Proxy"
+      "subjects": "Subjects",
+      "permitHint": "Destinations that may leave the network. Also granted by packs/rule-sets with a permit role — see Rules → Routing for the full list. Empty = deny all.",
+      "subjectsHint": "Optional source gates. When non-empty, unlisted processes or devices cannot egress even to a permitted destination."
     },
     "whitelist": {
-      "desc": "Default-deny egress allow-list. Domains & IPs are destinations; Processes & Devices are opt-in source gates (empty = off).",
+      "desc": "Permit destinations (domains & IPs). Default-deny: anything not listed (and not granted by a permit pack/rule-set) is blocked. Processes & Devices are Subjects, not destinations.",
       "domains": "Domains",
       "domainsHint": "Suffix by default (example.com covers its subdomains). Wildcards: *.example.com (subdomains), foo* (prefix).",
       "domainsPh": "example.com  /  *.example.com",
       "ip": "IP / CIDR",
       "ipPh": "1.2.3.4/32",
       "processes": "Processes",
-      "processesHint": "When non-empty, unknown binaries can't egress at all — even to a whitelisted destination.",
+      "processesHint": "When non-empty, unknown binaries can't egress at all — even to a permitted destination.",
       "processesPh": "curl  /usr/bin/ssh",
       "devices": "Devices (source)",
       "devicesHint": "When non-empty, only these source IPs/CIDRs may egress. For gateway/router deployments.",
       "devicesPh": "192.168.1.20"
     },
     "blacklist": {
-      "desc": "Explicit egress deny-list. These destinations are REJECTED even if a whitelist or allow rule-set would otherwise permit them — the reject rules sit above every allow.",
+      "desc": "Hard deny. These destinations are REJECTED even if Permit would otherwise allow them — deny sits above the Permit gate.",
       "domains": "Domains",
       "domainsHint": "Suffix by default (evil.com blocks its subdomains). Wildcards: *.evil.com, ads-* (prefix).",
       "domainsPh": "evil.com  /  *.evil.com",
@@ -131,15 +145,15 @@
       "ipPh": "6.6.6.6/32"
     },
     "directlist": {
-      "desc": "No-proxy (bypass) list: allowed traffic to these destinations egresses DIRECT instead of through the proxy. This is routing, not access — an entry must also be allowed (whitelisted or matched by an allow rule-set). Private/LAN ranges are always bypassed automatically.",
+      "desc": "Route only: permitted traffic to these destinations egresses DIRECT. This never grants Permit — add the destination under Permit (or enable a permit pack) first. Private/LAN ranges are always routed direct automatically.",
       "domains": "Domains",
       "domainsHint": "Suffix by default (corp.local covers its subdomains). Wildcards: *.corp.local, intra-* (prefix).",
       "domainsPh": "corp.local  /  *.corp.local",
       "ip": "IP / CIDR",
-      "ipHint": "These destination IPs/CIDRs egress direct (never through the proxy).",
+      "ipHint": "These destination IPs/CIDRs egress direct (never through the proxy) — only if already permitted.",
       "ipPh": "203.0.113.0/24",
       "builtinTitle": "Built-in (LAN / private)",
-      "builtinHint": "Common private, loopback, link-local and CGNAT ranges are always routed direct and never proxied — no need to add them. Add your own domains/IPs below."
+      "builtinHint": "Common private, loopback, link-local and CGNAT ranges are always routed direct when traffic is permitted — no need to add them."
     }
   }
 }

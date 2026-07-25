@@ -10,11 +10,7 @@ import (
 )
 
 func validRole(r string) bool {
-	switch r {
-	case apitypes.RuleRoleBlock, apitypes.RuleRoleAllowDirect, apitypes.RuleRoleAllowProxy:
-		return true
-	}
-	return false
+	return apitypes.ValidRuleRole(r)
 }
 
 // formatFromURL infers binary/source from the .srs/.json extension.
@@ -87,9 +83,10 @@ func (s *Server) handleAddRuleSet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validRole(rs.Role) {
-		writeErr(w, http.StatusBadRequest, "role must be block | allow-direct | allow-proxy")
+		writeErr(w, http.StatusBadRequest, "role must be deny|permit|route-direct|route-proxy|permit+route-* (legacy block|allow-* still accepted)")
 		return
 	}
+	rs.Role = apitypes.NormalizeRuleRole(rs.Role)
 	if rs.Type == "remote" {
 		if rs.URL == "" {
 			writeErr(w, http.StatusBadRequest, "url is required for a remote rule set")
@@ -139,10 +136,10 @@ func (s *Server) handlePatchRuleSet(w http.ResponseWriter, r *http.Request) {
 	)
 	if req.Role != nil {
 		if !validRole(*req.Role) {
-			writeErr(w, http.StatusBadRequest, "role must be block | allow-direct | allow-proxy")
+			writeErr(w, http.StatusBadRequest, "role must be deny|permit|route-direct|route-proxy|permit+route-* (legacy block|allow-* still accepted)")
 			return
 		}
-		sets, err = s.rs.SetRole(tag, *req.Role)
+		sets, err = s.rs.SetRole(tag, apitypes.NormalizeRuleRole(*req.Role))
 	}
 	if err == nil && req.Enabled != nil {
 		sets, err = s.rs.SetEnabled(tag, *req.Enabled)

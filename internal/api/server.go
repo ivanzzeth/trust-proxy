@@ -27,6 +27,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/inbound"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
+	"github.com/ivanzzeth/trust-proxy/internal/posture"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
@@ -100,7 +101,11 @@ type ProfileApplier interface {
 		dns apitypes.DNSConfig,
 		mode string,
 		final string,
+		posture string, // empty = keep current Strict|Split posture
 	) error
+	Nodes() []apitypes.Node
+	Posture() string
+	SetPosture(string) error
 }
 
 // FinalApplier hot-reloads the catch-all Final egress (gateway.Manager).
@@ -151,6 +156,7 @@ type Options struct {
 	RSApplier   RuleSetApplier
 	Profiles    *profile.Store
 	ProfApplier ProfileApplier
+	Posture     *posture.Store
 	Final       *finalroute.Store
 	FinalApplier FinalApplier
 	DNS         *dnscfg.Store
@@ -162,6 +168,7 @@ type Options struct {
 	Endpoints   *endpoints.Store
 	EPApplier   EndpointsApplier
 	History     *history.Store
+	Detections  *detect.Store // durable alert findings (JSONL)
 	Nodes       *nodes.Store  // brain: registry of remote gateways (reverse-proxied)
 	Token       string        // if set, /api/* requires this bearer token (probe mode)
 	Clash       *clash.Client // low-level Clash primitives, proxied to the browser
@@ -191,6 +198,7 @@ type Server struct {
 	rsApplier   RuleSetApplier
 	profStore   *profile.Store
 	profApplier ProfileApplier
+	posture     *posture.Store
 	final       *finalroute.Store
 	finalApplier FinalApplier
 	dns         *dnscfg.Store
@@ -202,6 +210,7 @@ type Server struct {
 	eps         *endpoints.Store
 	epApplier   EndpointsApplier
 	history     *history.Store
+	detections  *detect.Store
 	nodes       *nodes.Store
 	token       string
 	clash       *clash.Client
@@ -211,12 +220,14 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
 	mux.HandleFunc("GET /api/mode", s.handleGetMode)
 	mux.HandleFunc("POST /api/mode", s.handleSetMode)
+	mux.HandleFunc("GET /api/posture", s.handleGetPosture)
+	mux.HandleFunc("PUT /api/posture", s.handleSetPosture)
 	mux.HandleFunc("POST /api/mode/confirm", s.handleConfirmMode)
 	mux.HandleFunc("POST /api/autoblock", s.handleAutoBlock)
 	mux.HandleFunc("GET /api/subscriptions", s.handleListSubs)
@@ -234,7 +245,10 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("GET /api/clash-mode", s.handleGetClashMode)
 	mux.HandleFunc("PUT /api/clash-mode", s.handleSetClashMode)
 	mux.HandleFunc("GET /api/logs", s.handleLogs)
+	mux.HandleFunc("GET /api/traffic", s.handleTraffic)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
+	mux.HandleFunc("GET /api/detections", s.handleDetections)
+	mux.HandleFunc("GET /api/detections/stats", s.handleDetectionsStats)
 	mux.HandleFunc("GET /api/whitelist", s.handleGetWhitelist)
 	mux.HandleFunc("POST /api/whitelist", s.handleAddWhitelist)
 	mux.HandleFunc("DELETE /api/whitelist", s.handleDelWhitelist)

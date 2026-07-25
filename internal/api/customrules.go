@@ -177,9 +177,18 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 			if role == "" {
 				role = entry.SuggestedRole
 			}
+			role = apitypes.NormalizeRuleRole(role)
 			if !validRole(role) {
 				writeErr(w, http.StatusBadRequest, "invalid role for "+prs.CatalogTag+": "+role)
 				return
+			}
+			// Merge axes when another pack already imported the same tag
+			// (e.g. China-wide permit + China-direct route → permit+route-direct).
+			for _, existing := range s.rs.Get().Sets {
+				if existing.Tag == entry.Tag {
+					role = apitypes.MergeRuleRoles(existing.Role, role)
+					break
+				}
 			}
 			rs := apitypes.RuleSet{
 				Tag: entry.Tag, Name: entry.Name, Type: "remote", Format: entry.Format,
@@ -279,11 +288,66 @@ func (s *Server) handlePatchPack(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, prs := range preset.RuleSets {
-			if _, err := s.rs.SetEnabled(prs.CatalogTag, req.Enabled); err != nil {
-				_, _ = s.cr.Set(prevCR)
-				_ = s.rollbackRuleSets(prevRS)
-				writeErr(w, http.StatusInternalServerError, err.Error())
-				return
+			role := prs.Role
+			if role == "" {
+				if entry, ok := ruleset.CatalogByTag(prs.CatalogTag); ok {
+					role = entry.SuggestedRole
+				}
+			}
+			role = apitypes.NormalizeRuleRole(role)
+			cur := s.rs.Get()
+			var existing *apitypes.RuleSet
+			for i := range cur.Sets {
+				if cur.Sets[i].Tag == prs.CatalogTag {
+					existing = &cur.Sets[i]
+					break
+				}
+			}
+			if req.Enabled {
+				entry, ok := ruleset.CatalogByTag(prs.CatalogTag)
+				if !ok {
+					continue
+				}
+				merged := role
+				if existing != nil {
+					merged = apitypes.MergeRuleRoles(existing.Role, role)
+				}
+				rs := apitypes.RuleSet{
+					Tag: entry.Tag, Name: entry.Name, Type: "remote", Format: entry.Format,
+					URL: entry.URL, DownloadDetour: "direct", UpdateInterval: "1d",
+					Role: merged, Enabled: true,
+				}
+				if existing != nil {
+					rs.URL = existing.URL
+					rs.Path = existing.Path
+					rs.Type = existing.Type
+					rs.Format = existing.Format
+				}
+				if _, err := s.rs.Add(rs); err != nil {
+					_, _ = s.cr.Set(prevCR)
+					_ = s.rollbackRuleSets(prevRS)
+					writeErr(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			} else if existing != nil {
+				left := apitypes.SubtractRuleRoles(existing.Role, role)
+				if left == "" {
+					if _, err := s.rs.SetEnabled(prs.CatalogTag, false); err != nil {
+						_, _ = s.cr.Set(prevCR)
+						_ = s.rollbackRuleSets(prevRS)
+						writeErr(w, http.StatusInternalServerError, err.Error())
+						return
+					}
+				} else {
+					existing.Role = left
+					existing.Enabled = true
+					if _, err := s.rs.Add(*existing); err != nil {
+						_, _ = s.cr.Set(prevCR)
+						_ = s.rollbackRuleSets(prevRS)
+						writeErr(w, http.StatusInternalServerError, err.Error())
+						return
+					}
+				}
 			}
 		}
 		if err := s.applyRuleSets(s.rs.Get()); err != nil {
@@ -326,11 +390,41 @@ func (s *Server) handleDeletePack(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		for _, prs := range preset.RuleSets {
-			if _, err := s.rs.Remove(prs.CatalogTag); err != nil {
-				_, _ = s.cr.Set(prevCR)
-				_ = s.rollbackRuleSets(prevRS)
-				writeErr(w, http.StatusInternalServerError, err.Error())
-				return
+			role := prs.Role
+			if role == "" {
+				if entry, ok := ruleset.CatalogByTag(prs.CatalogTag); ok {
+					role = entry.SuggestedRole
+				}
+			}
+			role = apitypes.NormalizeRuleRole(role)
+			cur := s.rs.Get()
+			var existing *apitypes.RuleSet
+			for i := range cur.Sets {
+				if cur.Sets[i].Tag == prs.CatalogTag {
+					existing = &cur.Sets[i]
+					break
+				}
+			}
+			if existing == nil {
+				continue
+			}
+			left := apitypes.SubtractRuleRoles(existing.Role, role)
+			if left == "" {
+				if _, err := s.rs.Remove(prs.CatalogTag); err != nil {
+					_, _ = s.cr.Set(prevCR)
+					_ = s.rollbackRuleSets(prevRS)
+					writeErr(w, http.StatusInternalServerError, err.Error())
+					return
+				}
+			} else {
+				existing.Role = left
+				existing.Enabled = true
+				if _, err := s.rs.Add(*existing); err != nil {
+					_, _ = s.cr.Set(prevCR)
+					_ = s.rollbackRuleSets(prevRS)
+					writeErr(w, http.StatusInternalServerError, err.Error())
+					return
+				}
 			}
 		}
 		if err := s.applyRuleSets(s.rs.Get()); err != nil {

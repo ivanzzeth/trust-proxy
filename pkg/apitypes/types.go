@@ -42,8 +42,8 @@ type AddSubscriptionRequest struct {
 }
 
 // RuleSet is an imported sing-box rule_set (remote .srs/.json or local file)
-// plus the role it plays in our default-deny route (block / allow-direct /
-// allow-proxy). Tag is the primary key referenced by route rules.
+// plus the role it plays on the Permit / Route / Deny axes. Tag is the primary
+// key referenced by route rules. See policy.go for role constants and helpers.
 type RuleSet struct {
 	Tag            string `json:"tag"`
 	Name           string `json:"name"`
@@ -53,16 +53,9 @@ type RuleSet struct {
 	Path           string `json:"path,omitempty"`
 	DownloadDetour string `json:"download_detour"` // default "direct"
 	UpdateInterval string `json:"update_interval"` // e.g. "1d"
-	Role           string `json:"role"`            // "block" | "allow-direct" | "allow-proxy"
+	Role           string `json:"role"`            // deny|permit|route-direct|route-proxy|permit+route-*|legacy
 	Enabled        bool   `json:"enabled"`
 }
-
-// Rule-set roles.
-const (
-	RuleRoleBlock       = "block"
-	RuleRoleAllowDirect = "allow-direct"
-	RuleRoleAllowProxy  = "allow-proxy"
-)
 
 // RuleSetCatalogEntry is a one-click importable public rule set.
 type RuleSetCatalogEntry struct {
@@ -95,41 +88,43 @@ type PatchRuleSetRequest struct {
 	Role    *string `json:"role,omitempty"`
 }
 
-// CustomRule is one ordered custom routing rule (the L4/routing layer): a
-// matcher plus the egress it selects. Order is priority (first-match). Actions
-// direct/proxy/node also imply "allow" (the matcher joins the ACL allow-set);
-// block does not. A node action targets a single subscription/endpoint outbound
-// by its (unstable) tag — the gateway skips the rule if that tag isn't a live
-// outbound (self-heal), so a removed node can't brick the box.
+// CustomRule is one ordered policy rule on the Permit and/or Route axes.
+// Order is priority for L4 (first-match). Permit and Egress are orthogonal:
+//   - Permit=true joins the L3 allow-set (may leave the network)
+//   - Egress selects L4 outbound (none = no route rule; Final applies)
+// Legacy Action-only JSON is normalized via NormalizeCustomRule (action≠block
+// ⇒ permit+egress). A node egress targets a subscription/endpoint/group tag;
+// missing tags are skipped (self-heal).
 type CustomRule struct {
 	ID      string `json:"id"`    // sha256(match|value|action|node)[:12], idempotent
 	Match   string `json:"match"` // domain | domain_suffix | keyword | regex | ip_cidr
 	Value   string `json:"value"`
-	Action  string `json:"action"`         // direct | proxy | block | node
-	Node    string `json:"node,omitempty"` // target outbound tag (required when action==node)
-	Pack    string `json:"pack,omitempty"` // optional named group (Allow pack); metadata only
+	Action  string `json:"action"`           // legacy/wire: direct|proxy|block|node (mirrors Egress)
+	Egress  string `json:"egress,omitempty"` // none|direct|proxy|block|node
+	Permit  *bool  `json:"permit,omitempty"` // nil ⇒ derive from Action/Egress (compat)
+	Node    string `json:"node,omitempty"`   // target outbound tag (required when egress==node)
+	Pack    string `json:"pack,omitempty"`   // optional named pack; metadata only
 	Enabled bool   `json:"enabled"`
 }
 
-// PackPreset is a curated, one-click-importable Allow pack. Applying it:
-//   - imports each RuleSets entry from the public rule-set catalog (community-
-//     maintained coverage — prefer this over hand-maintained domain lists);
-//   - Adds each Rules entry tagged Pack=Name, Enabled=true.
-// Either RuleSets or Rules (or both) may be non-empty. Geofenced packs that
-// must pin the Overseas group keep custom Rules; broad services use RuleSets.
+// PackPreset is a curated, one-click-importable policy pack. Applying it:
+//   - imports each RuleSets entry with an explicit Role (permit and/or route);
+//   - Adds each Rules entry tagged Pack=Name with explicit Permit/Egress.
+// Either RuleSets or Rules (or both) may be non-empty.
 type PackPreset struct {
 	Name        string        `json:"name"`
 	Description string        `json:"description"`
-	Exit        string        `json:"exit,omitempty"` // how the pack egresses: PackExit* (display hint)
+	Warning     string        `json:"warning,omitempty"` // shown before apply (e.g. China wide)
+	Exit        string        `json:"exit,omitempty"`    // PackExit* display hint
 	RuleSets    []PackRuleSet `json:"rule_sets,omitempty"`
-	Rules       []CustomRule  `json:"rules"` // always a JSON array (never null); may be empty when RuleSets-only
+	Rules       []CustomRule  `json:"rules"` // always a JSON array; may be empty when RuleSets-only
 }
 
-// PackRuleSet binds a pack to a public rule-set catalog tag. Role defaults to
-// the catalog entry's SuggestedRole when empty.
+// PackRuleSet binds a pack to a public rule-set catalog tag. Role should be set
+// explicitly (permit / route-* / deny); empty falls back to catalog SuggestedRole.
 type PackRuleSet struct {
 	CatalogTag string `json:"catalog_tag"`
-	Role       string `json:"role,omitempty"` // block | allow-direct | allow-proxy
+	Role       string `json:"role,omitempty"`
 }
 
 // PackExit* describe how a preset's traffic leaves — a display hint for the UI.
@@ -139,12 +134,13 @@ const (
 	PackExitDirect   = "direct"   // direct, no proxy
 )
 
-// Custom-rule actions + match kinds.
+// Custom-rule actions (legacy aliases of CustomEgress*) + match kinds.
 const (
-	CustomActionDirect = "direct"
-	CustomActionProxy  = "proxy"
-	CustomActionBlock  = "block"
-	CustomActionNode   = "node"
+	CustomActionDirect = CustomEgressDirect
+	CustomActionProxy  = CustomEgressProxy
+	CustomActionBlock  = CustomEgressBlock
+	CustomActionNode   = CustomEgressNode
+	CustomActionNone   = CustomEgressNone
 
 	CustomMatchDomain       = "domain"
 	CustomMatchDomainSuffix = "domain_suffix"
@@ -159,6 +155,8 @@ type PatchCustomRuleRequest struct {
 	Match   *string `json:"match,omitempty"`
 	Value   *string `json:"value,omitempty"`
 	Action  *string `json:"action,omitempty"`
+	Egress  *string `json:"egress,omitempty"`
+	Permit  *bool   `json:"permit,omitempty"`
 	Node    *string `json:"node,omitempty"`
 	Pack    *string `json:"pack,omitempty"`
 }
@@ -177,26 +175,31 @@ type RuleView struct {
 }
 
 // Profile bundles a named full-policy snapshot for one-click switching: applied
-// subscription, ACL lists, rule sets, custom rules (Allow packs), proxy-group
-// config, DNS, and capture mode. Environment knobs (TUN/inbound auth/VPN
-// endpoints) are intentionally excluded so activating a profile can't brick a
-// remote probe's capture path.
+// subscription, Permit/Deny/Route lists, rule sets, custom rules (packs),
+// proxy-group config, DNS, and capture mode. Environment knobs (TUN/inbound
+// auth/VPN endpoints) are intentionally excluded so activating a profile can't
+// brick a remote probe's capture path.
 type Profile struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	SubID          string            `json:"subscription_id,omitempty"`
-	Whitelist      Rules             `json:"whitelist"`
-	Blacklist      Blacklist         `json:"blacklist,omitempty"`
-	Directlist     DirectList        `json:"directlist,omitempty"`
-	CustomRules    []CustomRule      `json:"custom_rules,omitempty"`
-	RuleSets       []RuleSet         `json:"rule_sets,omitempty"`       // full descriptors (preferred)
-	RuleSetTags    []string          `json:"ruleset_tags,omitempty"`    // legacy: enable-only tags
+	ID             string             `json:"id"`
+	Name           string             `json:"name"`
+	Version        int                `json:"version,omitempty"` // policy schema; 2 = Permit⊥Route
+	SubID          string             `json:"subscription_id,omitempty"`
+	Whitelist      Rules              `json:"whitelist"`
+	Blacklist      Blacklist          `json:"blacklist,omitempty"`
+	Directlist     DirectList         `json:"directlist,omitempty"`
+	CustomRules    []CustomRule       `json:"custom_rules,omitempty"`
+	RuleSets       []RuleSet          `json:"rule_sets,omitempty"`    // full descriptors (preferred)
+	RuleSetTags    []string           `json:"ruleset_tags,omitempty"` // legacy: enable-only tags
 	ProxyGroups    *ProxyGroupsConfig `json:"proxy_groups,omitempty"`
-	DNS            *DNSConfig        `json:"dns,omitempty"`
-	Final          string            `json:"final,omitempty"` // catch-all egress: proxy|direct|blocked|<tag>
-	Mode           string            `json:"mode,omitempty"`
-	Active         bool              `json:"active,omitempty"`
+	DNS            *DNSConfig         `json:"dns,omitempty"`
+	Final          string             `json:"final,omitempty"` // catch-all egress: proxy|direct|blocked|<tag>
+	Mode           string             `json:"mode,omitempty"`
+	Active         bool               `json:"active,omitempty"`
 }
+
+// ProfilePolicyVersion is written on new/updated profiles after the Permit⊥Route
+// migration. Older snapshots are expanded on activate.
+const ProfilePolicyVersion = 2
 
 // Rules is the egress allow-list snapshot (mirrors whitelist.Rules) embedded in
 // a Profile; kept here so apitypes stays dependency-free.

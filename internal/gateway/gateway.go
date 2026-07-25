@@ -85,6 +85,7 @@ type Manager struct {
 	endpoints []apitypes.Endpoint
 	mgmtPorts []int
 	final     string // catch-all egress when ACL gate is open (default proxy)
+	posture   string // strict|split — Split skips L3 permit gate (default-allow)
 
 	// mode dead-man's switch (remote-safety): a guarded mode switch auto-reverts
 	// unless confirmed in time.
@@ -131,8 +132,48 @@ func NewManager(configPath, dataDir string, wl whitelist.Rules, engine *detect.E
 	return &Manager{
 		configPath: configPath, dataDir: dataDir, logger: log.StdLogger(),
 		wl: wl, engine: engine, clashSecret: clashSecret, mode: ModeManual,
-		final: "proxy",
+		final: "proxy", posture: apitypes.PostureStrict,
 	}
+}
+
+// SetInitialPosture sets the Strict|Split posture used by the first Start().
+func (m *Manager) SetInitialPosture(p string) {
+	if !apitypes.ValidPosture(p) {
+		return
+	}
+	m.mu.Lock()
+	m.posture = p
+	m.mu.Unlock()
+}
+
+// Posture returns the current Strict|Split posture.
+func (m *Manager) Posture() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.posture == "" {
+		return apitypes.PostureStrict
+	}
+	return m.posture
+}
+
+// SetPosture switches Strict|Split and hot-reloads. Slot swap / seeding is the
+// API layer's job — this only updates the data-plane gate semantics.
+func (m *Manager) SetPosture(p string) error {
+	if !apitypes.ValidPosture(p) {
+		return fmt.Errorf("invalid posture %q", p)
+	}
+	m.mu.Lock()
+	prev := m.posture
+	m.posture = p
+	m.mu.Unlock()
+	if err := m.rebuild(); err != nil {
+		m.mu.Lock()
+		m.posture = prev
+		m.mu.Unlock()
+		_ = m.rebuild()
+		return fmt.Errorf("apply posture failed (reverted): %w", err)
+	}
+	return nil
 }
 
 // SetInitialFinal sets the catch-all egress used by the first Start().
@@ -304,9 +345,12 @@ func truncVals(vals []string, n int) []string {
 // asserts the layer sequence here matches a freshly built merged config.
 func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	m.mu.Lock()
-	wl, bl, dl, cr, pg, sets, mode, mgmt, nodes, eps, final :=
-		m.wl, m.bl, m.dl, m.cr, m.pg, m.rulesets, m.mode, m.mgmtPorts, m.nodes, m.endpoints, m.final
+	wl, bl, dl, cr, pg, sets, mode, mgmt, nodes, eps, final, posture :=
+		m.wl, m.bl, m.dl, m.cr, m.pg, m.rulesets, m.mode, m.mgmtPorts, m.nodes, m.endpoints, m.final, m.posture
 	m.mu.Unlock()
+	if posture == "" {
+		posture = apitypes.PostureStrict
+	}
 
 	var epTags []string
 	for _, e := range eps {
@@ -360,7 +404,7 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 		add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "ip_cidr", Values: truncVals(bl.IPs, 20)})
 	}
 	for _, rs := range sets.Sets {
-		if rs.Enabled && rs.Tag != "" && rs.Role == apitypes.RuleRoleBlock {
+		if rs.Enabled && rs.Tag != "" && apitypes.RuleRoleIsDeny(rs.Role) {
 			add(apitypes.RuleView{Layer: "L1", Source: "rule-set:" + rs.Tag, Action: "reject", Matcher: "rule_set", Values: []string{rs.Tag}})
 		}
 	}
@@ -374,84 +418,101 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	// L2 Global bypass (always injected; inert in Rule mode).
 	add(apitypes.RuleView{Layer: "L2", Source: "global", Action: "route:proxy", Matcher: "clash_mode", Values: []string{"Global"}, Note: "only when routing mode = Global"})
 
-	// L3/L4 depend on whether anything is allowed.
-	var directSets, proxySets []string
-	allowSetTags := 0
+	// L3 Permit / L4 Route — orthogonal axes.
+	var directSets, proxySets, permitSets []string
 	for _, rs := range sets.Sets {
 		if !rs.Enabled || rs.Tag == "" {
 			continue
 		}
-		switch rs.Role {
-		case apitypes.RuleRoleAllowDirect:
+		if apitypes.RuleRoleGrantsPermit(rs.Role) {
+			permitSets = append(permitSets, rs.Tag)
+		}
+		switch apitypes.RuleRoleRouteEgress(rs.Role) {
+		case "direct":
 			directSets = append(directSets, rs.Tag)
-			allowSetTags++
-		case apitypes.RuleRoleAllowProxy:
+		case "proxy":
 			proxySets = append(proxySets, rs.Tag)
-			allowSetTags++
 		}
 	}
 	wlSfx, wlRgx := splitDomainMatchers(wl.Domains)
 	dlSfx, dlRgx := splitDomainMatchers(dl.Domains)
-	hasCustomAllow := false
-	for _, r := range cr.Rules {
-		if !r.Enabled || r.Action == apitypes.CustomActionBlock {
-			continue
-		}
-		if r.Action == apitypes.CustomActionNode && !members[r.Node] {
-			continue
-		}
-		hasCustomAllow = true
-	}
-	hasUserAllow := len(wlSfx) > 0 || len(wlRgx) > 0 || len(wl.IPs) > 0 ||
-		len(dlSfx) > 0 || len(dlRgx) > 0 || len(dl.IPs) > 0 || allowSetTags > 0 || hasCustomAllow
 
-	if !hasUserAllow {
-		add(apitypes.RuleView{Layer: "catch-all", Source: "default-deny", Action: "route:blocked", Matcher: "network", Note: "nothing allowed → everything blocked (fail-closed)"})
-		return out
-	}
-
-	// L3 ACL gate.
-	var allowBits []string
-	if n := len(wlSfx) + len(wlRgx) + len(wl.IPs); n > 0 {
-		allowBits = append(allowBits, fmt.Sprintf("whitelist(%d)", n))
-	}
-	if n := len(dlSfx) + len(dlRgx) + len(dl.IPs); n > 0 {
-		allowBits = append(allowBits, fmt.Sprintf("no-proxy(%d)", n))
-	}
-	if allowSetTags > 0 {
-		allowBits = append(allowBits, fmt.Sprintf("rule-sets(%d)", allowSetTags))
-	}
-	allowBits = append(allowBits, "private-CIDRs")
-	add(apitypes.RuleView{Layer: "L3", Source: "acl-gate", Action: "route:blocked", Matcher: "logical (inverted)", Values: allowBits, Note: "anything NOT in the allow-set is blocked"})
-
-	// L4 routing egress, in injection order: custom → no-proxy →
-	// allow-proxy rule sets → allow-direct rule sets.
-	// Proxy sets must beat CN-direct for geosite overlaps (gvt2 etc. appear in
-	// both geosite-google and geosite-cn; Google pack must win).
+	var permitCustom []apitypes.CustomRule
+	var routeCustom []apitypes.CustomRule
 	for _, r := range cr.Rules {
 		if !r.Enabled {
 			continue
 		}
+		apitypes.NormalizeCustomRule(&r)
+		eg := r.RouteEgress()
+		deadNode := eg == apitypes.CustomEgressNode && !members[r.Node]
+		if r.GrantsPermit() && !deadNode {
+			permitCustom = append(permitCustom, r)
+		}
+		if eg != "" {
+			routeCustom = append(routeCustom, r)
+		}
+	}
+	hasUserPermit := len(wlSfx) > 0 || len(wlRgx) > 0 || len(wl.IPs) > 0 ||
+		len(permitSets) > 0 || len(permitCustom) > 0
+	splitOpen := posture == apitypes.PostureSplit
+
+	if !hasUserPermit && !splitOpen {
+		add(apitypes.RuleView{Layer: "catch-all", Source: "default-deny", Action: "route:blocked", Matcher: "network", Note: "nothing permitted → everything blocked (fail-closed)"})
+		return out
+	}
+
+	if splitOpen {
+		add(apitypes.RuleView{Layer: "L3", Source: "posture:split", Action: "gate-open", Matcher: "", Note: "Split posture — Permit gate skipped (default-allow); L1 floor + L4 + Final still apply"})
+	} else {
+		// L3 Permit gate — list every source.
+		var allowBits []string
+		if n := len(wlSfx) + len(wlRgx) + len(wl.IPs); n > 0 {
+			allowBits = append(allowBits, fmt.Sprintf("whitelist(%d)", n))
+		}
+		for _, tag := range permitSets {
+			allowBits = append(allowBits, "rule-set:"+tag)
+		}
+		for _, r := range permitCustom {
+			src := "custom"
+			if r.Pack != "" {
+				src = "pack:" + r.Pack
+			}
+			allowBits = append(allowBits, fmt.Sprintf("%s:%s=%s", src, r.Match, r.Value))
+		}
+		allowBits = append(allowBits, "private-CIDRs")
+		add(apitypes.RuleView{Layer: "L3", Source: "permit-gate", Action: "route:blocked", Matcher: "logical (inverted)", Values: truncVals(allowBits, 40), Note: "anything NOT permitted is blocked; Route never opens this gate"})
+	}
+
+	// L4 Route: custom → no-proxy → route-proxy RS → route-direct RS → Final.
+	for _, r := range routeCustom {
 		key, ok := customrules.SingboxMatchKey(r.Match)
 		if !ok || r.Value == "" {
 			continue
 		}
-		v := apitypes.RuleView{Layer: "L4", Source: "custom", Matcher: key, Values: []string{r.Value}}
-		switch r.Action {
-		case apitypes.CustomActionDirect:
+		src := "custom"
+		if r.Pack != "" {
+			src = "pack:" + r.Pack
+		}
+		v := apitypes.RuleView{Layer: "L4", Source: src, Matcher: key, Values: []string{r.Value}}
+		if !r.GrantsPermit() {
+			v.Note = "route-only (does not permit)"
+		}
+		switch r.RouteEgress() {
+		case apitypes.CustomEgressDirect:
 			v.Action = "route:direct"
-		case apitypes.CustomActionProxy:
+		case apitypes.CustomEgressProxy:
 			if r.Node != "" && members[r.Node] {
 				v.Action = "route:" + r.Node
 			} else {
 				v.Action = "route:proxy"
 				if r.Node != "" {
-					v.Note = "group " + r.Node + " missing — via proxy"
+					v.Note = strings.TrimSpace(v.Note + " ; group " + r.Node + " missing — via proxy")
 				}
 			}
-		case apitypes.CustomActionBlock:
+		case apitypes.CustomEgressBlock:
 			v.Action = "route:blocked"
-		case apitypes.CustomActionNode:
+		case apitypes.CustomEgressNode:
 			v.Action = "route:" + r.Node
 			if !members[r.Node] {
 				v.Note = "node " + r.Node + " missing — rule skipped"
@@ -460,25 +521,30 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 		add(v)
 	}
 	if len(dlSfx) > 0 {
-		add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "domain_suffix", Values: truncVals(dlSfx, 20)})
+		add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "domain_suffix", Values: truncVals(dlSfx, 20), Note: "route-only (does not permit)"})
 	}
 	if len(dlRgx) > 0 {
-		add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "domain_regex", Values: truncVals(dlRgx, 20)})
+		add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "domain_regex", Values: truncVals(dlRgx, 20), Note: "route-only (does not permit)"})
 	}
-	// no-proxy IPs + built-in private CIDRs always share one direct ip_cidr rule.
 	ipVals := append(append([]string(nil), dl.IPs...), privateCIDRs...)
-	add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "ip_cidr", Values: truncVals(ipVals, 20), Note: "includes built-in LAN/private ranges"})
+	add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "ip_cidr", Values: truncVals(ipVals, 20), Note: "includes built-in LAN/private ranges; route-only"})
 	for _, tag := range proxySets {
 		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:proxy", Matcher: "rule_set", Values: []string{tag}})
 	}
 	for _, tag := range directSets {
-		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:direct", Matcher: "rule_set", Values: []string{tag}})
+		note := ""
+		if !sliceHas(permitSets, tag) {
+			note = "route-only (does not permit)"
+		}
+		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:direct", Matcher: "rule_set", Values: []string{tag}, Note: note})
 	}
 
-	// catch-all Final egress (gate present). Self-heal unknown tags → proxy.
 	allTags := append(append([]string(nil), nodeT...), groupT...)
 	egress := resolveFinal(final, allTags)
-	note := "Final — allowed traffic with no explicit egress"
+	note := "Final — permitted traffic with no explicit egress; never opens an empty gate"
+	if splitOpen {
+		note = "Final — Split default-allow catch-all egress"
+	}
 	if egress != final && final != "" {
 		note = "Final " + final + " missing — via " + egress
 	}
@@ -506,6 +572,13 @@ func (m *Manager) SetInitialNodes(nodes []apitypes.Node) {
 	m.mu.Lock()
 	m.nodes = nodes
 	m.mu.Unlock()
+}
+
+// Nodes returns a copy of the currently applied subscription nodes.
+func (m *Manager) Nodes() []apitypes.Node {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]apitypes.Node(nil), m.nodes...)
 }
 
 // Apply sets the subscription nodes and hot-reloads (empty resets the proxy
@@ -731,10 +804,11 @@ func (m *Manager) ApplyProfile(
 	dns apitypes.DNSConfig,
 	mode string,
 	final string,
+	posture string,
 ) error {
 	m.mu.Lock()
 	prevNodes, prevWL, prevBL, prevDL, prevCR := m.nodes, m.wl, m.bl, m.dl, m.cr
-	prevSets, prevPG, prevDNS, prevMode, prevFinal := m.rulesets, m.pg, m.dns, m.mode, m.final
+	prevSets, prevPG, prevDNS, prevMode, prevFinal, prevPosture := m.rulesets, m.pg, m.dns, m.mode, m.final, m.posture
 	m.nodes = nodes
 	m.wl = wl
 	m.bl = bl
@@ -749,12 +823,15 @@ func (m *Manager) ApplyProfile(
 	if final != "" {
 		m.final = final
 	}
+	if apitypes.ValidPosture(posture) {
+		m.posture = posture
+	}
 	m.mu.Unlock()
 
 	if err := m.rebuild(); err != nil {
 		m.mu.Lock()
 		m.nodes, m.wl, m.bl, m.dl, m.cr = prevNodes, prevWL, prevBL, prevDL, prevCR
-		m.rulesets, m.pg, m.dns, m.mode, m.final = prevSets, prevPG, prevDNS, prevMode, prevFinal
+		m.rulesets, m.pg, m.dns, m.mode, m.final, m.posture = prevSets, prevPG, prevDNS, prevMode, prevFinal, prevPosture
 		m.mu.Unlock()
 		_ = m.rebuild() // best-effort restore of the working policy
 		return fmt.Errorf("apply profile failed (reverted): %w", err)
@@ -767,15 +844,15 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final :=
-		m.nodes, m.wl, m.bl, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts, m.final
+	nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture :=
+		m.nodes, m.wl, m.bl, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts, m.final, m.posture
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, m.clashSecret, m.dataDir)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture, m.clashSecret, m.dataDir)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -823,17 +900,21 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // laying route.rules out in strict layers (first-match, top to bottom):
 //
 //	L0 management rescue   source_port -> direct        (injectManagement, top)
-//	L1 security floor      blacklist / block rule_sets /
+//	L1 security floor      blacklist / deny rule_sets /
 //	                       process+device invert -> reject
 //	L2 Global bypass       clash_mode=Global -> proxy   (injectClashModeGlobal)
-//	L3 ACL gate            NOT(allow-set) -> blocked     (injectAllow)
-//	L4 routing egress      custom / direct-bypass / allow-proxy rule_sets
-//	   catch-all           network matcher -> Final (gate present) / blocked
+//	L3 Permit gate         NOT(permit-set) -> blocked   (injectAllow; skipped in Split)
+//	L4 Route egress        custom / no-proxy / route-* rule_sets
+//	   catch-all           network matcher -> Final (gate present OR Split) / blocked
+//
+// Permit ⊥ Route: route-only sources (no-proxy, route-direct/proxy) never join
+// the L3 permit-set. Final never opens an empty gate under Strict; Split skips
+// the gate (default-allow) so Final applies to unrouted traffic.
 //
 // The split keeps two orthogonal concerns apart: the whitelist decides only
 // allow/deny (L3), the no-proxy list + rule-sets decide only egress (L4). All
 // injection is at the JSON level so sing-box's own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, final, clashSecret, dataDir string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, final, posture, clashSecret, dataDir string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -879,7 +960,7 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	// L3 ACL gate + L4 routing egress + catch-all Final flip. Needs whitelist +
 	// allow-rule-set tags + no-proxy list + custom rules together (they form one
 	// allow-set); memberTags validates custom `node` targets and Final tags.
-	if err := injectAllow(cfg, wl, sets, dl, cr, memberTags, final); err != nil {
+	if err := injectAllow(cfg, wl, sets, dl, cr, memberTags, final, posture); err != nil {
 		return nil, err
 	}
 	// L0: management-port allow LAST => inserted right after the prelude, above
@@ -1199,12 +1280,12 @@ func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir s
 	}
 	route["rule_set"] = nrs
 
-	// (2) block-role rule_sets -> reject (L1 floor), inserted right after the
-	// prelude so they sit above the ACL gate. Allow-role rule_sets are handled
+	// (2) deny-role rule_sets -> reject (L1 floor), inserted right after the
+	// prelude so they sit above the ACL gate. Permit/route roles are handled
 	// by injectAllow.
 	var blockTags []string
 	for _, rs := range enabled {
-		if rs.Role == apitypes.RuleRoleBlock {
+		if apitypes.RuleRoleIsDeny(rs.Role) {
 			blockTags = append(blockTags, rs.Tag)
 		}
 	}
@@ -1430,19 +1511,27 @@ func ensureTunExtras(cfg map[string]json.RawMessage) error {
 	return ensureTunHijackAndInterface(cfg)
 }
 
-// tunDNSFallback is the UDP resolver we substitute for dns type=local under TUN.
-// 223.5.5.5 is reachable on mainland networks without going through the proxy
-// group (download_detour/direct deadlock concern does not apply — this is the
-// DNS dial itself, and route.auto_detect_interface binds it to the physical NIC).
+// tunDNSFallback is substituted for dns type=local under TUN.
+// Must NOT be a mainland UDP resolver (223.5.5.5 etc.): those return
+// GFW-poisoned answers for Google/YouTube. DoH via the proxy group yields
+// clean A/AAAA; bootstrap uses the literal IP so we don't need system DNS.
 const tunDNSFallbackTag = "tun-dns"
-const tunDNSFallbackAddr = "223.5.5.5"
+
+func tunDNSFallbackServer() map[string]any {
+	return map[string]any{
+		"type":   "https",
+		"tag":    tunDNSFallbackTag,
+		"server": "8.8.8.8", // dns.google anycast — no name lookup to bootstrap
+		"detour": "proxy",
+	}
+}
 
 // sanitizeTunDNS ensures TUN mode never keeps a dns type=local server (or a
-// final/default_domain_resolver pointing at one). Missing dns → install the
-// UDP fallback; existing local servers are rewritten in place (same tag) so
-// user rules/final that reference the tag keep working.
+// final/default_domain_resolver pointing at one). Missing dns → install DoH via
+// proxy; existing local servers are rewritten in place (same tag) so user
+// rules/final that reference the tag keep working.
 func sanitizeTunDNS(cfg map[string]json.RawMessage) error {
-	fallback := map[string]any{"type": "udp", "tag": tunDNSFallbackTag, "server": tunDNSFallbackAddr}
+	fallback := tunDNSFallbackServer()
 
 	raw, ok := cfg["dns"]
 	if !ok {
@@ -1474,7 +1563,9 @@ func sanitizeTunDNS(cfg map[string]json.RawMessage) error {
 			if tag == "" {
 				tag = tunDNSFallbackTag
 			}
-			out = append(out, map[string]any{"type": "udp", "tag": tag, "server": tunDNSFallbackAddr})
+			repl := tunDNSFallbackServer()
+			repl["tag"] = tag
+			out = append(out, repl)
 			if firstReal == "" {
 				firstReal = tag
 			}
@@ -1847,8 +1938,13 @@ func buildProxyGroups(tags []string, loopback map[string]bool, pg proxygroups.Co
 	add := func(typ, tag string, members []string) {
 		g := map[string]any{"type": typ, "tag": tag, "outbounds": members}
 		if typ == "urltest" {
+			// Failover is primarily driven by dial/IO failures (patched urltest
+			// retries other members immediately). The periodic probe is a backup
+			// only — keep it short so a quietly-dead node cannot stick for minutes.
 			g["url"] = "https://www.gstatic.com/generate_204"
-			g["interval"] = "3m"
+			g["interval"] = "30s"
+			g["idle_timeout"] = "30m"
+			g["interrupt_exist_connections"] = true
 		}
 		b, _ := json.Marshal(g)
 		outs = append(outs, b)
@@ -2152,32 +2248,23 @@ func injectProcessDeviceFloor(cfg map[string]json.RawMessage, wl whitelist.Rules
 	return nil
 }
 
-// injectAllow builds the ACL gate (L3) and the routing egress (L4), then flips
-// the catch-all default egress. It needs the whitelist, the allow-role
-// rule-sets, and the no-proxy list together because they jointly define both
-// the allow-set (L3) and the direct-bypass set (L4):
+// injectAllow builds the Permit gate (L3) and the Route egress (L4), then flips
+// the catch-all default egress. Permit and Route are orthogonal:
 //
-//	allow-set (L3) = whitelist domains+ips ∪ ALL allow rule_set tags ∪
-//	                 no-proxy domains+ips ∪ built-in private CIDRs
-//	direct (L4)    = allow-direct rule_sets + no-proxy domains+ips + private CIDRs
-//	proxy  (L4)    = allow-proxy rule_sets
-//	catch-all      = Final (gate present) — egress for allowed-but-unrouted
-//	                 traffic; default proxy. Final never opens an empty gate.
+//	allow-set (L3) = whitelist domains+ips ∪ role=permit(+route) rule_sets ∪
+//	                 custom/pack rules with Permit ∪ private CIDRs (when gate open)
+//	direct (L4)    = route-direct rule_sets + no-proxy domains+ips + private CIDRs
+//	proxy  (L4)    = route-proxy rule_sets
+//	catch-all      = Final when gate present OR posture=Split; else blocked
 //
-// The gate is ONE logical-or-invert rule that routes anything NOT in the
-// allow-set to the `blocked` outbound (NOT action:reject) so blocked
-// connections still pass the detector, keep their sniffed SNI, and can be
-// one-click allowed. When the allow-set is empty, NO gate is emitted and the
-// catch-all stays `blocked` (fail-closed default-deny). The whitelist never
-// picks an egress here — that is entirely the no-proxy list's / rule-sets' job.
+// Route-only sources (no-proxy, route-direct/proxy without permit, custom with
+// Permit=false) NEVER join the allow-set. When the allow-set is empty under
+// Strict, NO gate is emitted and the catch-all stays blocked (fail-closed).
+// Split skips the L3 gate (default-allow) and always flips catch-all to Final.
 //
-// Custom routing rules (cr) are the ordered, top-priority slice of L4: each
-// enabled rule routes its matcher to direct/proxy/blocked/<node>, evaluated in
-// order ABOVE the rule-set egress. A direct/proxy/node rule also joins the
-// allow-set (it implies "allow"); a block rule does not. A `node` rule whose
-// target tag isn't a current outbound (memberTags) is skipped entirely
-// (self-heal) so a removed node can't brick the box.
-func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets ruleset.Sets, dl directlist.Rules, cr customrules.Rules, memberTags []string, final string) error {
+// Custom routing rules (cr) are the ordered, top-priority slice of L4. A node
+// egress whose target tag isn't live is skipped (self-heal).
+func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets ruleset.Sets, dl directlist.Rules, cr customrules.Rules, memberTags []string, final, posture string) error {
 	routeRaw, ok := cfg["route"]
 	if !ok {
 		return nil
@@ -2187,113 +2274,87 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 		return err
 	}
 
-	// Allow rule_set tags by egress role (block-role is handled in injectRuleSets).
-	var directSetTags, proxySetTags, allowSetTags []string
+	var directSetTags, proxySetTags, permitSetTags []string
 	for _, rs := range sets.Sets {
 		if !rs.Enabled || rs.Tag == "" {
 			continue
 		}
-		switch rs.Role {
-		case apitypes.RuleRoleAllowDirect:
+		if apitypes.RuleRoleGrantsPermit(rs.Role) {
+			permitSetTags = append(permitSetTags, rs.Tag)
+		}
+		switch apitypes.RuleRoleRouteEgress(rs.Role) {
+		case "direct":
 			directSetTags = append(directSetTags, rs.Tag)
-			allowSetTags = append(allowSetTags, rs.Tag)
-		case apitypes.RuleRoleAllowProxy:
+		case "proxy":
 			proxySetTags = append(proxySetTags, rs.Tag)
-			allowSetTags = append(allowSetTags, rs.Tag)
 		}
 	}
 
 	wlSfx, wlRgx := splitDomainMatchers(wl.Domains)
 	dlSfx, dlRgx := splitDomainMatchers(dl.Domains)
 
-	// Custom routing rules (ordered): build the top-priority L4 egress slice and
-	// their allow-set sub-rules in one pass. node rules with a dead tag are
-	// skipped (self-heal). block rules route but do NOT join the allow-set.
 	members := map[string]bool{}
 	for _, t := range memberTags {
 		members[t] = true
 	}
 	var customEgress []json.RawMessage
 	var customSubRules []map[string]any
-	hasCustomAllow := false
+	hasCustomPermit := false
 	for _, rule := range cr.Rules {
 		if !rule.Enabled {
 			continue
 		}
+		apitypes.NormalizeCustomRule(&rule)
 		key, ok := customrules.SingboxMatchKey(rule.Match)
 		if !ok || rule.Value == "" {
 			continue
 		}
+		eg := rule.RouteEgress()
+		if eg == apitypes.CustomEgressNode && !members[rule.Node] {
+			continue
+		}
+		if rule.GrantsPermit() {
+			customSubRules = append(customSubRules, map[string]any{key: []string{rule.Value}})
+			hasCustomPermit = true
+		}
+		if eg == "" {
+			continue
+		}
 		var outbound string
-		switch rule.Action {
-		case apitypes.CustomActionDirect:
+		switch eg {
+		case apitypes.CustomEgressDirect:
 			outbound = "direct"
-		case apitypes.CustomActionProxy:
-			// Optional group target; fall back to the top proxy selector if the
-			// named group is gone (still honors "go through proxy").
+		case apitypes.CustomEgressProxy:
 			outbound = ProxyGroupTag
 			if rule.Node != "" && members[rule.Node] {
 				outbound = rule.Node
 			}
-		case apitypes.CustomActionBlock:
+		case apitypes.CustomEgressBlock:
 			outbound = "blocked"
-		case apitypes.CustomActionNode:
-			if !members[rule.Node] {
-				continue // self-heal: target node isn't a live outbound
-			}
+		case apitypes.CustomEgressNode:
 			outbound = rule.Node
 		default:
 			continue
 		}
 		r, _ := json.Marshal(map[string]any{key: []string{rule.Value}, "action": "route", "outbound": outbound})
 		customEgress = append(customEgress, r)
-		if rule.Action != apitypes.CustomActionBlock {
-			customSubRules = append(customSubRules, map[string]any{key: []string{rule.Value}})
-			hasCustomAllow = true
-		}
 	}
 
-	// Gate ONLY when the user actually allowed something. The built-in private
-	// CIDRs are not a user allow: with no whitelist / no-proxy / allow rule-set /
-	// custom allow rule, they must NOT open the gate — the catch-all stays
-	// blocked (fail-closed).
-	hasUserAllow := len(wlSfx) > 0 || len(wlRgx) > 0 || len(wl.IPs) > 0 ||
-		len(dlSfx) > 0 || len(dlRgx) > 0 || len(dl.IPs) > 0 || len(allowSetTags) > 0 || hasCustomAllow
-	if !hasUserAllow {
+	splitOpen := posture == apitypes.PostureSplit
+	// Gate ONLY when the user actually permitted something (Strict). Private
+	// CIDRs and no-proxy / route-only rule sets must NOT open the gate alone.
+	hasUserPermit := len(wlSfx) > 0 || len(wlRgx) > 0 || len(wl.IPs) > 0 ||
+		len(permitSetTags) > 0 || hasCustomPermit
+	if !hasUserPermit && !splitOpen {
 		return nil
 	}
 
-	// allow-set (L3) matchers = whitelist ∪ no-proxy ∪ private CIDRs ∪ allow sets.
-	allowSfx := append(append([]string(nil), wlSfx...), dlSfx...)
-	allowRgx := append(append([]string(nil), wlRgx...), dlRgx...)
-	allowIPs := append(append(append([]string(nil), wl.IPs...), dl.IPs...), privateCIDRs...)
-	// direct-bypass (L4) = no-proxy domains/ips + built-in private CIDRs.
+	allowSfx := append([]string(nil), wlSfx...)
+	allowRgx := append([]string(nil), wlRgx...)
+	allowIPs := append(append([]string(nil), wl.IPs...), privateCIDRs...)
 	directIPs := append(append([]string(nil), dl.IPs...), privateCIDRs...)
 
-	// L3 gate: one logical OR of every allow matcher, inverted -> blocked.
-	var subRules []map[string]any
-	if len(allowSfx) > 0 {
-		subRules = append(subRules, map[string]any{"domain_suffix": allowSfx})
-	}
-	if len(allowRgx) > 0 {
-		subRules = append(subRules, map[string]any{"domain_regex": allowRgx})
-	}
-	if len(allowIPs) > 0 {
-		subRules = append(subRules, map[string]any{"ip_cidr": allowIPs})
-	}
-	if len(allowSetTags) > 0 {
-		subRules = append(subRules, map[string]any{"rule_set": allowSetTags})
-	}
-	subRules = append(subRules, customSubRules...)
-	gate, _ := json.Marshal(map[string]any{
-		"type": "logical", "mode": "or", "rules": subRules,
-		"invert": true, "action": "route", "outbound": "blocked",
-	})
-
-	// L4 egress: custom rules first (ordered, user's explicit per-rule intent),
-	// then user no-proxy / private CIDRs, then allow-proxy rule sets, then
-	// allow-direct rule sets. Proxy-before-direct so geosite-google beats
-	// geosite-cn on overlaps (gvt2/beacons etc.).
+	// L4: custom → no-proxy → route-proxy RS → route-direct RS.
 	var egress []json.RawMessage
 	egress = append(egress, customEgress...)
 	if len(dlSfx) > 0 {
@@ -2317,6 +2378,30 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 		egress = append(egress, r)
 	}
 
+	var inserted []json.RawMessage
+	if !splitOpen {
+		var subRules []map[string]any
+		if len(allowSfx) > 0 {
+			subRules = append(subRules, map[string]any{"domain_suffix": allowSfx})
+		}
+		if len(allowRgx) > 0 {
+			subRules = append(subRules, map[string]any{"domain_regex": allowRgx})
+		}
+		if len(allowIPs) > 0 {
+			subRules = append(subRules, map[string]any{"ip_cidr": allowIPs})
+		}
+		if len(permitSetTags) > 0 {
+			subRules = append(subRules, map[string]any{"rule_set": permitSetTags})
+		}
+		subRules = append(subRules, customSubRules...)
+		gate, _ := json.Marshal(map[string]any{
+			"type": "logical", "mode": "or", "rules": subRules,
+			"invert": true, "action": "route", "outbound": "blocked",
+		})
+		inserted = append(inserted, gate)
+	}
+	inserted = append(inserted, egress...)
+
 	var rules []json.RawMessage
 	if raw, ok := route["rules"]; ok {
 		if err := json.Unmarshal(raw, &rules); err != nil {
@@ -2325,18 +2410,11 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	}
 	catchIdx := catchAllIdx(rules)
 
-	inserted := make([]json.RawMessage, 0, 1+len(egress))
-	inserted = append(inserted, gate)
-	inserted = append(inserted, egress...)
-
 	merged := make([]json.RawMessage, 0, len(rules)+len(inserted))
 	merged = append(merged, rules[:catchIdx]...)
 	merged = append(merged, inserted...)
 	merged = append(merged, rules[catchIdx:]...)
 
-	// Flip the catch-all default egress from blocked -> Final (gate present):
-	// allowed traffic that no L4 rule routed uses the configured Final outbound
-	// (proxy/direct/blocked/<node>; unknown node tags self-heal to proxy).
 	newCatchIdx := catchIdx + len(inserted)
 	if newCatchIdx < len(merged) {
 		var catchRule map[string]any
@@ -2362,6 +2440,15 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	}
 	cfg["route"] = nrt
 	return nil
+}
+
+func sliceHas(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveFinal picks the catch-all outbound (self-heals unknown node tags).

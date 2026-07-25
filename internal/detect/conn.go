@@ -1,6 +1,7 @@
 package detect
 
 import (
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -8,7 +9,8 @@ import (
 
 // Wrap returns conn wrapped so bytes are counted into ev. Read (bytes from the
 // client, heading out) counts as upload; Write (bytes back to the client) as
-// download. finalize() runs once on Close.
+// download. finalize() runs once on Close. Mid-stream, a large upload to a
+// non-whitelist destination kills the connection when auto-block is on.
 func (e *Engine) Wrap(conn net.Conn, ev *Event) net.Conn {
 	return &countConn{Conn: conn, ev: ev, engine: e}
 }
@@ -18,12 +20,20 @@ type countConn struct {
 	ev     *Event
 	engine *Engine
 	once   sync.Once
+	killed atomic.Bool
 }
 
 func (c *countConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
 	if n > 0 {
-		atomic.AddInt64(&c.ev.Upload, int64(n))
+		up := atomic.AddInt64(&c.ev.Upload, int64(n))
+		if !c.killed.Load() && c.engine.checkExfilMidStream(c.ev, up) {
+			c.killed.Store(true)
+			_ = c.Conn.Close()
+			if err == nil {
+				err = io.EOF
+			}
+		}
 	}
 	return n, err
 }

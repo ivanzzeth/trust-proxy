@@ -100,3 +100,28 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 }
+
+// handleTraffic streams Clash /traffic ({up,down} bytes/sec) as SSE.
+func (s *Server) handleTraffic(w http.ResponseWriter, r *http.Request) {
+	if s.clash == nil {
+		writeErr(w, http.StatusServiceUnavailable, "clash api not available")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeErr(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher.Flush()
+
+	_ = s.clash.StreamTraffic(r.Context(), func(raw []byte) error {
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", raw); err != nil {
+			return err
+		}
+		flusher.Flush()
+		return nil
+	})
+}

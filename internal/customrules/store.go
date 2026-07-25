@@ -1,10 +1,8 @@
-// Package customrules persists the ordered custom routing rules (the L4 /
-// routing layer). Each rule maps a matcher to an egress: direct / proxy /
-// block / a specific node outbound. Order is priority (first-match). This is
-// the general form of the no-proxy list (internal/directlist) — it adds the
-// proxy/block/node actions, keyword/regex/exact matchers, and explicit
-// ordering. The gateway injects enabled rules into route.rules above the
-// rule-set egress; direct/proxy/node rules also join the ACL allow-set.
+// Package customrules persists ordered policy rules on the Permit and/or Route
+// axes. Each rule has a matcher plus optional Permit (L3) and Egress (L4).
+// Order is priority for routing (first-match). The gateway injects enabled
+// rules: permit matchers join the ACL allow-set; egress emits route rules
+// above rule-set egress. Route never opens the gate by itself.
 package customrules
 
 import (
@@ -45,38 +43,46 @@ func SingboxMatchKey(match string) (string, bool) {
 	}
 }
 
-func validAction(a string) bool {
+func validEgress(a string) bool {
 	switch a {
-	case apitypes.CustomActionDirect, apitypes.CustomActionProxy, apitypes.CustomActionBlock, apitypes.CustomActionNode:
+	case apitypes.CustomEgressDirect, apitypes.CustomEgressProxy, apitypes.CustomEgressBlock,
+		apitypes.CustomEgressNode, apitypes.CustomEgressNone, "":
 		return true
 	}
 	return false
 }
 
 // validate normalizes and checks a rule; returns an error if it can't be a
-// valid sing-box route rule.
+// valid policy rule.
 func validate(r *apitypes.CustomRule) error {
+	apitypes.NormalizeCustomRule(r)
 	r.Match = strings.TrimSpace(r.Match)
 	r.Value = strings.TrimSpace(r.Value)
 	r.Action = strings.TrimSpace(r.Action)
+	r.Egress = strings.TrimSpace(r.Egress)
 	r.Node = strings.TrimSpace(r.Node)
-	r.Pack = strings.TrimSpace(r.Pack) // free-form group label, no validation
+	r.Pack = strings.TrimSpace(r.Pack)
 	if _, ok := SingboxMatchKey(r.Match); !ok {
 		return fmt.Errorf("invalid match kind %q", r.Match)
 	}
 	if r.Value == "" {
 		return fmt.Errorf("value is required")
 	}
-	if !validAction(r.Action) {
+	eg := r.RouteEgress()
+	if r.Egress != "" && !validEgress(r.Egress) {
+		return fmt.Errorf("invalid egress %q", r.Egress)
+	}
+	if r.Action != "" && !validEgress(r.Action) && r.Action != apitypes.CustomEgressNone {
 		return fmt.Errorf("invalid action %q", r.Action)
 	}
-	// Node names a target outbound (a node OR a proxy group). Required for the
-	// node action; optional for proxy (empty = the top `proxy` selector, else a
-	// specific group); meaningless for direct/block.
-	if r.Action == apitypes.CustomActionNode && r.Node == "" {
-		return fmt.Errorf("action %q requires a target", r.Action)
+	// Must grant permit and/or select an egress (block counts as egress).
+	if !r.GrantsPermit() && eg == "" {
+		return fmt.Errorf("rule must set permit and/or egress")
 	}
-	if r.Action != apitypes.CustomActionNode && r.Action != apitypes.CustomActionProxy {
+	if eg == apitypes.CustomEgressNode && r.Node == "" {
+		return fmt.Errorf("egress %q requires a target", eg)
+	}
+	if eg != apitypes.CustomEgressNode && eg != apitypes.CustomEgressProxy {
 		r.Node = ""
 	}
 	switch r.Match {
@@ -105,7 +111,15 @@ func validCIDR(s string) bool {
 }
 
 func idFor(r apitypes.CustomRule) string {
-	sum := sha256.Sum256([]byte(r.Match + "|" + r.Value + "|" + r.Action + "|" + r.Node))
+	eg := r.RouteEgress()
+	if eg == "" {
+		eg = r.Egress
+	}
+	permit := "0"
+	if r.GrantsPermit() {
+		permit = "1"
+	}
+	sum := sha256.Sum256([]byte(r.Match + "|" + r.Value + "|" + eg + "|" + r.Node + "|" + permit))
 	return hex.EncodeToString(sum[:])[:12]
 }
 
@@ -230,6 +244,16 @@ func (s *Store) Update(id string, p apitypes.PatchCustomRuleRequest) (Rules, err
 	}
 	if p.Action != nil {
 		r.Action = *p.Action
+		r.Egress = *p.Action
+	}
+	if p.Egress != nil {
+		r.Egress = *p.Egress
+		if *p.Egress != apitypes.CustomEgressNone {
+			r.Action = *p.Egress
+		}
+	}
+	if p.Permit != nil {
+		r.Permit = p.Permit
 	}
 	if p.Node != nil {
 		r.Node = *p.Node

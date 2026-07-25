@@ -47,6 +47,7 @@ func TestApplyProfile_FullPolicyRollback(t *testing.T) {
 		apitypes.DNSConfig{Final: "doh", Servers: []apitypes.DNSServer{{Tag: "doh", Type: "https"}}},
 		ModeSystem,
 		"direct",
+		"",
 	)
 	if err == nil {
 		t.Fatal("expected ApplyProfile to fail on missing config")

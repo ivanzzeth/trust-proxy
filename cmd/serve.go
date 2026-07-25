@@ -31,6 +31,8 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/inbound"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
+	"github.com/ivanzzeth/trust-proxy/internal/policymigrate"
+	"github.com/ivanzzeth/trust-proxy/internal/posture"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
@@ -141,6 +143,10 @@ func runServe() error {
 		return err
 	}
 
+	if err := policymigrate.Run(serveDataDir); err != nil {
+		log.Printf("policy migrate: %v", err)
+	}
+
 	wlStore, err := whitelist.NewStore(serveDataDir + "/whitelist.json")
 	if err != nil {
 		return err
@@ -176,8 +182,25 @@ func runServe() error {
 		return err
 	}
 	engine.SetOnFinalize(histStore.Record)
+
+	detStore, err := detect.NewStore(filepath.Join(serveDataDir, "detections.jsonl"))
+	if err != nil {
+		return err
+	}
+	engine.SetOnDetection(detStore.Record)
 	// Static demo indicators (always on, for testing); the live feed adds to these.
 	engine.LoadThreats([]string{"malware.test", "c2.example.com"}, nil)
+
+	// Large upload to a destination that is NOT permitted (whitelist OR
+	// pack/custom Permit rules) is treated as exfil when auto-block is on.
+	// Packs like Cursor open the ACL gate via customrules — they must also
+	// count as trusted here, or Agent uploads to *.cursor.sh get killed.
+	engine.SetTrustedDest(func(host, dest string) bool {
+		if whitelist.Matches(wlStore.Get(), host, dest) {
+			return true
+		}
+		return customrules.MatchesPermit(crStore.Get(), host, dest)
+	})
 
 	// Restore the persisted audit log so events survive a restart.
 	eventsPath := filepath.Join(serveDataDir, "events.json")
@@ -237,6 +260,10 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	postureStore, err := posture.NewStore(serveDataDir + "/posture.json")
+	if err != nil {
+		return err
+	}
 
 	store, err := subscription.NewStore(serveDataDir + "/subscriptions.json")
 	if err != nil {
@@ -245,6 +272,7 @@ func runServe() error {
 
 	mgr := gateway.NewManager(serveConfig, serveDataDir, wlStore.Get(), engine, secret)
 	mgr.SetInitialMode(serveMode)
+	mgr.SetInitialPosture(postureStore.Active())
 	mgr.SetInitialFinal(finalStore.Get().Outbound)
 	mgr.SetInitialBlacklist(blStore.Get())
 	mgr.SetInitialDirectList(dlStore.Get())
@@ -256,6 +284,31 @@ func runServe() error {
 	mgr.SetInitialTUN(tunStore.Get())
 	mgr.SetInitialEndpoints(epStore.All())
 	mgr.SetInitialManagementPorts(managementPorts(serveMgmtPorts, serveAPIAddr))
+	// Auto-ban sink: threat-intel / non-permitted large upload → blacklist + hot reload.
+	engine.SetOnBan(func(domain, ip, reason string) {
+		changed := false
+		if domain != "" {
+			if _, err := blStore.AddDomain(domain); err != nil {
+				log.Printf("auto-ban domain %q: %v", domain, err)
+			} else {
+				changed = true
+			}
+		}
+		if ip != "" {
+			if _, err := blStore.AddIP(ip); err != nil {
+				log.Printf("auto-ban ip %q: %v", ip, err)
+			} else {
+				changed = true
+			}
+		}
+		if !changed {
+			return
+		}
+		log.Printf("auto-ban: domain=%q ip=%q (%s)", domain, ip, reason)
+		if err := mgr.SetBlacklist(blStore.Get()); err != nil {
+			log.Printf("auto-ban apply blacklist: %v", err)
+		}
+	})
 	// Re-apply the previously-applied subscription so a restart/upgrade keeps the
 	// exit node instead of dropping to a direct-only proxy group (which is "no
 	// net" on a box whose only egress is the node).
@@ -291,6 +344,7 @@ func runServe() error {
 		RSApplier:   mgr,
 		Profiles:    profStore,
 		ProfApplier: mgr,
+		Posture:     postureStore,
 		Final:       finalStore,
 		FinalApplier: mgr,
 		DNS:         dnsStore,
@@ -302,12 +356,14 @@ func runServe() error {
 		Endpoints:   epStore,
 		EPApplier:   mgr,
 		History:     histStore,
+		Detections:  detStore,
 		Nodes:       nodesStore,
 		Token:       serveAPIToken,
 		Clash:       clash.New(serveClashAddr, secret),
 		ConsoleDir:  serveConsoleDir,
 		ConsoleFS:   embeddedUI,
 	})
+	apiSrv.SyncActivePostureSlot()
 	go func() {
 		if err := apiSrv.Start(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Println("backend api:", err)

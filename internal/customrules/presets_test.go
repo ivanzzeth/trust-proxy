@@ -69,6 +69,8 @@ func TestPresets_ExitMatchesRules(t *testing.T) {
 				if r.Action != apitypes.CustomActionDirect || r.Node != "" {
 					t.Fatalf("preset %q (direct) rule %q: action=%q node=%q, want direct", p.Name, r.Value, r.Action, r.Node)
 				}
+			case "":
+				// Permit-only packs (e.g. China wide) have no Exit hint.
 			default:
 				t.Fatalf("preset %q: unknown Exit %q", p.Name, p.Exit)
 			}
@@ -95,9 +97,9 @@ func TestPresets_ImportThroughStore(t *testing.T) {
 	}
 }
 
-// Google (and similar broad packs) must bind community geosite rule sets — not
-// a hand-maintained gvt2/gvt3 domain table. That is the "stop playing whack-a-
-// mole with companion domains" contract.
+// Google binds community geosite rule sets for broad coverage, plus a small
+// pinned login-host list so accounts.* / gstatic assets always take proxy
+// ahead of China-direct (geosite overlap / missing entries caused sign-in RST).
 func TestPresets_GoogleBindsGeosite(t *testing.T) {
 	var google *apitypes.PackPreset
 	for i := range Presets {
@@ -120,13 +122,83 @@ func TestPresets_GoogleBindsGeosite(t *testing.T) {
 			t.Fatalf("Google preset missing rule_set %q", tag)
 		}
 	}
-	if len(google.Rules) > 0 {
-		t.Fatalf("Google should be rule-set-only (no hand domain list), got %d rules", len(google.Rules))
+	wantLogin := map[string]bool{
+		"accounts.google.com": false, "accounts.youtube.com": false,
+		"ssl.gstatic.com": false, "accounts.gstatic.com": false,
+	}
+	for _, r := range google.Rules {
+		if r.Action != apitypes.CustomActionProxy {
+			t.Fatalf("Google login pin %q must be proxy, got %s", r.Value, r.Action)
+		}
+		if _, ok := wantLogin[r.Value]; ok {
+			wantLogin[r.Value] = true
+		}
+	}
+	for d, ok := range wantLogin {
+		if !ok {
+			t.Fatalf("Google preset missing login pin %q", d)
+		}
 	}
 }
 
-// Catalog JSON must never emit "rules": null — the dashboard (and any client)
-// treats Rules as an array and reads .length.
+func TestPresets_CursorCoversAgentNetwork(t *testing.T) {
+	var cursor *apitypes.PackPreset
+	for i := range Presets {
+		if Presets[i].Name == "Cursor" {
+			cursor = &Presets[i]
+			break
+		}
+	}
+	if cursor == nil {
+		t.Fatal("Cursor preset missing")
+	}
+	want := map[string]bool{
+		"cursor.com": false, "cursor.sh": false,
+		"cursorapi.com": false, "cursor-cdn.com": false, "cursorvm.com": false,
+		"todesktop.com": false,
+	}
+	for _, r := range cursor.Rules {
+		if _, ok := want[r.Value]; ok {
+			want[r.Value] = true
+		}
+		if r.Node != "" && r.Node != "🌏 Overseas" {
+			// overseasRules pins OverseasGroupTag
+		}
+	}
+	for d, ok := range want {
+		if !ok {
+			t.Fatalf("Cursor preset missing %q (needed under TUN for Agent/tools)", d)
+		}
+	}
+}
+
+func TestPresets_ChinaAxesSplit(t *testing.T) {
+	var wide, direct *apitypes.PackPreset
+	for i := range Presets {
+		switch Presets[i].Name {
+		case "China (wide)":
+			wide = &Presets[i]
+		case "China-direct":
+			direct = &Presets[i]
+		}
+	}
+	if wide == nil || direct == nil {
+		t.Fatal("China (wide) and China-direct presets required")
+	}
+	if wide.Warning == "" {
+		t.Fatal("China (wide) must warn about security trade-off")
+	}
+	if len(wide.RuleSets) != 1 || wide.RuleSets[0].Role != apitypes.RuleRolePermit {
+		t.Fatalf("China (wide) should be permit-only geosite-cn, got %+v", wide.RuleSets)
+	}
+	if len(direct.RuleSets) != 1 || direct.RuleSets[0].Role != apitypes.RuleRoleRouteDirect {
+		t.Fatalf("China-direct should be route-direct only, got %+v", direct.RuleSets)
+	}
+	merged := apitypes.MergeRuleRoles(wide.RuleSets[0].Role, direct.RuleSets[0].Role)
+	if merged != apitypes.RuleRolePermitRouteDirect {
+		t.Fatalf("both China packs should compose to permit+route-direct, got %q", merged)
+	}
+}
 func TestPresets_RulesJSONNeverNull(t *testing.T) {
 	for _, p := range Presets {
 		if p.Rules == nil {

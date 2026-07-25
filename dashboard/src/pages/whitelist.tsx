@@ -11,7 +11,14 @@ import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 
-export default function Whitelist({ embedded }: { embedded?: boolean }) {
+export default function Whitelist({
+  embedded,
+  section = 'all',
+}: {
+  embedded?: boolean;
+  /** permit = destinations only; subjects = process/device; all = both */
+  section?: 'all' | 'permit' | 'subjects';
+}) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { data: wl } = useQuery({ queryKey: ['whitelist'], queryFn: api.whitelist });
@@ -29,49 +36,66 @@ export default function Whitelist({ embedded }: { embedded?: boolean }) {
     onSuccess: invalidate,
   });
 
+  const showPermit = section === 'all' || section === 'permit';
+  const showSubjects = section === 'all' || section === 'subjects';
+
   return (
     <div>
       {!embedded && <PageHeader title={t('nav.whitelist')} description={t('pages.whitelist.desc')} />}
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <WLCard
-          type="domain"
-          icon={Globe}
-          title={t('pages.whitelist.domains')}
-          hint={t('pages.whitelist.domainsHint')}
-          placeholder={t('pages.whitelist.domainsPh')}
-          items={wl?.domains ?? []}
-          onAdd={(v) => add.mutate({ type: 'domain', value: v })}
-          onDel={(v) => del.mutate({ type: 'domain', value: v })}
-        />
-        <WLCard
-          type="ip"
-          icon={Network}
-          title={t('pages.whitelist.ip')}
-          placeholder={t('pages.whitelist.ipPh')}
-          items={wl?.ips ?? []}
-          onAdd={(v) => add.mutate({ type: 'ip', value: v })}
-          onDel={(v) => del.mutate({ type: 'ip', value: v })}
-        />
-        <WLCard
-          type="process"
-          icon={Cpu}
-          title={t('pages.whitelist.processes')}
-          hint={t('pages.whitelist.processesHint')}
-          placeholder={t('pages.whitelist.processesPh')}
-          items={wl?.processes ?? []}
-          onAdd={(v) => add.mutate({ type: 'process', value: v })}
-          onDel={(v) => del.mutate({ type: 'process', value: v })}
-        />
-        <WLCard
-          type="device"
-          icon={MonitorSmartphone}
-          title={t('pages.whitelist.devices')}
-          hint={t('pages.whitelist.devicesHint')}
-          placeholder={t('pages.whitelist.devicesPh')}
-          items={wl?.devices ?? []}
-          onAdd={(v) => add.mutate({ type: 'device', value: v })}
-          onDel={(v) => del.mutate({ type: 'device', value: v })}
-        />
+      {section === 'permit' && (
+        <p className="mb-4 text-xs text-muted-foreground">{t('pages.acls.permitHint')}</p>
+      )}
+      {section === 'subjects' && (
+        <p className="mb-4 text-xs text-muted-foreground">{t('pages.acls.subjectsHint')}</p>
+      )}
+      <div className={`grid gap-4 md:grid-cols-2 ${section === 'all' ? 'xl:grid-cols-4' : ''}`}>
+        {showPermit && (
+          <>
+            <WLCard
+              type="domain"
+              icon={Globe}
+              title={t('pages.whitelist.domains')}
+              hint={t('pages.whitelist.domainsHint')}
+              placeholder={t('pages.whitelist.domainsPh')}
+              items={wl?.domains ?? []}
+              onAdd={(v) => add.mutate({ type: 'domain', value: v })}
+              onDel={(v) => del.mutate({ type: 'domain', value: v })}
+            />
+            <WLCard
+              type="ip"
+              icon={Network}
+              title={t('pages.whitelist.ip')}
+              placeholder={t('pages.whitelist.ipPh')}
+              items={wl?.ips ?? []}
+              onAdd={(v) => add.mutate({ type: 'ip', value: v })}
+              onDel={(v) => del.mutate({ type: 'ip', value: v })}
+            />
+          </>
+        )}
+        {showSubjects && (
+          <>
+            <WLCard
+              type="process"
+              icon={Cpu}
+              title={t('pages.whitelist.processes')}
+              hint={t('pages.whitelist.processesHint')}
+              placeholder={t('pages.whitelist.processesPh')}
+              items={wl?.processes ?? []}
+              onAdd={(v) => add.mutate({ type: 'process', value: v })}
+              onDel={(v) => del.mutate({ type: 'process', value: v })}
+            />
+            <WLCard
+              type="device"
+              icon={MonitorSmartphone}
+              title={t('pages.whitelist.devices')}
+              hint={t('pages.whitelist.devicesHint')}
+              placeholder={t('pages.whitelist.devicesPh')}
+              items={wl?.devices ?? []}
+              onAdd={(v) => add.mutate({ type: 'device', value: v })}
+              onDel={(v) => del.mutate({ type: 'device', value: v })}
+            />
+          </>
+        )}
       </div>
     </div>
   );

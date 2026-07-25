@@ -1,7 +1,7 @@
 export default {
   en: {
     title: 'Rule Sets',
-    description: 'Import public sing-box rule sets (geosite/geoip/ad-block). Roles inject into the default-deny route.',
+    description: 'Import public sing-box rule sets. Roles are orthogonal: permit (open gate), route-direct/proxy (egress only), deny (L1 reject), or permit+route-*.',
     catalogTitle: 'Catalog',
     addUrlTitle: 'Add by URL',
     importedBadge: 'imported',
@@ -10,7 +10,7 @@ export default {
     tagPlaceholder: 'tag (unique)',
     urlPlaceholder: 'https://…/xxx.srs  (or .json)',
     addButton: 'Add',
-    roleHint: 'block sits above the whitelist (reject); allow-* sit just above the catch-all.',
+    roleHint: 'deny = L1 reject; permit = L3 allow-set only; route-* = L4 egress only; permit+route-* = both (legacy allow-* migrated here).',
     importedTableTitle: 'Imported',
     columnOn: 'On',
     columnName: 'Name',
@@ -26,7 +26,7 @@ export default {
   },
   zh: {
     title: '规则集',
-    description: '导入公共 sing-box 规则集（geosite/geoip/广告拦截）。角色决定注入默认拒绝路由的位置。',
+    description: '导入公共 sing-box 规则集。角色正交：permit（开闸）、route-direct/proxy（仅出口）、deny（L1 硬拒）、或 permit+route-*。',
     catalogTitle: '规则集目录',
     addUrlTitle: '按 URL 添加',
     importedBadge: '已导入',
@@ -35,7 +35,7 @@ export default {
     tagPlaceholder: '标签（唯一）',
     urlPlaceholder: 'https://…/xxx.srs（或 .json）',
     addButton: '添加',
-    roleHint: 'block 位于白名单（拒绝）之上；allow-* 位于兜底规则之上。',
+    roleHint: 'deny = L1 硬拒；permit = 仅 L3 允许集；route-* = 仅 L4 出口；permit+route-* = 两者（旧 allow-* 迁移至此）。',
     importedTableTitle: '已导入',
     columnOn: '启用',
     columnName: '名称',

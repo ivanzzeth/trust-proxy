@@ -1,12 +1,11 @@
-// Package detect is the detection engine: every routed (allowed) connection is
-// recorded as an event, byte-counted, and scored against detection rules
-// (threat-intel domain/IP match, abnormally large upload = possible exfil).
-// The console reads these via /api/events.
+// Package detect is the detection engine: every routed connection is recorded,
+// byte-counted, and scored (threat-intel, exfil, beacon, DGA). Alerts emit
+// Detection records into an optional durable store; the console reads them via
+// /api/detections. Connection history still flows through Event finalize.
 package detect
 
 import (
 	"fmt"
-	"math"
 	"net"
 	"strconv"
 	"strings"
@@ -14,25 +13,6 @@ import (
 	"sync/atomic"
 	"time"
 )
-
-// Event is one observed egress connection plus its detection verdict.
-type Event struct {
-	ID          uint64   `json:"id"`
-	Time        string   `json:"time"`
-	Network     string   `json:"network"`
-	Host        string   `json:"host"`
-	Destination string   `json:"destination"`
-	Source      string   `json:"source"`
-	Process     string   `json:"process"`
-	Rule        string   `json:"rule"`
-	Outbound    string   `json:"outbound"`
-	Upload      int64    `json:"upload"`
-	Download    int64    `json:"download"`
-	Level       string   `json:"level"`             // "info" | "alert"
-	Block       bool     `json:"block,omitempty"`   // high-confidence (threat-intel) => auto-block eligible
-	Denied      bool     `json:"denied,omitempty"`  // routed to the block outbound (default-deny / blacklist)
-	Reasons     []string `json:"reasons,omitempty"`
-}
 
 // Engine holds a ring buffer of recent events and the detection config.
 type Engine struct {
@@ -64,24 +44,30 @@ type Engine struct {
 	dgaEnabled bool
 	dnsParents map[string]*parentState
 
-	onFinalize func(Event) // called with the completed connection (history sink)
+	onFinalize   func(Event)     // completed connection (history sink)
+	onDetection  func(Detection) // alert findings (detections store)
+	trustedDest  func(host, destination string) bool
+	onBan        func(domain, ip, reason string)
 }
 
 // SetOnFinalize registers a sink invoked once per connection when it closes,
 // with final byte counts. Set before traffic starts (not synchronized).
 func (e *Engine) SetOnFinalize(fn func(Event)) { e.onFinalize = fn }
 
-type beaconState struct {
-	times     []time.Time
-	lastAlert time.Time
+// SetOnDetection registers a sink for each Detection finding (intel/exfil/…).
+func (e *Engine) SetOnDetection(fn func(Detection)) { e.onDetection = fn }
+
+// SetTrustedDest registers a predicate: true => destination is on the Permit
+// whitelist (large upload will not auto-block / auto-ban).
+func (e *Engine) SetTrustedDest(fn func(host, destination string) bool) {
+	e.trustedDest = fn
 }
 
-type parentState struct {
-	subs      map[string]struct{}
-	lastAlert time.Time
+// SetOnBan registers a sink that adds an auto-blocked destination to the
+// deny-list (domain and/or IP). Called once per ban decision.
+func (e *Engine) SetOnBan(fn func(domain, ip, reason string)) {
+	e.onBan = fn
 }
-
-const beaconWindow = 20 // per-destination connection timestamps kept
 
 // New builds an engine keeping the last `capacity` events.
 func New(capacity int) *Engine {
@@ -108,20 +94,6 @@ func New(capacity int) *Engine {
 	}
 }
 
-// SetBeaconing toggles beaconing detection.
-func (e *Engine) SetBeaconing(v bool) {
-	e.mu.Lock()
-	e.beaconEnabled = v
-	e.mu.Unlock()
-}
-
-// SetDGA toggles DGA / DNS-tunnel domain scoring.
-func (e *Engine) SetDGA(v bool) {
-	e.mu.Lock()
-	e.dgaEnabled = v
-	e.mu.Unlock()
-}
-
 // SetAutoBlock toggles auto-disposal: alert connections are dropped.
 func (e *Engine) SetAutoBlock(v bool) {
 	e.mu.Lock()
@@ -134,56 +106,6 @@ func (e *Engine) AutoBlock() bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.autoBlock
-}
-
-// SetFeedThreats replaces the feed-sourced indicator set (from a threat feed
-// refresh). Static indicators from LoadThreats are kept separately.
-func (e *Engine) SetFeedThreats(domains, ips []string) {
-	dm := make(map[string]struct{}, len(domains))
-	im := make(map[string]struct{}, len(ips))
-	for _, d := range domains {
-		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
-			dm[d] = struct{}{}
-		}
-	}
-	for _, ip := range ips {
-		if ip = strings.TrimSpace(ip); ip != "" {
-			im[ip] = struct{}{}
-		}
-	}
-	e.mu.Lock()
-	e.feedDomains, e.feedIPs = dm, im
-	e.mu.Unlock()
-}
-
-// ThreatCounts returns (static+feed) indicator counts for status.
-func (e *Engine) ThreatCounts() (domains, ips int) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return len(e.threatDomains) + len(e.feedDomains), len(e.threatIPs) + len(e.feedIPs)
-}
-
-// LoadThreats adds C2/malware indicators (domains and IPs) to match against.
-func (e *Engine) LoadThreats(domains, ips []string) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	for _, d := range domains {
-		if d = strings.ToLower(strings.TrimSpace(d)); d != "" {
-			e.threatDomains[d] = struct{}{}
-		}
-	}
-	for _, ip := range ips {
-		if ip = strings.TrimSpace(ip); ip != "" {
-			e.threatIPs[ip] = struct{}{}
-		}
-	}
-}
-
-// SetUploadAlert sets the upload byte threshold for the exfil alert.
-func (e *Engine) SetUploadAlert(bytes int64) {
-	e.mu.Lock()
-	e.uploadAlertBytes = bytes
-	e.mu.Unlock()
 }
 
 // Track records a new connection event, runs connection-time detection, and
@@ -201,26 +123,10 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 	if strings.HasPrefix(outbound, "block/") {
 		ev.Denied = true
 	}
-	// threat-intel match (domain + destination IP), against static + feed sets.
-	// These are high-confidence => Block (auto-disposal eligible).
-	if host != "" {
-		h := strings.ToLower(host)
-		_, s1 := e.threatDomains[h]
-		_, s2 := e.feedDomains[h]
-		if s1 || s2 {
-			ev.Level = "alert"
-			ev.Block = true
-			ev.Reasons = append(ev.Reasons, "threat-intel domain match: "+host)
-		}
-	}
-	if ip := hostOnly(dst); ip != "" {
-		_, s1 := e.threatIPs[ip]
-		_, s2 := e.feedIPs[ip]
-		if s1 || s2 {
-			ev.Level = "alert"
-			ev.Block = true
-			ev.Reasons = append(ev.Reasons, "threat-intel IP match: "+ip)
-		}
+
+	var pending []Detection
+	if rs := e.matchThreatLocked(ev, host, dst); len(rs) > 0 {
+		pending = append(pending, e.makeDetectionLocked(KindIntel, e.disposalActionLocked(), ev, rs))
 	}
 	// beaconing: periodic connections to the same destination = possible C2
 	// heartbeat. Heuristic => alert only (NOT auto-blocked).
@@ -232,6 +138,7 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 		if r := e.recordBeacon(key, now); r != "" {
 			ev.Level = "alert"
 			ev.Reasons = append(ev.Reasons, r)
+			pending = append(pending, e.makeDetectionLocked(KindBeacon, ActionAlert, ev, []string{r}))
 		}
 	}
 	// DGA / DNS-tunnel scoring on the domain (heuristic => alert only).
@@ -239,6 +146,7 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 		if rs := e.analyzeDomain(host, now); len(rs) > 0 {
 			ev.Level = "alert"
 			ev.Reasons = append(ev.Reasons, rs...)
+			pending = append(pending, e.makeDetectionLocked(KindDGA, ActionAlert, ev, rs))
 		}
 	}
 	e.events = append(e.events, ev)
@@ -246,7 +154,44 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 		e.events = e.events[len(e.events)-e.cap:]
 	}
 	e.mu.Unlock()
+
+	for _, d := range pending {
+		e.fireDetection(d)
+	}
 	return ev
+}
+
+// disposalActionLocked: auto-block + ban sink => banned; auto-block only => blocked; else alert.
+// Caller holds e.mu.
+func (e *Engine) disposalActionLocked() Action {
+	if !e.autoBlock {
+		return ActionAlert
+	}
+	if e.onBan == nil {
+		return ActionBlocked
+	}
+	return ActionBanned
+}
+
+func (e *Engine) makeDetectionLocked(kind Kind, action Action, ev *Event, reasons []string) Detection {
+	return Detection{
+		Time:        ev.Time,
+		Kind:        kind,
+		Host:        ev.Host,
+		Destination: ev.Destination,
+		Process:     ev.Process,
+		Upload:      atomic.LoadInt64(&ev.Upload),
+		Download:    atomic.LoadInt64(&ev.Download),
+		Action:      action,
+		Reasons:     append([]string(nil), reasons...),
+		EventID:     ev.ID,
+	}
+}
+
+func (e *Engine) fireDetection(d Detection) {
+	if e.onDetection != nil {
+		e.onDetection(d)
+	}
 }
 
 // RestoreEvents loads a previously persisted snapshot (newest-first, as produced
@@ -266,174 +211,34 @@ func (e *Engine) RestoreEvents(evs []Event) {
 	}
 }
 
-// recordBeacon appends a connection time for key and returns a non-empty alert
-// reason when the inter-arrival pattern looks like a regular C2 heartbeat.
-// Caller must hold e.mu.
-func (e *Engine) recordBeacon(key string, now time.Time) string {
-	if key == "" {
-		return ""
-	}
-	// Bound memory: opportunistically drop destinations idle beyond the window.
-	if len(e.beacons) > 4096 {
-		for k, st := range e.beacons {
-			if len(st.times) == 0 || now.Sub(st.times[len(st.times)-1]) > e.beaconMaxIntvl {
-				delete(e.beacons, k)
-			}
-		}
-	}
-	bs := e.beacons[key]
-	if bs == nil {
-		bs = &beaconState{}
-		e.beacons[key] = bs
-	}
-	bs.times = append(bs.times, now)
-	if len(bs.times) > beaconWindow {
-		bs.times = bs.times[len(bs.times)-beaconWindow:]
-	}
-	if len(bs.times) < e.beaconMinSample {
-		return ""
-	}
-	intervals := make([]float64, 0, len(bs.times)-1)
-	for i := 1; i < len(bs.times); i++ {
-		intervals = append(intervals, bs.times[i].Sub(bs.times[i-1]).Seconds())
-	}
-	mean, cv := meanCV(intervals)
-	if mean < e.beaconMinIntvl.Seconds() || mean > e.beaconMaxIntvl.Seconds() || cv > e.beaconCV {
-		return ""
-	}
-	if !bs.lastAlert.IsZero() && now.Sub(bs.lastAlert) < e.beaconReAlert {
-		return ""
-	}
-	bs.lastAlert = now
-	return fmt.Sprintf("beaconing to %s: %d conns, ~%.0fs interval (cv %.2f) — possible C2", key, len(bs.times), mean, cv)
-}
-
-// analyzeDomain flags DGA-like registrable labels, long high-entropy subdomain
-// labels (data-encoding = DNS tunnel), and a high count of distinct subdomains
-// under one parent (tunneling / fast-flux). Heuristic; caller holds e.mu.
-func (e *Engine) analyzeDomain(host string, now time.Time) []string {
-	h := strings.ToLower(strings.TrimSuffix(host, "."))
-	if h == "" || net.ParseIP(h) != nil {
-		return nil
-	}
-	labels := strings.Split(h, ".")
-	if len(labels) < 2 {
-		return nil
-	}
-	var reasons []string
-	sld := labels[len(labels)-2]
-	// DGA: long, high-entropy second-level label that is digit-heavy or
-	// vowel-starved (kq3v9z7x1p2m.com), unlike real brands.
-	if len(sld) >= 12 && shannon(sld) >= 3.8 && (digitRatio(sld) >= 0.25 || vowelRatio(sld) <= 0.2) {
-		reasons = append(reasons, fmt.Sprintf("DGA-like domain %q (entropy %.1f) — possible malware C2", sld, shannon(sld)))
-	}
-	// Tunnel: a single long, high-entropy subdomain label encodes data.
-	for _, lab := range labels[:len(labels)-2] {
-		if len(lab) >= 25 && shannon(lab) >= 4.0 {
-			reasons = append(reasons, fmt.Sprintf("long high-entropy subdomain label (%d chars) — possible DNS tunnel", len(lab)))
-			break
-		}
-	}
-	// Volume: many distinct subdomains under one parent within the window.
-	if len(labels) >= 3 {
-		parent := labels[len(labels)-2] + "." + labels[len(labels)-1]
-		if len(e.dnsParents) > 8192 {
-			e.dnsParents = map[string]*parentState{} // coarse bound
-		}
-		ps := e.dnsParents[parent]
-		if ps == nil {
-			ps = &parentState{subs: map[string]struct{}{}}
-			e.dnsParents[parent] = ps
-		}
-		if len(ps.subs) < 4096 {
-			ps.subs[h] = struct{}{}
-		}
-		if len(ps.subs) >= 40 && (ps.lastAlert.IsZero() || now.Sub(ps.lastAlert) > 10*time.Minute) {
-			ps.lastAlert = now
-			reasons = append(reasons, fmt.Sprintf("%d distinct subdomains under %s — possible DNS tunneling / fast-flux", len(ps.subs), parent))
-		}
-	}
-	return reasons
-}
-
-func shannon(s string) float64 {
-	if s == "" {
-		return 0
-	}
-	var freq [256]float64
-	n := 0
-	for i := 0; i < len(s); i++ {
-		freq[s[i]]++
-		n++
-	}
-	var h float64
-	for _, c := range freq {
-		if c == 0 {
-			continue
-		}
-		p := c / float64(n)
-		h -= p * math.Log2(p)
-	}
-	return h
-}
-
-func digitRatio(s string) float64 {
-	if s == "" {
-		return 0
-	}
-	d := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] >= '0' && s[i] <= '9' {
-			d++
-		}
-	}
-	return float64(d) / float64(len(s))
-}
-
-func vowelRatio(s string) float64 {
-	if s == "" {
-		return 0
-	}
-	v := 0
-	for _, r := range s {
-		switch r {
-		case 'a', 'e', 'i', 'o', 'u':
-			v++
-		}
-	}
-	return float64(v) / float64(len(s))
-}
-
-func meanCV(xs []float64) (mean, cv float64) {
-	if len(xs) == 0 {
-		return 0, 0
-	}
-	var sum float64
-	for _, x := range xs {
-		sum += x
-	}
-	mean = sum / float64(len(xs))
-	if mean == 0 {
-		return 0, 0
-	}
-	var varsum float64
-	for _, x := range xs {
-		d := x - mean
-		varsum += d * d
-	}
-	std := math.Sqrt(varsum / float64(len(xs)))
-	return mean, std / mean
-}
-
 // finalize is called when a connection closes: re-score with final byte counts.
 func (e *Engine) finalize(ev *Event) {
 	up := atomic.LoadInt64(&ev.Upload)
 	e.mu.Lock()
-	if e.uploadAlertBytes > 0 && up >= e.uploadAlertBytes {
-		ev.Level = "alert"
-		ev.Reasons = append(ev.Reasons, fmt.Sprintf("large upload %s (possible exfil)", humanBytes(up)))
-	}
+	thresh := e.uploadAlertBytes
+	auto := e.autoBlock
 	e.mu.Unlock()
+	if thresh > 0 && up >= thresh {
+		e.mu.Lock()
+		ev.Level = "alert"
+		reason := fmt.Sprintf("large upload %s (possible exfil)", humanBytes(up))
+		if !hasReason(ev.Reasons, "large upload") {
+			ev.Reasons = append(ev.Reasons, reason)
+		}
+		already := ev.exfilEmitted
+		e.mu.Unlock()
+		// Non-whitelist large upload = high-confidence exfil when auto-block is on.
+		// Includes LAN/private destinations — a local C2 / pivot is still exfil.
+		if auto && !ev.Denied && !e.isTrusted(ev) {
+			ev.Block = true
+			e.banEvent(ev, "large upload to non-whitelist destination")
+			if !already {
+				e.emitExfil(ev, e.exfilAction(), reason)
+			}
+		} else if !already {
+			e.emitExfil(ev, ActionAlert, reason)
+		}
+	}
 	if e.onFinalize != nil {
 		cp := *ev
 		cp.Upload = up
@@ -441,6 +246,89 @@ func (e *Engine) finalize(ev *Event) {
 		cp.Reasons = append([]string(nil), ev.Reasons...)
 		e.onFinalize(cp)
 	}
+}
+
+func (e *Engine) exfilAction() Action {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.disposalActionLocked()
+}
+
+func (e *Engine) emitExfil(ev *Event, action Action, reason string) {
+	e.mu.Lock()
+	ev.exfilEmitted = true
+	d := e.makeDetectionLocked(KindExfil, action, ev, []string{reason})
+	e.mu.Unlock()
+	e.fireDetection(d)
+}
+
+func hasReason(rs []string, prefix string) bool {
+	for _, r := range rs {
+		if strings.HasPrefix(r, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Engine) isTrusted(ev *Event) bool {
+	if e.trustedDest == nil {
+		return false
+	}
+	return e.trustedDest(ev.Host, ev.Destination)
+}
+
+// BanFromEvent adds the event's destination to the deny-list (threat-intel or
+// exfil path). Safe to call multiple times; onBan may de-dupe in the store.
+func (e *Engine) BanFromEvent(ev *Event, reason string) {
+	e.banEvent(ev, reason)
+}
+
+func (e *Engine) banEvent(ev *Event, reason string) {
+	if e.onBan == nil || ev == nil {
+		return
+	}
+	domain := strings.ToLower(strings.TrimSpace(ev.Host))
+	if net.ParseIP(domain) != nil {
+		domain = "" // host was bare IP
+	}
+	ip := hostOnly(ev.Destination)
+	if ip == "" && domain == "" {
+		return
+	}
+	e.onBan(domain, ip, reason)
+}
+
+// checkExfilMidStream is called from the byte counter when upload grows. If the
+// threshold is crossed for a non-whitelist destination and auto-block is on,
+// marks the event Block-eligible and bans. Returns true when the caller should
+// kill the connection now.
+func (e *Engine) checkExfilMidStream(ev *Event, up int64) bool {
+	e.mu.Lock()
+	thresh := e.uploadAlertBytes
+	auto := e.autoBlock
+	e.mu.Unlock()
+	if !auto || thresh <= 0 || up < thresh || ev.Denied || ev.Block {
+		return false
+	}
+	if e.isTrusted(ev) {
+		return false
+	}
+	reason := fmt.Sprintf("large upload %s (possible exfil)", humanBytes(up))
+	e.mu.Lock()
+	ev.Level = "alert"
+	ev.Block = true
+	if !hasReason(ev.Reasons, "large upload") {
+		ev.Reasons = append(ev.Reasons, reason)
+	}
+	already := ev.exfilEmitted
+	action := e.disposalActionLocked()
+	e.mu.Unlock()
+	e.banEvent(ev, "large upload to non-whitelist destination")
+	if !already {
+		e.emitExfil(ev, action, reason)
+	}
+	return true
 }
 
 // Events returns a snapshot of recent events, newest first.

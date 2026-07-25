@@ -14,9 +14,9 @@ import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
-const ROLES = ['block', 'allow-direct', 'allow-proxy'];
+const ROLES = ['deny', 'permit', 'route-direct', 'route-proxy', 'permit+route-direct', 'permit+route-proxy'];
 const roleBadge = (r: string) =>
-  r === 'block' ? 'danger' : r === 'allow-direct' ? 'muted' : 'success';
+  r === 'deny' || r === 'block' ? 'danger' : r.startsWith('permit') ? 'success' : 'muted';
 
 export default function RuleSets({ embedded }: { embedded?: boolean }) {
   const { t } = useTranslation();
@@ -33,7 +33,7 @@ export default function RuleSets({ embedded }: { embedded?: boolean }) {
 
   const [tag, setTag] = useState('');
   const [url, setUrl] = useState('');
-  const [role, setRole] = useState('allow-proxy');
+  const [role, setRole] = useState('permit+route-proxy');
 
   const imported = new Set((sets?.sets ?? []).map((s) => s.tag));
 

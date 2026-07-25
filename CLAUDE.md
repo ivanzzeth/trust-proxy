@@ -41,33 +41,41 @@
 - `gateway.Manager.Apply(nodes)`：JSON 层把节点 outbound 注入配置、把 `proxy` 组重建为 `urltest`（0 节点则退回 `selector[direct]`）→ `buildBox`(fresh ctx+parse+New+AppendTracker) → **先建新 box 成功才关旧的**（配置错误则旧 box 完好、apply 报错，不中断服务）→ Start 新 box。约束：sing-box 库模式无粒度热更，reload=重建实例，重建期间监听端口有短暂 blip。
 - **apply 后**：白名单放行的流量走 `proxy` 组（即经订阅节点出网）。apply 死节点会导致放行流量断（urltest 无健康节点）；重启 serve 回到 base（proxy=selector[direct]）。
 
-### 安全模型：白名单默认拒绝（重要）
-出网默认**拒绝**，只放行 allow-list。黑名单追不完，白名单「未知即拒」才能卡死木马向任意 C2 回传。
-sing-box 里的写法（`configs/config.json` 的 `route.rules`，顺序敏感）：
-1. `{ "action": "sniff" }` — 先嗅探拿到 SNI/域名（非终结）。
-2. allow-list：`domain_suffix` / `ip_cidr` 命中 → `{ "action": "route", "outbound": "direct" }`（终结、放行）。
-3. 兜底：`{ "network": ["tcp","udp"], "action": "route", "outbound": "blocked" }` — 其余全拒（路由到 `block` 出站，EPERM 丢弃）。
-   （注意：**空 matcher 的 rule 非法**=`missing conditions`，所以兜底必须带 `network` 匹配器——这也是各注入函数定位兜底的锚点。**为什么用 route→block 而不是 `action:reject`**：`reject` 在 tracker 之前短路，detector 看不到被拦连接；改成路由到 `block` 出站后，被拦连接**照样过 tracker**（sniff 已在前面跑，能拿到 SNI 域名），于是被拦连接可见于事件/连接页，支持「一键加白」。安全等价：`block` 出站 DialContext 返回 EPERM，不出网。）
+### 安全模型：Permit ⊥ Route（Strict / 默认拒绝）
 
-**运行时注入后的完整分层顺序**（`buildMergedConfig`，顺序敏感、load-bearing。**已按「ACL 允不允许」与「routing 走哪个出口」严格分层**——白名单只管允许、不碰出口；「不走代理」是独立的 no-proxy 列表 `internal/directlist`）：
+出网默认**拒绝**。两条正交轴，永远分开：
 
-| 层 | 规则 | 注入函数 |
+| 轴 | 问题 | 默认 | 谁写入 |
+|---|---|---|---|
+| **Permit** | 这个目的地能不能出网？ | 否 | Policy → Permit；`role=permit(+route)` 规则集；custom/pack `Permit=true` |
+| **Route** | 已许可流量走哪？ | Final（默认 `proxy`） | Policy → Route（no-proxy）；`route-*` 规则集；custom egress；Final |
+| **Deny** | 硬拒绝（优先于 Permit） | 空 | Policy → Deny；`role=deny` 规则集 |
+| **Subjects** | 哪个进程/设备可出网 | 不限制 | Policy → Subjects（进程/设备 L1 invert） |
+
+**铁律**：Route 永不开闸；Permit 永不选出口；Final 不能打开空闸。China-direct = 仅 `route-direct`；要让大陆站出网须另开 **China (wide)**（`permit`，有安全警告）或逐条 Permit。
+
+sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 倒置许可闸 → L4 有序 egress → catch-all（`network` matcher 必需）。闸用 `route→blocked` 而非 `reject`，以便 tracker 仍见被拦连接 + SNI（可一键加白）。
+
+**运行时注入分层**（`buildMergedConfig` / `injectAllow`）：
+
+| 层 | 规则 | 注入 |
 |---|---|---|
-| **L0 管理救援**（最顶） | `source_port ∈ mgmt → direct` | `injectManagement`（最后注入=最顶） |
-| **L1 安全地板(硬拒 reject)** | 黑名单 / block 规则集 / 进程 invert / 设备 invert → `reject` | `injectBlacklist` + `injectRuleSets`(block) + `injectProcessDeviceFloor` |
-| **L2 Global 旁路** | `clash_mode=Global → proxy`（在地板下、闸上：Global 时未列入流量走代理，地板仍拦） | `injectClashModeGlobal`（**在 injectAllow 之前**跑） |
-| **L3 ACL 闸(允/拒)** | **一条** `{type:logical, mode:or, rules:[允许集 matchers], invert:true, action:route, outbound:blocked}` — 不在允许集 → `blocked`（**非 reject**，仍过 tracker、留 SNI、可一键加白） | `injectAllow` |
-| **L4 路由(选出口)** | **自定义规则(有序,最先)** → direct/proxy/blocked/`<node tag>`；然后 direct-bypass → `direct`（allow-direct 规则集 + no-proxy 域名/IP + 内置私网段）；allow-proxy 规则集 → `proxy` | `injectAllow` |
-| **兜底 catch-all** | 带 network matcher。**有闸时翻成 `→proxy`**（allowed-but-unrouted 的默认出口）；**无闸时维持 `→blocked`**（fail-closed 全拒） | `injectAllow` 翻转 |
+| **L0** | `source_port ∈ mgmt → direct` | `injectManagement` |
+| **L1** | 黑名单 / deny 规则集 / 进程·设备 invert → `reject` | `injectBlacklist` + `injectRuleSets` + `injectProcessDeviceFloor` |
+| **L2** | `clash_mode=Global → proxy`（地板下、闸上） | `injectClashModeGlobal`（须先于 `injectAllow`） |
+| **L3 Permit 闸** | `NOT(permit-set) → blocked` | `injectAllow` |
+| **L4 Route** | custom → no-proxy → `route-proxy` RS → `route-direct` RS | `injectAllow` |
+| **catch-all** | 有闸 → Final；无闸 → `blocked` | `injectAllow` |
 
-**允许集（L3）** = 白名单(域名+IP) ∪ 全部 allow-规则集 tag ∪ no-proxy(域名+IP) ∪ **自定义规则中 action∈{direct,proxy,node} 的 matcher**（block 不进）∪ 内置私网段。**关键**：允许集**空**（无白名单/无 no-proxy/无 allow 规则集）→ 不生成闸 → 兜底维持 block = 全拒。内置私网段（RFC1918/loopback/link-local/CGNAT，`privateCIDRs`）**本身不算用户 allow**，不单独开闸；一旦有其他 allow，私网段即进允许集且走直连（LAN 永不出境）。
+**许可集（L3）** = 白名单域名/IP ∪ `RuleRoleGrantsPermit` 规则集 ∪ custom/pack `GrantsPermit()` ∪（闸已开时）私网 CIDR。**不含** no-proxy、`route-*` only。空许可集 → 不建闸 → 全拒。
 
-**为什么闸用 `route→blocked` 而非 `action:reject`**：`reject` 在 tracker 之前短路，detector 看不到被拦连接；`block` 出站 DialContext 返回 EPERM（不出网），但被拦连接**照样过 tracker**（sniff 已跑，拿到 SNI），故可见于连接页 + 一键加白（里程碑 5）。**空 matcher 非法**=`missing conditions`，兜底必须带 `network` matcher——也是各注入函数定位兜底的锚点（`catchAllIdx`）。
-**锚点约束**：新地板 reject 插在 `preludeLen`（sniff/hijack-dns）之后；闸/路由/Global 插在 `catchAllIdx` 之前。`injectClashModeGlobal` 必须先于 `injectAllow`（Global 规则要落在 ACL 闸**之上**，否则 Global 模式流量会被闸提前拦掉）。进程/设备维度是**可选反外泄闸**：木马即便伪装目标域名，只要其二进制/来源不在放行名单里就出不了网。
+规则集角色：`deny` | `permit` | `route-direct` | `route-proxy` | `permit+route-direct` | `permit+route-proxy`（旧 `allow-*`/`block` 启动时迁移）。共享 tag（如 geosite-cn）在包 apply/delete 时按轴 Merge/Subtract。
+
+**锚点**：地板 reject 在 `preludeLen` 后；闸/路由/Global 在 `catchAllIdx` 前。
 
 ### UI 分工（已决策 + 已落地）
 - **我们自建的控制台 `dashboard/`（shadcn/ui + Tailwind v4 + React 19 + Vite）** 是唯一 UI，由后端 `internal/api`（:9096）从 `dashboard/dist` serve，`make dashboard` 构建。**浏览器只连 :9096 单一 origin**，一切走 `/api/*`；连接/代理组/日志都由后端**代理 Clash API**（浏览器不碰 Clash secret）。HashRouter，无需 SPA 服务端兜底。
-  - 页面：Overview / Connections（全部·活动·已关闭 + 一键加白 +域名/IP/进程/设备）/ Nodes（订阅）/ Profiles / **ACLs**（Allow白名单 + Deny黑名单 + No-Proxy免代理 三 tab）/ **Rules**（统一页三 tab：**Routing**=生效策略来源标注[`/api/effective-rules`，按 L0..L4 标来源] / **Rule Sets**[+点开看内容 `/api/rulesets/{tag}/rules`] / **Custom**=自定义路由规则）/ **Proxies**（组·选点·测速）/ **Endpoints/VPN**（WireGuard/Tailscale 出口）/ **Settings**（入站鉴权 + TUN 高级）/ **DNS**（解析策略：服务器 + 分流 + detour proxy 防泄漏）/ **History**（连接历史+聚合，落盘 data/history.jsonl）/ **Fleet**（多节点：注册远程网关 + 顶栏切换，大脑反代）/ **Logs**（Clash `/logs` WS → 后端转 SSE）。（`/whitelist`·`/blacklist`→`/acls`，`/rulesets`·`/custom-rules`→`/rules` 重定向。）
+  - 页面：Overview / Connections（全部·活动·已关闭 + 一键加白）/ Nodes / Profiles / **Policy**（Permit / Route / Deny / Subjects）/ **Rules**（Routing 生效视图 + Rule Sets + Custom/策略包）/ Proxies / Endpoints/VPN / Settings / DNS / History / Fleet / Logs。（`/whitelist`·`/blacklist`→`/acls`，`/rulesets`·`/custom-rules`→`/rules` 重定向。）
   - **（历史）曾 vendored Yacd 作底座（`console/`），里程碑 5 后整体换成自研 shadcn 应用并删除 Yacd**——不再有前端 upstream 同步负担。
 - **官方 dashboard（`webui/`）** 仍可选保留，只做 sing-box `service/api` :9095 的运行时监控；平时用不到。
 - **go:embed 单二进制（✅）**：默认构建从磁盘 serve `dashboard/dist`（开发）；`make build-embed`（或 `-tags embed_ui`，见 `embed_ui.go`）把前端嵌进二进制，release 单文件自带 UI（`internal/api` 的 `consoleHandler` 用 `fs.FS`：embed 优先、否则 `os.DirFS(--console)`）。
@@ -98,9 +106,10 @@ internal/ruleset/          规则集存储 + 公开规则库 catalog（JSON 存 
 internal/profile/          配置档存储（快照订阅/白名单/规则集/模式，data/profiles.json）
 internal/dnscfg/           DNS 解析策略存储（servers/rules/strategy + fakeip/hosts → 注入 sing-box dns 块，data/dns.json）
 internal/blacklist/        出网黑名单（域名/关键字/正则/IP → reject，injectBlacklist 注入在 sniff 之后、白名单之前）
-internal/directlist/       no-proxy/旁路清单（域名/IP → direct，routing 层；injectAllow 同时喂给 ACL 闸允许集 + L4 直连规则；私网段引擎内置）
+internal/directlist/       no-proxy 旁路（域名/IP → direct，**仅 L4 Route**，不开闸；私网段引擎内置）
 internal/proxygroups/      代理分组（Config{AutoCountry,ExcludeCountries,Groups}）+ 国家解析(country.go：旗emoji/中英/国码→ISO)；injectOutbounds 据此建 Auto(urltest全部)+**🌏 Overseas 共享组**(urltest,成员=国家∉ExcludeCountries 的节点;**仅当排除真的去掉≥1节点才建**,否则 Auto 已安全、指向它的规则 self-heal 回 Auto)+按国家 urltest 组+用户组(select/urltest,filter country/regex/manual)，proxy 改 selector(default Auto)。**Overseas 组**是「地区受限服务 failover」的载体:Anthropic/OpenAI 拒 HK/CN,geofenced 包(Claude/OpenAI/Cursor)走 Overseas→在允许地区间自动切、绝不落被封地区。ExcludeCountries 默认 HK/MO/CN(`DefaultExcludeCountries`,旧 store 加载时一次性迁移;nil=未设→填默认、非nil空=不排除),Proxies 页可改。sing-box 只有 selector/urltest,无 load-balance
-internal/customrules/      有序自定义路由规则（matcher + action∈{direct,proxy,block,node}，L4 最先求值；injectAllow 发射 + direct/proxy/node 进允许集；node tag 不在当前 outbound 成员集则跳过=self-heal，data/customrules.json）+ **Allow 包**（`Pack` 命名标签 = 一组规则整组启停/删除;`presets.go` 内置一键导入包 Claude/OpenAI/Cursor/AI(other)/Dev/Telegram/Streaming/Google/Apple/China-direct。**地区受限服务**（Anthropic/OpenAI 拒 HK+CN、Cursor Claude 模型拒 HK/TW/CN）：这些包发 `proxy` 规则但把 `Node` 指向 **🌏 Overseas 共享组**（见 `internal/proxygroups`），从而 failover 只在允许地区间、绝不落被封地区；Overseas 组不存在时（无可排除节点）**优雅回退到默认 proxy(Auto)**（域名照样放行）。无封锁的服务用普通 proxy(Auto)。`PackPreset.Exit`（overseas/auto/direct）供 UI 显示徽标。pack 纯元数据、零引擎改动）
+internal/policymigrate/    Permit⊥Route 一次性迁移（allow-*→permit+route-*；directlist 拷入 whitelist；profiles v2）
+internal/customrules/      有序策略规则（Permit 与/或 Egress 正交；L4 有序；node self-heal）+ **策略包**（`presets.go`：Claude/OpenAI/Cursor/…；**China (wide)=permit** + **China-direct=route-direct** 拆开；共享 tag 时 Merge/Subtract；Overseas 给地区受限服务）
 internal/inbound/          入站鉴权（mixed users，applyMode 注入）
 internal/tuncfg/           TUN 高级选项（stack/mtu/strict_route/exclude·include_package，applyMode 用）
 internal/endpoints/        WireGuard/Tailscale 出口（wg-quick 解析；injectEndpoints 注入 endpoints[] + 标签加入 proxy 组）
@@ -113,7 +122,7 @@ pkg/clash/                 底层 SDK：标准 Clash API 客户端
 pkg/client/                上层 SDK：/api + 组合 clash
 pkg/apitypes/              共享 wire 类型
 configs/config.json        sing-box 配置：白名单默认拒绝 + clash_api + service/api(+dashboard)
-third_party/sing-box       【上游子模块】testing 分支，replace 进本模块
+third_party/sing-box       【我们的 fork 子模块】`ivanzzeth/sing-box` 分支 `trust-proxy`，replace 进本模块；上游 SagerNet 为 `upstream`
 webui/                     【上游 vendored 副本】官方 dashboard
 data/                      运行时数据（subscriptions.json 等，gitignore）
 ```
@@ -130,20 +139,33 @@ data/                      运行时数据（subscriptions.json 等，gitignore�
 
 有**两个**独立上游，同步方式不同。
 
-### 1. sing-box（`third_party/sing-box`）— git 子模块，干净同步
+### 1. sing-box（`third_party/sing-box`）— 我们的 fork 子模块
 
-跟踪 `testing` 分支（官方 dashboard 依赖的 `service/api` 尚未进稳定 tag；`AppendTracker` 稳定版已有）。
+子模块指向 **[ivanzzeth/sing-box](https://github.com/ivanzzeth/sing-box)** 的 **`trust-proxy`** 分支（可在 fork 上改 urltest 等）。  
+SagerNet 官方仓库在子模块里登记为 remote **`upstream`**（`testing`），用来同步上游。
 
+**跟我们的 fork（日常开发 / 推补丁）**
 ```bash
 cd third_party/sing-box
-git fetch origin
-git checkout testing && git pull          # 或 checkout 某个具体 tag/commit 以 pin
+git checkout trust-proxy
+# 改代码、commit…
+git push origin trust-proxy
 cd ../..
-go mod tidy                               # 重新解析 sing-box 的传递依赖
-make build                                # 重编译验证
-# 冒烟：make run，确认代理出网 + dashboard 正常
-git add third_party/sing-box go.mod go.sum
+git add third_party/sing-box
 git commit -m "chore: bump sing-box submodule to <ref>"
+```
+
+**从 SagerNet 上游合入（独立动作）**
+```bash
+cd third_party/sing-box
+git fetch upstream
+git checkout trust-proxy
+git merge upstream/testing          # 或 rebase；解决冲突后
+git push origin trust-proxy
+cd ../..
+go mod tidy && make build
+git add third_party/sing-box go.mod go.sum
+git commit -m "chore: merge sing-box upstream/testing into trust-proxy"
 ```
 
 注意：

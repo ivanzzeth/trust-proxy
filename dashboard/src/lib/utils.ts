@@ -17,3 +17,8 @@ export function fmtBytes(n: number): string {
   }
   return `${v.toFixed(1)} ${u[i]}`;
 }
+
+/** Format a byte-rate (bytes per second). */
+export function fmtRate(n: number): string {
+  return `${fmtBytes(Math.max(0, Math.round(n)))}/s`;
+}

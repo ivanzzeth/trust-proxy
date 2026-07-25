@@ -185,11 +185,16 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
                     </Badge>
                   ) : p.exit === 'direct' ? (
                     <Badge variant="muted" title={t('pages.customRules.exitDirectHint')}>{t('pages.customRules.exitDirect')}</Badge>
-                  ) : (
+                  ) : p.exit === 'auto' ? (
                     <Badge variant="muted" title={t('pages.customRules.exitAutoHint')}>{t('pages.customRules.exitAuto')}</Badge>
+                  ) : (
+                    <Badge variant="danger" title={t('pages.customRules.exitPermitHint')}>{t('pages.customRules.exitPermit')}</Badge>
                   )}
                 </div>
                 <div className="truncate text-xs text-muted-foreground" title={p.description}>{p.description}</div>
+                {p.warning && (
+                  <div className="mt-0.5 truncate text-xs text-amber-600 dark:text-amber-400" title={p.warning}>{p.warning}</div>
+                )}
               </div>
               <Badge variant="muted" className="tnum">
                 {(p.rules?.length ?? 0) + (p.rule_sets?.length ?? 0)}
@@ -197,7 +202,15 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
               {importedPacks.has(p.name) && (
                 <Badge variant="muted">{t('pages.customRules.importedBadge')}</Badge>
               )}
-              <Button size="xs" variant="secondary" disabled={applyPack.isPending} onClick={() => applyPack.mutate(p.name)}>
+              <Button
+                size="xs"
+                variant="secondary"
+                disabled={applyPack.isPending}
+                onClick={() => {
+                  if (p.warning && !window.confirm(p.warning)) return;
+                  applyPack.mutate(p.name);
+                }}
+              >
                 <Download className="size-3.5" />
                 {importedPacks.has(p.name) ? t('pages.customRules.updateButton') : t('pages.customRules.importButton')}
               </Button>

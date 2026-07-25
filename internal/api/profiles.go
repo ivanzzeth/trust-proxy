@@ -141,7 +141,7 @@ func (s *Server) handleActivateProfile(w http.ResponseWriter, r *http.Request) {
 	pg := s.resolveProfileProxyGroups(p)
 	dns := s.resolveProfileDNS(p)
 
-	if err := s.profApplier.ApplyProfile(nodes, wl, bl, dl, cr, sets, pg, dns, p.Mode, p.Final); err != nil {
+	if err := s.profApplier.ApplyProfile(nodes, wl, bl, dl, cr, sets, pg, dns, p.Mode, p.Final, ""); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}

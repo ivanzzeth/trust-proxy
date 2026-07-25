@@ -1,7 +1,7 @@
-// Package ruleset persists imported sing-box rule_sets (remote .srs/.json or
-// local files) and the role each plays in the gateway's default-deny route
-// (block / allow-direct / allow-proxy). The gateway injects enabled sets into
-// route.rule_set + route.rules on hot-reload.
+// Package ruleset persists imported sing-box rule_sets and the role each plays
+// on the Permit / Route / Deny axes (permit, route-direct, route-proxy, deny,
+// or combined permit+route-* after migration). The gateway injects enabled
+// sets into route.rule_set + route.rules on hot-reload.
 package ruleset
 
 import (
@@ -25,94 +25,94 @@ type Sets struct {
 // GitHub is blocked — relevant since download_detour is always "direct").
 var Catalog = []apitypes.RuleSetCatalogEntry{
 	{
-		Tag: "geosite-cn", Name: "中国大陆域名 (CN direct)", Format: "binary",
+		Tag: "geosite-cn", Name: "中国大陆域名 (route direct)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-cn.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
-		SuggestedRole: apitypes.RuleRoleAllowDirect,
+		SuggestedRole: apitypes.RuleRoleRouteDirect,
 	},
 	{
-		Tag: "geoip-cn", Name: "中国大陆 IP (CN direct)", Format: "binary",
+		Tag: "geoip-cn", Name: "中国大陆 IP (route direct)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geoip/rule-set/geoip-cn.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geoip@rule-set/geoip-cn.srs",
-		SuggestedRole: apitypes.RuleRoleAllowDirect,
+		SuggestedRole: apitypes.RuleRoleRouteDirect,
 	},
 	{
-		Tag: "geosite-geolocation-!cn", Name: "非中国大陆域名 (proxy)", Format: "binary",
+		Tag: "geosite-geolocation-!cn", Name: "非中国大陆域名 (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-geolocation-!cn.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-geolocation-!cn.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-google", Name: "Google (proxy)", Format: "binary",
+		Tag: "geosite-google", Name: "Google (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-google.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-google.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-youtube", Name: "YouTube (proxy)", Format: "binary",
+		Tag: "geosite-youtube", Name: "YouTube (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-youtube.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-youtube.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-github", Name: "GitHub (proxy)", Format: "binary",
+		Tag: "geosite-github", Name: "GitHub (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-github.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-github.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-telegram", Name: "Telegram (proxy)", Format: "binary",
+		Tag: "geosite-telegram", Name: "Telegram (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-telegram.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-telegram.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-slack", Name: "Slack (proxy)", Format: "binary",
+		Tag: "geosite-slack", Name: "Slack (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-slack.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-slack.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-notion", Name: "Notion (proxy)", Format: "binary",
+		Tag: "geosite-notion", Name: "Notion (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-notion.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-notion.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-microsoft-dev", Name: "Microsoft 开发者 (VS Code / NuGet / …)", Format: "binary",
+		Tag: "geosite-microsoft-dev", Name: "Microsoft 开发者 (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-microsoft-dev.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-microsoft-dev.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-twitter", Name: "X / Twitter (proxy)", Format: "binary",
+		Tag: "geosite-twitter", Name: "X / Twitter (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-twitter.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-twitter.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-netflix", Name: "Netflix (proxy)", Format: "binary",
+		Tag: "geosite-netflix", Name: "Netflix (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-netflix.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-netflix.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-spotify", Name: "Spotify (proxy)", Format: "binary",
+		Tag: "geosite-spotify", Name: "Spotify (permit+proxy)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-spotify.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-spotify.srs",
-		SuggestedRole: apitypes.RuleRoleAllowProxy,
+		SuggestedRole: apitypes.RuleRolePermitRouteProxy,
 	},
 	{
-		Tag: "geosite-apple", Name: "Apple (direct)", Format: "binary",
+		Tag: "geosite-apple", Name: "Apple (route direct)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-apple.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-apple.srs",
-		SuggestedRole: apitypes.RuleRoleAllowDirect,
+		SuggestedRole: apitypes.RuleRoleRouteDirect,
 	},
 	{
-		Tag: "geosite-category-ads-all", Name: "广告 / 追踪拦截 (block)", Format: "binary",
+		Tag: "geosite-category-ads-all", Name: "广告 / 追踪拦截 (deny)", Format: "binary",
 		URL:           "https://raw.githubusercontent.com/SagerNet/sing-geosite/rule-set/geosite-category-ads-all.srs",
 		Mirror:        "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-category-ads-all.srs",
-		SuggestedRole: apitypes.RuleRoleBlock,
+		SuggestedRole: apitypes.RuleRoleDeny,
 	},
 }
 
@@ -147,7 +147,25 @@ func NewStore(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &s.data); err != nil {
 		return nil, err
 	}
+	if s.migrateRoles() {
+		_ = s.save()
+	}
 	return s, nil
+}
+
+// migrateRoles rewrites legacy allow-*/block roles onto the orthogonal
+// vocabulary (preserving prior allow+route behavior via permit+route-*).
+func (s *Store) migrateRoles() bool {
+	changed := false
+	for i := range s.data.Sets {
+		old := s.data.Sets[i].Role
+		neu := apitypes.NormalizeRuleRole(old)
+		if neu != old {
+			s.data.Sets[i].Role = neu
+			changed = true
+		}
+	}
+	return changed
 }
 
 func (s *Store) save() error {

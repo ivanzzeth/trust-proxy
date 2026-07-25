@@ -17,7 +17,7 @@
     "logs": "日志",
     "fleet": "多节点",
     "settings": "设置",
-    "acls": "访问控制",
+    "acls": "策略",
     "vpn": "VPN",
     "grpMonitor": "监控",
     "grpPolicy": "策略",
@@ -27,9 +27,20 @@
   "top": {
     "capture": "抓取",
     "routing": "路由",
+    "posture": "姿势",
+    "postureStrict": "Strict",
+    "postureSplit": "Split",
+    "postureStrictTip": "默认拒绝：未允许的目的地出不了网。出口仍由路由规则决定。",
+    "postureSplitTip": "默认放行：未命中规则的走 Final（默认代理）。具体出口仍按路由规则；黑名单地板仍生效。",
+    "postureForcedRule": "已强制 Clash 路由回到 Rule — Global 会绕过 Split 下的分流规则。",
+    "splitBanner": "Split：闸已开——未匹配流量走 Final（代理）；命中的路由规则照常选出口（直连 / Overseas 等）。黑名单与威胁情报仍拦截。",
+    "routingGlobalDisabledSplit": "Split 下禁用 Global — 否则会无视你的分流规则。",
     "autoBlock": "自动阻断",
-    "autoBlockTip": "自动阻断会切断目标命中威胁情报的连接——恶意/C2 域名和 IP，来自 abuse.ch 情报源+内置（已加载 {{domains}} 域名 / {{ips}} IP）。启发式检测（beaconing / DGA / 大流量上传）只告警，绝不自动断。",
+    "autoBlockTip": "自动阻断：威胁情报命中，以及向「不在 Permit 白名单」的目的地上传 ≥10 MiB，会立刻断连并写入黑名单（含局域网/私网，防本地中继外泄）。beacon/DGA 仍只告警。",
     "live": "活动",
+    "up": "↑",
+    "down": "↓",
+    "total": "累计",
     "keepMode": "保持当前模式",
     "guard": "模式保护：{{sec}} 秒后回退到 {{to}} —— 请确认你仍能访问。",
     "captureMode": "抓取模式：{{mode}}",
@@ -96,27 +107,30 @@
   },
   "pages": {
     "acls": {
-      "desc": "访问控制：哪些出网被放行（白名单）、哪些被显式拒绝（黑名单）。拒绝始终优先于放行。免代理只决定出口（直连 vs 代理），不授予访问权限。",
-      "allow": "放行",
+      "desc": "严格策略：Permit（能不能出网）与 Route（走哪条出口）正交。Route 永不开闸。Deny 优先于 Permit。Subjects 可选限制哪些进程/设备可出网。",
+      "permit": "许可",
+      "route": "路由",
       "deny": "拒绝",
-      "direct": "免代理"
+      "subjects": "主体",
+      "permitHint": "允许出网的目的地。带 permit 角色的包/规则集也会写入许可集——完整列表见 规则 → 生效路由。空 = 全拒。",
+      "subjectsHint": "可选来源闸。非空时，未列入的进程或设备即使目标已许可也不能出网。"
     },
     "whitelist": {
-      "desc": "默认拒绝的出网放行清单。域名与 IP 是目的地；进程与设备是可选的来源闸（留空=关闭）。",
+      "desc": "许可目的地（域名与 IP）。默认拒绝：未列出（且未被 permit 包/规则集授予）的一律拦截。进程与设备属于主体，不是目的地。",
       "domains": "域名",
       "domainsHint": "默认后缀匹配（example.com 覆盖其子域）。通配符：*.example.com（子域）、foo*（前缀）。",
       "domainsPh": "example.com  /  *.example.com",
       "ip": "IP / CIDR",
       "ipPh": "1.2.3.4/32",
       "processes": "进程",
-      "processesHint": "非空时，未列入的程序完全无法出网——即便目标在白名单里。",
+      "processesHint": "非空时，未列入的程序完全无法出网——即便目标已许可。",
       "processesPh": "curl  /usr/bin/ssh",
       "devices": "设备（来源）",
       "devicesHint": "非空时，只有这些来源 IP/CIDR 可出网。用于网关/路由部署。",
       "devicesPh": "192.168.1.20"
     },
     "blacklist": {
-      "desc": "显式出网拒绝清单。即使白名单或放行规则集会放行，这些目的地也一律被拒——拒绝规则位于所有放行之上。",
+      "desc": "硬拒绝。即使 Permit 会放行，这些目的地也一律被拒——拒绝位于许可闸之上。",
       "domains": "域名",
       "domainsHint": "默认后缀匹配（evil.com 拦其子域）。通配符：*.evil.com、ads-*（前缀）。",
       "domainsPh": "evil.com  /  *.evil.com",
@@ -131,15 +145,15 @@
       "ipPh": "6.6.6.6/32"
     },
     "directlist": {
-      "desc": "免代理（旁路）清单：到这些目的地的已放行流量走直连而非代理。这是路由、不是访问控制——条目仍须先被放行（在白名单里或被放行规则集命中）。私网/局域网段始终自动直连。",
+      "desc": "仅路由：已许可流量到这些目的地走直连。绝不授予 Permit——须先在「许可」中添加（或启用 permit 包）。私网/局域网段在已许可时始终自动直连。",
       "domains": "域名",
       "domainsHint": "默认后缀匹配（corp.local 覆盖其子域）。通配符：*.corp.local、intra-*（前缀）。",
       "domainsPh": "corp.local  /  *.corp.local",
       "ip": "IP / CIDR",
-      "ipHint": "这些目标 IP/CIDR 走直连（绝不经代理）。",
+      "ipHint": "这些目标 IP/CIDR 走直连（绝不经代理）——前提是已许可。",
       "ipPh": "203.0.113.0/24",
       "builtinTitle": "内置（LAN / 私网）",
-      "builtinHint": "常见私网、环回、链路本地、CGNAT 网段始终直连、永不走代理——无需手动添加。你自己的域名/IP 在下方添加。"
+      "builtinHint": "常见私网、环回、链路本地、CGNAT 网段在流量已许可时始终直连——无需手动添加。"
     }
   }
 }

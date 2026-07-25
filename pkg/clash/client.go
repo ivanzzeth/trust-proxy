@@ -175,6 +175,33 @@ func (c *Client) StreamLogs(ctx context.Context, level string, fn func([]byte) e
 	}
 }
 
+// StreamTraffic dials Clash /traffic (1 Hz up/down byte rates) until ctx ends.
+func (c *Client) StreamTraffic(ctx context.Context, fn func([]byte) error) error {
+	u := strings.Replace(c.base, "http", "ws", 1) + "/traffic"
+	if c.secret != "" {
+		u += "?token=" + url.QueryEscape(c.secret)
+	}
+	opts := &websocket.DialOptions{}
+	if c.secret != "" {
+		opts.HTTPHeader = http.Header{"Authorization": {"Bearer " + c.secret}}
+	}
+	conn, _, err := websocket.Dial(ctx, u, opts)
+	if err != nil {
+		return err
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	conn.SetReadLimit(1 << 20)
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			return err
+		}
+		if err := fn(data); err != nil {
+			return err
+		}
+	}
+}
+
 // raw performs a request and returns the raw body (auth applied). Non-2xx is an
 // error carrying the body.
 func (c *Client) raw(method, path string, body []byte) ([]byte, error) {
