@@ -163,10 +163,23 @@ type PatchCustomRuleRequest struct {
 	Pack    *string `json:"pack,omitempty"`
 }
 
+// PackApplyResult is what applying a policy pack changed: the pack's rules plus
+// the rule sets it imported (their roles merge into any shared tag).
+type PackApplyResult struct {
+	Rules []CustomRule `json:"rules"`
+	// RuleSets are the pack's catalog bindings (catalog_tag + role), not full
+	// rule-set descriptors — the descriptors live in the rule-set store.
+	RuleSets []PackRuleSet `json:"rule_sets"`
+}
+
 // ACLList is the wire shape shared by the three ACL stores. Each store fills
 // only its own dimensions: Permit uses domains/ips/processes/devices, Deny adds
 // keywords/regexes, No-Proxy uses domains/ips.
 type ACLList struct {
+	// Builtin are always-on entries the gateway owns (No-Proxy's LAN/private
+	// ranges). Read-only: the API reports them so a client doesn't present the
+	// list as if those ranges could be removed.
+	Builtin   []string `json:"builtin,omitempty"`
 	Domains   []string `json:"domains,omitempty"`
 	IPs       []string `json:"ips,omitempty"`
 	Processes []string `json:"processes,omitempty"`

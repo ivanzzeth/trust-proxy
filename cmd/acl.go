@@ -46,6 +46,12 @@ var aclLsCmd = &cobra.Command{
 					fmt.Println("  " + v)
 				}
 			}
+			if len(list.Builtin) > 0 {
+				fmt.Printf("builtin (%d, always on, read-only):\n", len(list.Builtin))
+				for _, v := range list.Builtin {
+					fmt.Println("  " + v)
+				}
+			}
 			print("domains", list.Domains)
 			print("ips", list.IPs)
 			print("processes", list.Processes)

@@ -35,7 +35,7 @@ export default function RuleSets({ embedded }: { embedded?: boolean }) {
   const [url, setUrl] = useState('');
   const [role, setRole] = useState('permit+route-proxy');
 
-  const imported = new Set((sets?.sets ?? []).map((s) => s.tag));
+  const imported = new Set((sets ?? []).map((s) => s.tag));
 
   return (
     <div>
@@ -102,12 +102,12 @@ export default function RuleSets({ embedded }: { embedded?: boolean }) {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {(!sets || sets.sets.length === 0) && (
+              {(sets ?? []).length === 0 && (
                 <TableRow className="hover:bg-transparent">
                   <TableCell colSpan={5} className="py-10 text-center text-muted-foreground">{t('pages.rulesets.emptyImported')}</TableCell>
                 </TableRow>
               )}
-              {(sets?.sets ?? []).map((rs) => (
+              {(sets ?? []).map((rs) => (
                 <TableRow key={rs.tag}>
                   <TableCell>
                     <Switch checked={rs.enabled} onCheckedChange={(v) => patch.mutate({ tag: rs.tag, patch: { enabled: v } })} />

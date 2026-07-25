@@ -435,18 +435,19 @@ export const api = {
   addDL: (type: DLType, value: string) => post<Directlist>('/directlist', { type, value }),
   delDL: (type: DLType, value: string) => del<Directlist>('/directlist', { type, value }),
 
-  customRules: () => get<{ rules: CustomRule[] }>('/customrules').then((r) => r.rules ?? []),
-  addCR: (body: Omit<CustomRule, 'id'>) => post<{ rules: CustomRule[] }>('/customrules', body),
+  customRules: () => get<CustomRule[]>('/customrules'),
+  addCR: (body: Omit<CustomRule, 'id'>) => post<CustomRule[]>('/customrules', body),
   patchCR: (id: string, patchBody: Partial<Omit<CustomRule, 'id'>>) =>
-    patch<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}`, patchBody),
-  delCR: (id: string) => del<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}`),
-  moveCR: (id: string, dir: number) => post<{ rules: CustomRule[] }>(`/customrules/${encodeURIComponent(id)}/move`, { dir }),
+    patch<CustomRule[]>(`/customrules/${encodeURIComponent(id)}`, patchBody),
+  delCR: (id: string) => del<CustomRule[]>(`/customrules/${encodeURIComponent(id)}`),
+  moveCR: (id: string, dir: number) => post<CustomRule[]>(`/customrules/${encodeURIComponent(id)}/move`, { dir }),
   packsCatalog: () => get<PackPreset[]>('/customrules/packs/catalog'),
+  // Applying a pack changes two things, so this one stays a result object.
   applyPack: (catalog: string) =>
-    post<{ rules: CustomRule[]; rule_sets?: PackRuleSet[] }>('/customrules/packs/apply', { catalog }),
+    post<{ rules: CustomRule[]; rule_sets: PackRuleSet[] }>('/customrules/packs/apply', { catalog }),
   setPackEnabled: (name: string, enabled: boolean) =>
-    patch<{ rules: CustomRule[] }>(`/customrules/packs/${encodeURIComponent(name)}`, { enabled }),
-  delPack: (name: string) => del<{ rules: CustomRule[] }>(`/customrules/packs/${encodeURIComponent(name)}`),
+    patch<CustomRule[]>(`/customrules/packs/${encodeURIComponent(name)}`, { enabled }),
+  delPack: (name: string) => del<CustomRule[]>(`/customrules/packs/${encodeURIComponent(name)}`),
 
   subs: () => get<Subscription[]>('/subscriptions'),
   addSub: (name: string, url: string, userAgent?: string, via?: string) =>
@@ -456,12 +457,12 @@ export const api = {
   refreshSub: (id: string) => post<Subscription>(`/subscriptions/${id}/refresh`),
   delSub: (id: string) => del<void>(`/subscriptions/${id}`),
 
-  rulesets: () => get<{ sets: RuleSet[] }>('/rulesets'),
+  rulesets: () => get<RuleSet[]>('/rulesets'),
   ruleCatalog: () => get<CatalogEntry[]>('/rulesets/catalog'),
-  addRuleSet: (body: Record<string, unknown>) => post<{ sets: RuleSet[] }>('/rulesets', body),
+  addRuleSet: (body: Record<string, unknown>) => post<RuleSet[]>('/rulesets', body),
   patchRuleSet: (tag: string, body: { enabled?: boolean; role?: string }) =>
-    patch<{ sets: RuleSet[] }>(`/rulesets/${encodeURIComponent(tag)}`, body),
-  delRuleSet: (tag: string) => del<{ sets: RuleSet[] }>(`/rulesets/${encodeURIComponent(tag)}`),
+    patch<RuleSet[]>(`/rulesets/${encodeURIComponent(tag)}`, body),
+  delRuleSet: (tag: string) => del<RuleSet[]>(`/rulesets/${encodeURIComponent(tag)}`),
   rulesetRules: (tag: string, q = '', offset = 0, limit = 200) =>
     get<RuleSetContent>(
       `/rulesets/${encodeURIComponent(tag)}/rules?q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`,

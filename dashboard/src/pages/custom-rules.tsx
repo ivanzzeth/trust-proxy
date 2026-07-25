@@ -36,7 +36,7 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const { data: catalog = [] } = useQuery({ queryKey: ['packsCatalog'], queryFn: api.packsCatalog });
   const { data: rsData } = useQuery({ queryKey: ['rulesets'], queryFn: api.rulesets });
   const nodes = proxyData?.proxies?.['proxy']?.all ?? [];
-  const ruleSets = rsData?.sets ?? [];
+  const ruleSets = rsData ?? [];
 
   const add = useMutation({ mutationFn: api.addCR, onSuccess: invalidate, onError: err });
   const patch = useMutation({ mutationFn: (v: { id: string; patch: Partial<Omit<CustomRule, 'id'>> }) => api.patchCR(v.id, v.patch), onSuccess: invalidate, onError: err });

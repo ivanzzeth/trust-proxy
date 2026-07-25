@@ -26,7 +26,7 @@ func (s *Server) handleListRuleSets(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "rule sets not available")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.rs.Get())
+	writeArray(w, http.StatusOK, s.rs.Get().Sets)
 }
 
 func (s *Server) handleRuleSetCatalog(w http.ResponseWriter, r *http.Request) {
@@ -119,7 +119,7 @@ func (s *Server) handleAddRuleSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "apply rule set: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, sets)
+	writeArray(w, http.StatusCreated, sets.Sets)
 }
 
 func (s *Server) handlePatchRuleSet(w http.ResponseWriter, r *http.Request) {
@@ -157,7 +157,7 @@ func (s *Server) handlePatchRuleSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "apply rule set: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, sets)
+	writeArray(w, http.StatusOK, sets.Sets)
 }
 
 func (s *Server) handleDeleteRuleSet(w http.ResponseWriter, r *http.Request) {
@@ -176,7 +176,7 @@ func (s *Server) handleDeleteRuleSet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "apply rule set: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, sets)
+	writeArray(w, http.StatusOK, sets.Sets)
 }
 
 func (s *Server) applyRuleSets(sets ruleset.Sets) error {

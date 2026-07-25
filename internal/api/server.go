@@ -814,6 +814,16 @@ func (s *Server) mutateDirectlist(w http.ResponseWriter, r *http.Request, add bo
 	writeJSON(w, http.StatusOK, rules)
 }
 
+// writeArray writes a JSON array, never null: an empty slice must serialize as
+// [] or every client has to special-case it (this already crashed the Proxies
+// page once).
+func writeArray[T any](w http.ResponseWriter, code int, items []T) {
+	if items == nil {
+		items = []T{}
+	}
+	writeJSON(w, code, items)
+}
+
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)

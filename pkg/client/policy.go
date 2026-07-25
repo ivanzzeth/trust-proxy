@@ -68,43 +68,25 @@ func (c *Client) DeleteListEntry(kind listKind, typ, value string) (apitypes.ACL
 
 // ---- custom rules + policy packs ---------------------------------------
 
-// The custom-rule and rule-set endpoints return their whole store document
-// ({"rules":[…]} / {"sets":[…]}), so the SDK unwraps it and hands callers the
-// slice they actually asked for.
-type customRulesDoc struct {
-	Rules []apitypes.CustomRule `json:"rules"`
-}
-
-type ruleSetsDoc struct {
-	Sets []apitypes.RuleSet `json:"sets"`
-}
-
-// PackResult is what applying a pack changed: its rules plus the rule sets it
-// imported (their roles get merged into any shared tag).
-type PackResult struct {
-	Rules    []apitypes.CustomRule `json:"rules"`
-	RuleSets []apitypes.RuleSet    `json:"rule_sets"`
-}
-
 // CustomRules returns the ordered custom rule list (L4 priority order).
 func (c *Client) CustomRules() ([]apitypes.CustomRule, error) {
-	var doc customRulesDoc
-	err := c.do(http.MethodGet, "/api/customrules", nil, &doc)
-	return doc.Rules, err
+	var out []apitypes.CustomRule
+	err := c.do(http.MethodGet, "/api/customrules", nil, &out)
+	return out, err
 }
 
 // AddCustomRule appends a rule and returns the resulting ordered list.
 func (c *Client) AddCustomRule(r apitypes.CustomRule) ([]apitypes.CustomRule, error) {
-	var doc customRulesDoc
-	err := c.do(http.MethodPost, "/api/customrules", r, &doc)
-	return doc.Rules, err
+	var out []apitypes.CustomRule
+	err := c.do(http.MethodPost, "/api/customrules", r, &out)
+	return out, err
 }
 
 // PatchCustomRule updates the set fields of one rule.
 func (c *Client) PatchCustomRule(id string, req apitypes.PatchCustomRuleRequest) ([]apitypes.CustomRule, error) {
-	var doc customRulesDoc
-	err := c.do(http.MethodPatch, "/api/customrules/"+url.PathEscape(id), req, &doc)
-	return doc.Rules, err
+	var out []apitypes.CustomRule
+	err := c.do(http.MethodPatch, "/api/customrules/"+url.PathEscape(id), req, &out)
+	return out, err
 }
 
 // DeleteCustomRule removes one rule.
@@ -114,9 +96,9 @@ func (c *Client) DeleteCustomRule(id string) error {
 
 // MoveCustomRule shifts a rule's priority: dir<0 up, dir>0 down.
 func (c *Client) MoveCustomRule(id string, dir int) ([]apitypes.CustomRule, error) {
-	var doc customRulesDoc
-	err := c.do(http.MethodPost, "/api/customrules/"+url.PathEscape(id)+"/move", map[string]int{"dir": dir}, &doc)
-	return doc.Rules, err
+	var out []apitypes.CustomRule
+	err := c.do(http.MethodPost, "/api/customrules/"+url.PathEscape(id)+"/move", map[string]int{"dir": dir}, &out)
+	return out, err
 }
 
 // PackCatalog lists the curated one-click policy packs.
@@ -127,17 +109,17 @@ func (c *Client) PackCatalog() ([]apitypes.PackPreset, error) {
 }
 
 // ApplyPack imports a catalog pack by name.
-func (c *Client) ApplyPack(name string) (PackResult, error) {
-	var out PackResult
+func (c *Client) ApplyPack(name string) (apitypes.PackApplyResult, error) {
+	var out apitypes.PackApplyResult
 	err := c.do(http.MethodPost, "/api/customrules/packs/apply", map[string]string{"catalog": name}, &out)
 	return out, err
 }
 
 // PatchPack enables/disables every rule of a pack.
 func (c *Client) PatchPack(name string, enabled bool) ([]apitypes.CustomRule, error) {
-	var doc customRulesDoc
-	err := c.do(http.MethodPatch, "/api/customrules/packs/"+url.PathEscape(name), map[string]bool{"enabled": enabled}, &doc)
-	return doc.Rules, err
+	var out []apitypes.CustomRule
+	err := c.do(http.MethodPatch, "/api/customrules/packs/"+url.PathEscape(name), map[string]bool{"enabled": enabled}, &out)
+	return out, err
 }
 
 // DeletePack removes a pack's rules (and subtracts its rule-set roles).
@@ -149,9 +131,9 @@ func (c *Client) DeletePack(name string) error {
 
 // RuleSets lists the imported sing-box rule sets.
 func (c *Client) RuleSets() ([]apitypes.RuleSet, error) {
-	var doc ruleSetsDoc
-	err := c.do(http.MethodGet, "/api/rulesets", nil, &doc)
-	return doc.Sets, err
+	var out []apitypes.RuleSet
+	err := c.do(http.MethodGet, "/api/rulesets", nil, &out)
+	return out, err
 }
 
 // RuleSetCatalog lists the public rule sets available for one-click import.
@@ -163,16 +145,16 @@ func (c *Client) RuleSetCatalog() ([]apitypes.RuleSetCatalogEntry, error) {
 
 // AddRuleSet imports a rule set (by catalog tag or explicit URL/path).
 func (c *Client) AddRuleSet(req apitypes.AddRuleSetRequest) ([]apitypes.RuleSet, error) {
-	var doc ruleSetsDoc
-	err := c.do(http.MethodPost, "/api/rulesets", req, &doc)
-	return doc.Sets, err
+	var out []apitypes.RuleSet
+	err := c.do(http.MethodPost, "/api/rulesets", req, &out)
+	return out, err
 }
 
 // PatchRuleSet toggles enabled / changes the role of one rule set.
 func (c *Client) PatchRuleSet(tag string, req apitypes.PatchRuleSetRequest) ([]apitypes.RuleSet, error) {
-	var doc ruleSetsDoc
-	err := c.do(http.MethodPatch, "/api/rulesets/"+url.PathEscape(tag), req, &doc)
-	return doc.Sets, err
+	var out []apitypes.RuleSet
+	err := c.do(http.MethodPatch, "/api/rulesets/"+url.PathEscape(tag), req, &out)
+	return out, err
 }
 
 // DeleteRuleSet removes one rule set.

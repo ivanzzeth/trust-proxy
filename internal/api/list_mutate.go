@@ -35,3 +35,12 @@ func applyOrRollback[T any](w http.ResponseWriter, rules, prev T, apply func(T) 
 	}
 	return false
 }
+
+// nonNil returns an empty slice instead of nil so it serializes as [] rather
+// than null.
+func nonNil[T any](s []T) []T {
+	if s == nil {
+		return []T{}
+	}
+	return s
+}

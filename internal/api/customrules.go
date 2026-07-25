@@ -14,7 +14,7 @@ func (s *Server) handleListCustomRules(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "custom rules not available")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.cr.Get())
+	writeArray(w, http.StatusOK, s.cr.Get().Rules)
 }
 
 func (s *Server) handleAddCustomRule(w http.ResponseWriter, r *http.Request) {
@@ -39,7 +39,7 @@ func (s *Server) handleAddCustomRule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "apply custom rule: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusCreated, rules)
+	writeArray(w, http.StatusCreated, rules.Rules)
 }
 
 func (s *Server) handlePatchCustomRule(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +63,7 @@ func (s *Server) handlePatchCustomRule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "apply custom rule: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, rules)
+	writeArray(w, http.StatusOK, rules.Rules)
 }
 
 func (s *Server) handleDeleteCustomRule(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +82,7 @@ func (s *Server) handleDeleteCustomRule(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadGateway, "apply custom rule: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, rules)
+	writeArray(w, http.StatusOK, rules.Rules)
 }
 
 func (s *Server) handleMoveCustomRule(w http.ResponseWriter, r *http.Request) {
@@ -108,7 +108,7 @@ func (s *Server) handleMoveCustomRule(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "apply custom rule: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, rules)
+	writeArray(w, http.StatusOK, rules.Rules)
 }
 
 // ---- Allow packs (named groups of custom rules + optional rule sets) -----
@@ -228,9 +228,11 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"rules":     out,
-		"rule_sets": packRS,
+	// Applying a pack changes two things, so this one is a genuine result object
+	// (not a list endpoint): its rules plus the rule sets it imported.
+	writeJSON(w, http.StatusCreated, apitypes.PackApplyResult{
+		Rules:    nonNil(out.Rules),
+		RuleSets: nonNil(packRS),
 	})
 }
 
@@ -365,7 +367,7 @@ func (s *Server) handlePatchPack(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "apply pack: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, rules)
+	writeArray(w, http.StatusOK, rules.Rules)
 }
 
 func (s *Server) handleDeletePack(w http.ResponseWriter, r *http.Request) {
@@ -442,7 +444,7 @@ func (s *Server) handleDeletePack(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "apply pack: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, rules)
+	writeArray(w, http.StatusOK, rules.Rules)
 }
 
 func findPackPreset(name string) *apitypes.PackPreset {

@@ -90,6 +90,23 @@ func TestListKindMapsToItsOwnEndpoint(t *testing.T) {
 	}
 }
 
+// No-Proxy carries always-on built-in ranges the gateway owns; a client that
+// drops them shows a list the user cannot act on and hides why LAN traffic is
+// direct.
+func TestListBuiltinsAreDecoded(t *testing.T) {
+	c, _ := fakeAPI(t, `{"builtin":["10.0.0.0/8","fc00::/7"],"domains":["nas.tp"],"ips":null}`)
+	list, err := c.List(ListNoProxy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Builtin) != 2 || list.Builtin[0] != "10.0.0.0/8" {
+		t.Fatalf("builtin = %v", list.Builtin)
+	}
+	if len(list.Domains) != 1 {
+		t.Fatalf("domains = %v", list.Domains)
+	}
+}
+
 func TestListDeleteUsesDelete(t *testing.T) {
 	c, seen := fakeAPI(t, `{}`)
 	if _, err := c.DeleteListEntry(ListPermit, "ip", "1.2.3.4/32"); err != nil {
@@ -122,7 +139,7 @@ func TestSetModeGuard(t *testing.T) {
 // Ids/tags go into the path, so they must be escaped — a pack named "AI (other)"
 // or a tag with a slash would otherwise hit a different route.
 func TestPathParamsAreEscaped(t *testing.T) {
-	c, seen := fakeAPI(t, `{"rules":[]}`) // these endpoints return the store doc
+	c, seen := fakeAPI(t, `[]`)
 	if _, err := c.PatchPack("AI (other)", false); err != nil {
 		t.Fatal(err)
 	}
@@ -189,11 +206,12 @@ func TestDNSRoundTrip(t *testing.T) {
 	}
 }
 
-// The custom-rule / rule-set endpoints return their whole store document. The
-// SDK must unwrap it — decoding it as a bare array is what broke every one of
-// those commands the first time they hit a real backend.
-func TestStoreDocumentsAreUnwrapped(t *testing.T) {
-	c, _ := fakeAPI(t, `{"rules":[{"id":"abc123","match":"domain_suffix","value":"intranet.tp","egress":"direct","enabled":true}]}`)
+// List endpoints are bare arrays, like every other list endpoint. They used to
+// hand out the internal store struct ({"rules":[…]} / {"sets":[…]}), which broke
+// six CLI commands and forced every client to special-case two paths; the
+// inconsistency was fixed in the API rather than papered over here.
+func TestListEndpointsAreBareArrays(t *testing.T) {
+	c, _ := fakeAPI(t, `[{"id":"abc123","match":"domain_suffix","value":"intranet.tp","egress":"direct","enabled":true}]`)
 	rules, err := c.CustomRules()
 	if err != nil {
 		t.Fatal(err)
@@ -206,7 +224,7 @@ func TestStoreDocumentsAreUnwrapped(t *testing.T) {
 		t.Fatalf("add returned %+v (%v)", added, err)
 	}
 
-	c2, _ := fakeAPI(t, `{"sets":[{"tag":"geosite-cn","role":"route-direct","type":"remote","enabled":true}]}`)
+	c2, _ := fakeAPI(t, `[{"tag":"geosite-cn","role":"route-direct","type":"remote","enabled":true}]`)
 	sets, err := c2.RuleSets()
 	if err != nil {
 		t.Fatal(err)
@@ -215,13 +233,19 @@ func TestStoreDocumentsAreUnwrapped(t *testing.T) {
 		t.Fatalf("rule sets = %+v", sets)
 	}
 
-	c3, _ := fakeAPI(t, `{"rules":[{"id":"r1"}],"rule_sets":[{"tag":"geosite-claude"}]}`)
+	// Applying a pack is the one non-list case: a result object carrying both
+	// halves of what changed. Its rule_sets are catalog bindings (catalog_tag +
+	// role), not full descriptors.
+	c3, _ := fakeAPI(t, `{"rules":[{"id":"r1"}],"rule_sets":[{"catalog_tag":"geosite-claude","role":"permit+route-proxy"}]}`)
 	res, err := c3.ApplyPack("Claude")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(res.Rules) != 1 || len(res.RuleSets) != 1 {
 		t.Fatalf("pack result = %+v", res)
+	}
+	if res.RuleSets[0].CatalogTag != "geosite-claude" || res.RuleSets[0].Role != "permit+route-proxy" {
+		t.Fatalf("pack rule set = %+v (decoded into the wrong type?)", res.RuleSets[0])
 	}
 }
 
