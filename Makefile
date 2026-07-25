@@ -10,6 +10,11 @@ WEBUI_DIR    := webui
 #   with_tailscale -> Tailscale exit endpoints (big dep; ~+18MB binary)
 TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard with_tailscale
 
+# Stamp the binary with the tag it was built from, so `trust-proxy -v` reports
+# something other than "dev" (falls back to the commit when tags are absent).
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
+
 .PHONY: run build build-embed tidy webui webui-dev dashboard dashboard-dev deps clean e2e redeploy
 
 # Redeploy defaults (override: make redeploy MODE=manual)
@@ -24,11 +29,11 @@ run: build
 
 ## Compile the Go backend (with $(TAGS) if set); serves dashboard from disk
 build:
-	go build $(if $(TAGS),-tags "$(TAGS)",) -o trust-proxy .
+	go build $(if $(TAGS),-tags "$(TAGS)",) -ldflags "$(LDFLAGS)" -o trust-proxy .
 
 ## Single self-contained binary: build the dashboard then embed it (embed_ui)
 build-embed: dashboard
-	go build -tags "$(TAGS) embed_ui" -o trust-proxy .
+	go build -tags "$(TAGS) embed_ui" -ldflags "$(LDFLAGS)" -o trust-proxy .
 
 ## Build embedded UI + binary, then restart the daemon.
 ## One sudo wraps stop+start (one password). Override MODE=manual to skip root if unused.
