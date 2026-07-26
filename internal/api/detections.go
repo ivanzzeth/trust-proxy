@@ -28,7 +28,12 @@ func (s *Server) handleDetections(w http.ResponseWriter, r *http.Request) {
 			q.Offset = n
 		}
 	}
-	writeJSON(w, http.StatusOK, s.detections.Query(q))
+	page := s.detections.Query(q)
+	if scope := s.scopeUser(r); scope != "" {
+		page.Items = scopeDetections(page.Items, scope)
+		page.Total = len(page.Items)
+	}
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) handleDetectionsStats(w http.ResponseWriter, r *http.Request) {

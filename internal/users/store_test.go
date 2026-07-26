@@ -25,7 +25,7 @@ func TestFirstAccountIsAlwaysAdmin(t *testing.T) {
 		t.Fatal("a new registry must be empty (that is what triggers bootstrap)")
 	}
 	// Even asking for a plain user: the first one is promoted.
-	u, err := s.Create("alice", "correct-horse-battery", RoleUser)
+	u, err := s.Create("alice", "correct-horse-battery", RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,12 +36,12 @@ func TestFirstAccountIsAlwaysAdmin(t *testing.T) {
 		t.Fatal("registry still reports empty after a create")
 	}
 	// The second one gets what it asked for.
-	b, err := s.Create("bob", "another-long-password", RoleUser)
+	b, err := s.Create("bob", "another-long-password", RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b.Role != RoleUser {
-		t.Fatalf("second account role = %q, want user", b.Role)
+	if b.Role != RoleClient {
+		t.Fatalf("second account role = %q, want client", b.Role)
 	}
 }
 
@@ -106,7 +106,7 @@ func TestAuthenticate(t *testing.T) {
 func TestDisabledAccountCannotAuthenticate(t *testing.T) {
 	s := newStore(t)
 	admin, _ := s.Create("admin", "correct-horse-battery", RoleAdmin)
-	bob, _ := s.Create("bob", "another-long-password", RoleUser)
+	bob, _ := s.Create("bob", "another-long-password", RoleClient)
 	if err := s.SetDisabled(bob.ID, true); err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +124,7 @@ func TestDisabledAccountCannotAuthenticate(t *testing.T) {
 func TestLastAdminIsProtected(t *testing.T) {
 	s := newStore(t)
 	admin, _ := s.Create("admin", "correct-horse-battery", RoleAdmin)
-	if err := s.SetRole(admin.ID, RoleUser); err == nil {
+	if err := s.SetRole(admin.ID, RoleClient); err == nil {
 		t.Fatal("demoting the last admin must be refused")
 	}
 	if err := s.Delete(admin.ID); err == nil {
@@ -132,7 +132,7 @@ func TestLastAdminIsProtected(t *testing.T) {
 	}
 	// With a second admin, both become allowed.
 	second, _ := s.Create("root2", "yet-another-password", RoleAdmin)
-	if err := s.SetRole(admin.ID, RoleUser); err != nil {
+	if err := s.SetRole(admin.ID, RoleClient); err != nil {
 		t.Fatalf("demotion with another admin present: %v", err)
 	}
 	if err := s.Delete(second.ID); err == nil {
@@ -172,7 +172,7 @@ func TestProxyPasswordIsThisAccountsSecondSecret(t *testing.T) {
 		t.Fatal("credential was not cleared")
 	}
 	// A disabled account must not keep proxy access either.
-	bob, _ := s.Create("bob", "another-long-password", RoleUser)
+	bob, _ := s.Create("bob", "another-long-password", RoleClient)
 	_ = s.SetProxyPassword(bob.ID, "bob-proxy-pass")
 	_ = s.SetDisabled(bob.ID, true)
 	if len(s.ProxyCredentials()) != 0 {
@@ -245,7 +245,7 @@ func TestValidation(t *testing.T) {
 	if _, err := s.Create("alice", "long-enough-password", RoleAdmin); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Create("ALICE", "long-enough-password", RoleUser); err == nil {
+	if _, err := s.Create("ALICE", "long-enough-password", RoleClient); err == nil {
 		t.Error("usernames must be unique case-insensitively")
 	}
 }
@@ -308,8 +308,8 @@ func TestRegistrationIsClosedByDefaultAndOnlyMakesPlainUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registration should now succeed: %v", err)
 	}
-	if bob.Role != RoleUser {
-		t.Fatalf("self-registered role = %q, want user (never admin)", bob.Role)
+	if bob.Role != RoleClient {
+		t.Fatalf("self-registered role = %q, want client (never admin)", bob.Role)
 	}
 	// The switch is persistent.
 	again, err := NewStore(s.path)

@@ -56,6 +56,10 @@ type Metadata struct {
 	Host            string `json:"host"`
 	Process         string `json:"process"`
 	ProcessPath     string `json:"processPath"`
+	// User is the inbound account this connection authenticated as (our fork
+	// reports it). Empty when the inbound has no auth. It is what lets a
+	// multi-user gateway show one person their own traffic and nothing else.
+	User string `json:"user,omitempty"`
 }
 
 // Connection is one active connection from GET /connections.

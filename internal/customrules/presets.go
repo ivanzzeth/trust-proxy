@@ -14,6 +14,7 @@ import (
 // China is split:
 //   - "China (wide)" — Permit geosite-cn (security warning: mainland C2 allowed)
 //   - "China-direct" — Route geosite-cn → direct only (does not permit)
+//
 // Old one-click "CN works" = enable both.
 var Presets = []apitypes.PackPreset{
 	{
@@ -52,10 +53,10 @@ var Presets = []apitypes.PackPreset{
 			"ollama.com"),
 	},
 	{
-		Name: "Dev",
+		Name:        "Dev",
 		Description: "GitHub + Microsoft-dev via geosite (permit+proxy), plus Git SSH / registry pins.",
-		Exit:     apitypes.PackExitAuto,
-		RuleSets: catalogRSRole(apitypes.RuleRolePermitRouteProxy, "geosite-github", "geosite-microsoft-dev"),
+		Exit:        apitypes.PackExitAuto,
+		RuleSets:    catalogRSRole(apitypes.RuleRolePermitRouteProxy, "geosite-github", "geosite-microsoft-dev"),
 		Rules: concatRules(
 			proxyRules("Dev", "ssh.github.com", "github.com", "githubusercontent.com"),
 			proxyCIDRs("Dev", githubGitCIDRs...),
@@ -105,10 +106,10 @@ var Presets = []apitypes.PackPreset{
 			"twitch.tv", "ttvnw.net"),
 	},
 	{
-		Name: "Google",
+		Name:        "Google",
 		Description: "Google + YouTube geosite (permit+proxy), plus pinned login hosts ahead of China-direct routes.",
-		Exit:     apitypes.PackExitAuto,
-		RuleSets: catalogRSRole(apitypes.RuleRolePermitRouteProxy, "geosite-google", "geosite-youtube"),
+		Exit:        apitypes.PackExitAuto,
+		RuleSets:    catalogRSRole(apitypes.RuleRolePermitRouteProxy, "geosite-google", "geosite-youtube"),
 		Rules: proxyRules("Google",
 			"accounts.google.com",
 			"accounts.youtube.com",

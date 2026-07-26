@@ -343,6 +343,7 @@ func (e *Engine) makeDetectionLocked(kind Kind, action Action, ev *Event, reason
 		Kind:        kind,
 		Host:        ev.Host,
 		Destination: ev.Destination,
+		User:        ev.User,
 		Process:     ev.Process,
 		Upload:      atomic.LoadInt64(&ev.Upload),
 		Download:    atomic.LoadInt64(&ev.Download),

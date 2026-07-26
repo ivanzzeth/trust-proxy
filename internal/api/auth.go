@@ -65,6 +65,30 @@ var publicPaths = []string{
 	"/api/auth/register", // refused by the store unless an admin opened it
 }
 
+// selfService is what a client may do to its own account: change its password,
+// rotate its own API keys. Judged against the authenticated identity in
+// withAuth — the path alone cannot say whether {id} is you.
+func isSelfService(r *http.Request) (id string, ok bool) {
+	p := path0(r.URL.Path)
+	if !strings.HasPrefix(p, "/api/users/") {
+		return "", false
+	}
+	rest := strings.TrimPrefix(p, "/api/users/")
+	id = rest
+	if i := strings.Index(rest, "/"); i >= 0 {
+		id, rest = rest[:i], rest[i:]
+	} else {
+		rest = ""
+	}
+	switch {
+	case rest == "" && r.Method == http.MethodPatch: // own password (fields checked below)
+		return id, true
+	case strings.HasPrefix(rest, "/apikeys"): // own keys
+		return id, true
+	}
+	return "", false
+}
+
 // requirement returns the access level a request needs.
 func requirement(r *http.Request) access {
 	p := path0(r.URL.Path)
@@ -130,6 +154,13 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 		if need == accessAdmin && user.Role != users.RoleAdmin {
+			// One exception: your own account. A client has to be able to change its
+			// own password and rotate its own API keys without an admin, and doing
+			// that is not an administrative act.
+			if id, ok := isSelfService(r); ok && id == user.ID {
+				next.ServeHTTP(w, r)
+				return
+			}
 			writeErr(w, http.StatusForbidden, "this action requires an administrator")
 			return
 		}

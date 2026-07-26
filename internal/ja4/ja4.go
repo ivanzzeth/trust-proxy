@@ -28,12 +28,12 @@ import (
 
 // Fingerprint is a parsed JA4 plus the parts a human wants to see.
 type Fingerprint struct {
-	JA4     string   `json:"ja4"`
-	Version string   `json:"version"`         // 13 / 12 / …
-	ALPN    string   `json:"alpn,omitempty"`  // first offered protocol
-	SNI     bool     `json:"sni"`             // did the hello carry a server name
-	Ciphers int      `json:"ciphers"`         // count, GREASE excluded
-	Exts    int      `json:"extensions"`      // count, GREASE excluded
+	JA4        string   `json:"ja4"`
+	Version    string   `json:"version"`        // 13 / 12 / …
+	ALPN       string   `json:"alpn,omitempty"` // first offered protocol
+	SNI        bool     `json:"sni"`            // did the hello carry a server name
+	Ciphers    int      `json:"ciphers"`        // count, GREASE excluded
+	Exts       int      `json:"extensions"`     // count, GREASE excluded
 	Extensions []uint16 `json:"-"`
 }
 

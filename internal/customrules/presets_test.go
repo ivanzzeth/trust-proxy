@@ -291,8 +291,8 @@ func TestPresets_TelegramCoversOfficialCIDRs(t *testing.T) {
 		t.Fatal("Telegram preset missing")
 	}
 	need := map[string]bool{
-		"91.108.56.0/22":    false,
-		"149.154.160.0/20":  false,
+		"91.108.56.0/22":     false,
+		"149.154.160.0/20":   false,
 		"2001:b28:f23f::/48": false,
 	}
 	for _, r := range tg.Rules {

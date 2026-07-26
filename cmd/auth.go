@@ -238,7 +238,7 @@ var userAddCmd = &cobra.Command{
 			role = users.RoleAdmin
 		}
 		if role == "" {
-			role = users.RoleUser
+			role = users.RoleClient
 		}
 		u, err := sdk().CreateUser(args[0], pw, role)
 		if err != nil {

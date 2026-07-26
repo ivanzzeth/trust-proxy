@@ -76,6 +76,9 @@ func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapte
 		}
 	}
 	ev := d.engine.TrackWithFingerprint("tcp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound), fp)
+	// Who this is, when the inbound authenticates. Needed to show a person their
+	// own traffic on a shared gateway.
+	ev.SetUser(m.User)
 	if timing := adapter.ConnectionTimingFromContext(ctx); timing != nil {
 		ev.SetTiming(connTiming{timing})
 	}
@@ -91,7 +94,8 @@ func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapte
 
 func (d *detector) RoutedPacketConnection(ctx context.Context, conn N.PacketConn, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) N.PacketConn {
 	// UDP: record the event (no byte-count wrapper for packet conns yet).
-	d.engine.Track("udp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound))
+	ev := d.engine.Track("udp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound))
+	ev.SetUser(m.User)
 	return conn
 }
 

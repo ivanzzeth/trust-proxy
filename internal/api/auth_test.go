@@ -11,6 +11,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/authn"
 	"github.com/ivanzzeth/trust-proxy/internal/users"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
+	"github.com/ivanzzeth/trust-proxy/pkg/clash"
 )
 
 // The authorization policy is a table, so it gets tested as one. What matters is
@@ -55,7 +56,7 @@ func TestAccessMatrix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, err := us.Create("bob", "bob-password-long", users.RoleUser)
+	plain, err := us.Create("bob", "bob-password-long", users.RoleClient)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +124,7 @@ func TestAccessMatrix(t *testing.T) {
 func TestAPIKeyAuthenticatesWithTheOwnersRole(t *testing.T) {
 	s, us, _, _ := newAuthServer(t)
 	admin, _ := us.Create("admin", "admin-password-long", users.RoleAdmin)
-	plain, _ := us.Create("bob", "bob-password-long", users.RoleUser)
+	plain, _ := us.Create("bob", "bob-password-long", users.RoleClient)
 	adminKey, _ := us.CreateAPIKey(admin.ID, "cli", 0)
 	plainKey, _ := us.CreateAPIKey(plain.ID, "cli", 0)
 
@@ -156,7 +157,7 @@ func TestAPIKeyAuthenticatesWithTheOwnersRole(t *testing.T) {
 func TestDisabledAccountLosesItsSessionImmediately(t *testing.T) {
 	s, us, a, _ := newAuthServer(t)
 	_, _ = us.Create("admin", "admin-password-long", users.RoleAdmin)
-	bob, _ := us.Create("bob", "bob-password-long", users.RoleUser)
+	bob, _ := us.Create("bob", "bob-password-long", users.RoleClient)
 	tok, _, _ := a.Issue(bob)
 
 	r := req("GET", "/api/status")
@@ -187,7 +188,7 @@ func TestRoleChangeAppliesToLiveSessions(t *testing.T) {
 	if got := serve(s, r).Code; got != 200 {
 		t.Fatalf("admin: got %d", got)
 	}
-	if err := us.SetRole(second.ID, users.RoleUser); err != nil {
+	if err := us.SetRole(second.ID, users.RoleClient); err != nil {
 		t.Fatal(err)
 	}
 	r = req("POST", "/api/mode")
@@ -272,7 +273,7 @@ func TestCrossOriginMutationsAreRefused(t *testing.T) {
 func TestNodeProxyPrefixIsJudgedByTheForwardedPath(t *testing.T) {
 	s, us, a, _ := newAuthServer(t)
 	_, _ = us.Create("admin", "admin-password-long", users.RoleAdmin)
-	bob, _ := us.Create("bob", "bob-password-long", users.RoleUser)
+	bob, _ := us.Create("bob", "bob-password-long", users.RoleClient)
 	tok, _, _ := a.Issue(bob)
 
 	r := req("POST", "/api/nodes/n1/mode")
@@ -396,7 +397,95 @@ func TestRegistrationFlow(t *testing.T) {
 	}
 	var sess apitypes.Session
 	_ = json.Unmarshal(rec.Body.Bytes(), &sess)
-	if sess.User.Role != users.RoleUser {
+	if sess.User.Role != users.RoleClient {
 		t.Fatalf("self-registered role = %q, want user", sess.User.Role)
+	}
+}
+
+// A client sees its own traffic and only its own. On a shared gateway the
+// alternative is that every user can watch every other user's destinations —
+// the gateway would leak the very thing it exists to control.
+func TestObservabilityIsScopedToTheCaller(t *testing.T) {
+	s, us, a, _ := newAuthServer(t)
+	admin, _ := us.Create("admin", "admin-password-long", users.RoleAdmin)
+	alice, _ := us.Create("alice", "alice-password-long", users.RoleClient)
+
+	snap := clash.Connections{
+		UploadTotal: 300, DownloadTotal: 3000,
+		Connections: []clash.Connection{
+			{ID: "1", Upload: 100, Download: 1000, Metadata: clash.Metadata{Host: "mine.example", User: "alice"}},
+			{ID: "2", Upload: 200, Download: 2000, Metadata: clash.Metadata{Host: "theirs.example", User: "bob"}},
+		},
+	}
+	// A client: only its own rows, and the totals recomputed to match.
+	got := scopeConnections(snap, "alice")
+	if len(got.Connections) != 1 || got.Connections[0].Metadata.Host != "mine.example" {
+		t.Fatalf("scoped connections = %+v", got.Connections)
+	}
+	if got.UploadTotal != 100 || got.DownloadTotal != 1000 {
+		t.Fatalf("totals still describe the whole gateway: up=%d down=%d", got.UploadTotal, got.DownloadTotal)
+	}
+	// An admin: everything, untouched.
+	if all := scopeConnections(snap, ""); len(all.Connections) != 2 || all.UploadTotal != 300 {
+		t.Fatalf("admin view was filtered: %+v", all)
+	}
+
+	// Case-insensitive, since usernames are matched that way everywhere else.
+	if len(scopeConnections(snap, "ALICE").Connections) != 1 {
+		t.Fatal("username matching must be case-insensitive")
+	}
+
+	// And the scope comes from the session, not from the request.
+	aliceTok, _, _ := a.Issue(alice)
+	r := req("GET", "/api/connections")
+	r.AddCookie(&http.Cookie{Name: authn.CookieName, Value: aliceTok})
+	if scope := s.scopeUser(r); scope != "alice" {
+		t.Fatalf("scopeUser = %q, want alice", scope)
+	}
+	adminTok, _, _ := a.Issue(admin)
+	r = req("GET", "/api/connections")
+	r.AddCookie(&http.Cookie{Name: authn.CookieName, Value: adminTok})
+	if scope := s.scopeUser(r); scope != "" {
+		t.Fatalf("admin scope = %q, want unrestricted", scope)
+	}
+}
+
+// Self-service exists so a client can change its own password without an admin —
+// and stops exactly there. Being your own account is not the same as being an
+// admin of it.
+func TestSelfServiceCannotEscalate(t *testing.T) {
+	s, us, a, _ := newAuthServer(t)
+	_, _ = us.Create("admin", "admin-password-long", users.RoleAdmin)
+	alice, _ := us.Create("alice", "alice-password-long", users.RoleClient)
+	bob, _ := us.Create("bob", "bob-password-long", users.RoleClient)
+	tok, _, _ := a.Issue(alice)
+
+	withSession := func(method, path, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest(method, path, strings.NewReader(body))
+		r.RemoteAddr = "127.0.0.1:1"
+		r.AddCookie(&http.Cookie{Name: authn.CookieName, Value: tok})
+		rec := httptest.NewRecorder()
+		s.withAuth(http.HandlerFunc(func(w http.ResponseWriter, rr *http.Request) {
+			rr.SetPathValue("id", strings.TrimPrefix(strings.Split(rr.URL.Path, "/apikeys")[0], "/api/users/"))
+			s.handlePatchUser(w, rr)
+		})).ServeHTTP(rec, r)
+		return rec
+	}
+
+	// Own password: allowed.
+	if rec := withSession("PATCH", "/api/users/"+alice.ID, `{"password":"a-new-long-password"}`); rec.Code != 200 {
+		t.Fatalf("own password change: got %d (%s)", rec.Code, rec.Body)
+	}
+	// Own role: refused — this is the escalation the middleware alone would miss.
+	if rec := withSession("PATCH", "/api/users/"+alice.ID, `{"role":"admin"}`); rec.Code != 403 {
+		t.Fatalf("self-promotion to admin: got %d, want 403 (%s)", rec.Code, rec.Body)
+	}
+	// Own proxy access: refused — that is a grant, not a self-service setting.
+	if rec := withSession("PATCH", "/api/users/"+alice.ID, `{"proxy_password":"let-me-in"}`); rec.Code != 403 {
+		t.Fatalf("self-granted proxy access: got %d, want 403 (%s)", rec.Code, rec.Body)
+	}
+	// Somebody else's account: refused by the middleware.
+	if rec := withSession("PATCH", "/api/users/"+bob.ID, `{"password":"not-your-account"}`); rec.Code != 403 {
+		t.Fatalf("patching another account: got %d, want 403 (%s)", rec.Code, rec.Body)
 	}
 }

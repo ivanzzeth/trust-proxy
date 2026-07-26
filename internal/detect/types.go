@@ -39,22 +39,27 @@ const (
 // Event is one observed egress connection plus its detection verdict.
 // Kept for the connection ring / history finalize sink; alerts also emit Detection.
 type Event struct {
-	ID          uint64   `json:"id"`
-	Time        string   `json:"time"`
-	Network     string   `json:"network"`
-	Host        string   `json:"host"`
-	Destination string   `json:"destination"`
-	Source      string   `json:"source"`
-	Process     string   `json:"process"`
-	JA4         string   `json:"ja4,omitempty"` // TLS client fingerprint, when sniffed
-	Rule        string   `json:"rule"`
-	Outbound    string   `json:"outbound"`
-	Upload      int64    `json:"upload"`
-	Download    int64    `json:"download"`
-	Level       string   `json:"level"`            // "info" | "alert"
-	Block       bool     `json:"block,omitempty"`  // auto-block eligible
-	Denied      bool     `json:"denied,omitempty"` // routed to block outbound
-	Reasons     []string `json:"reasons,omitempty"`
+	ID          uint64 `json:"id"`
+	Time        string `json:"time"`
+	Network     string `json:"network"`
+	Host        string `json:"host"`
+	Destination string `json:"destination"`
+	Source      string `json:"source"`
+	// User is the proxy-inbound account this connection authenticated as, when
+	// the inbound requires credentials. On a shared gateway it is the only way to
+	// attribute a connection to a person — a source IP is not one (NAT, and one
+	// machine can hold several accounts).
+	User     string   `json:"user,omitempty"`
+	Process  string   `json:"process"`
+	JA4      string   `json:"ja4,omitempty"` // TLS client fingerprint, when sniffed
+	Rule     string   `json:"rule"`
+	Outbound string   `json:"outbound"`
+	Upload   int64    `json:"upload"`
+	Download int64    `json:"download"`
+	Level    string   `json:"level"`            // "info" | "alert"
+	Block    bool     `json:"block,omitempty"`  // auto-block eligible
+	Denied   bool     `json:"denied,omitempty"` // routed to block outbound
+	Reasons  []string `json:"reasons,omitempty"`
 	// DurationMS is how long the connection was open (set once it closes; 0
 	// while still active). The single most useful signal for "why does this
 	// feel slow" — a long duration with few bytes moved means the connection
@@ -116,18 +121,30 @@ type TimingSource interface {
 // (see internal/gateway/detector.go).
 func (ev *Event) SetTiming(t TimingSource) { ev.timing = t }
 
+// SetUser attributes the connection to a proxy-inbound account. A setter rather
+// than a Track parameter: it is metadata for the record, never an input to
+// detection, and Track already takes seven arguments.
+func (ev *Event) SetUser(name string) {
+	if ev != nil {
+		ev.User = name
+	}
+}
+
 // Detection is one alert finding (intel / exfil / beacon / dga), durable via Store.
 type Detection struct {
-	ID          uint64   `json:"id"`
-	Time        string   `json:"time"`
-	Kind        Kind     `json:"kind"`
-	Host        string   `json:"host"`
-	Destination string   `json:"destination"`
-	Process     string   `json:"process,omitempty"`
-	JA4         string   `json:"ja4,omitempty"` // TLS client fingerprint, when sniffed
-	Upload      int64    `json:"upload,omitempty"`
-	Download    int64    `json:"download,omitempty"`
-	Action      Action   `json:"action"`
-	Reasons     []string `json:"reasons,omitempty"`
-	EventID     uint64   `json:"event_id,omitempty"`
+	ID          uint64 `json:"id"`
+	Time        string `json:"time"`
+	Kind        Kind   `json:"kind"`
+	Host        string `json:"host"`
+	Destination string `json:"destination"`
+	// User attributes the finding to a proxy-inbound account, so a person can be
+	// shown their own findings and nothing else on a shared gateway.
+	User     string   `json:"user,omitempty"`
+	Process  string   `json:"process,omitempty"`
+	JA4      string   `json:"ja4,omitempty"` // TLS client fingerprint, when sniffed
+	Upload   int64    `json:"upload,omitempty"`
+	Download int64    `json:"download,omitempty"`
+	Action   Action   `json:"action"`
+	Reasons  []string `json:"reasons,omitempty"`
+	EventID  uint64   `json:"event_id,omitempty"`
 }

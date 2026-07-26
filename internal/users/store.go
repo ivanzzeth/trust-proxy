@@ -38,12 +38,29 @@ import (
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
-// Roles. Admin may change policy, mode, users and fleet; User is read-only on
-// the observability surface (connections, history, detections, status).
+// Roles. There are two, and the split is deliberate: everything that decides
+// what may leave the network is admin, and a client is a person who uses the
+// gateway.
+//
+// A client can use the proxy, see its own traffic (scoped server-side — see
+// internal/api/scope.go), manage its own password and API keys, and ask for a
+// destination to be permitted. It cannot read the policy, the node list or the
+// subscriptions, and it cannot see anybody else's connections.
 const (
-	RoleAdmin = "admin"
-	RoleUser  = "user"
+	RoleAdmin  = "admin"
+	RoleClient = "client"
+
+	// RoleUser is the old name for RoleClient, migrated on load.
+	RoleUser = "user"
 )
+
+// normalizeRole maps stored values onto the current set.
+func normalizeRole(role string) string {
+	if role == RoleUser {
+		return RoleClient
+	}
+	return role
+}
 
 // KeyPrefix marks our API keys so a leaked one is recognisable in a log.
 const KeyPrefix = "tp_"
@@ -170,6 +187,10 @@ func NewStore(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &s.data); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	// One-time rename: the non-admin role used to be called "user".
+	for i := range s.data.Users {
+		s.data.Users[i].Role = normalizeRole(s.data.Users[i].Role)
+	}
 	s.stamp = stampOf(path)
 	return s, nil
 }
@@ -237,7 +258,7 @@ func (s *Store) Register(username, password string) (apitypes.User, error) {
 	if !allow {
 		return apitypes.User{}, ErrRegistrationClosed
 	}
-	return s.Create(username, password, RoleUser)
+	return s.Create(username, password, RoleClient)
 }
 
 // ErrRegistrationClosed is returned when self-signup is off (the default).
@@ -272,8 +293,11 @@ func (s *Store) Create(username, password, role string) (apitypes.User, error) {
 	}
 	if len(s.data.Users) == 0 {
 		role = RoleAdmin
-	} else if role != RoleAdmin && role != RoleUser {
-		return apitypes.User{}, fmt.Errorf("role must be %s or %s", RoleAdmin, RoleUser)
+	} else {
+		role = normalizeRole(role)
+		if role != RoleAdmin && role != RoleClient {
+			return apitypes.User{}, fmt.Errorf("role must be %s or %s", RoleAdmin, RoleClient)
+		}
 	}
 	hash, err := HashPassword(password)
 	if err != nil {
@@ -346,8 +370,9 @@ func (s *Store) SetPassword(id, password string) error {
 
 // SetRole changes an account role, refusing to remove the last admin.
 func (s *Store) SetRole(id, role string) error {
-	if role != RoleAdmin && role != RoleUser {
-		return fmt.Errorf("role must be %s or %s", RoleAdmin, RoleUser)
+	role = normalizeRole(role)
+	if role != RoleAdmin && role != RoleClient {
+		return fmt.Errorf("role must be %s or %s", RoleAdmin, RoleClient)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -15,7 +15,7 @@ import (
 
 // State is the on-disk posture file.
 type State struct {
-	Active string                        `json:"active"`
+	Active string                         `json:"active"`
 	Slots  map[string]apitypes.PolicySlot `json:"slots"`
 }
 

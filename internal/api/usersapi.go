@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/ivanzzeth/trust-proxy/internal/users"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
@@ -56,6 +57,15 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
+	}
+	// Self-service is a password change, nothing more. Without this a client could
+	// PATCH itself to admin, or hand itself proxy access it was never granted —
+	// the middleware only checked "is this your account".
+	if caller := s.caller(r); caller != nil && caller.Role != users.RoleAdmin {
+		if req.Role != nil || req.Disabled != nil || req.ProxyPassword != nil {
+			writeErr(w, http.StatusForbidden, "only an administrator can change roles, proxy access or account state")
+			return
+		}
 	}
 	if req.Role != nil {
 		if err := s.users.SetRole(id, *req.Role); err != nil {

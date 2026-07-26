@@ -547,7 +547,8 @@ func (s *Server) handleConnections(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, snap)
+	// A client sees its own connections and only its own (scope.go).
+	writeJSON(w, http.StatusOK, scopeConnections(snap, s.scopeUser(r)))
 }
 
 func (s *Server) handleKillConn(w http.ResponseWriter, r *http.Request) {
@@ -610,7 +611,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, []any{})
 		return
 	}
-	events := s.detect.Events()
+	events := scopeEvents(s.detect.Events(), s.scopeUser(r))
 	if r.URL.Query().Get("level") == "alert" {
 		filtered := events[:0:0]
 		for _, e := range events {

@@ -31,6 +31,13 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	// that only pass host/limit (CLI / early SDK).
 	if q.Get("page") == "1" || q.Has("offset") {
 		items, total := s.history.RecentPage(limit, offset, host)
+		if scope := s.scopeUser(r); scope != "" {
+			// Filtering after the page read costs a shorter page for a client, which
+			// is the honest trade: the alternative is pushing an identity into the
+			// store's read path, and the store must not decide who may see what.
+			items = scopeHistory(items, scope)
+			total = len(items)
+		}
 		if limit <= 0 || limit > 2000 {
 			limit = 50
 		}

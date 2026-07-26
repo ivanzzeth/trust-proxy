@@ -41,10 +41,14 @@ const (
 
 // Record is one completed connection (compact keys — the file can get long).
 type Record struct {
-	Time     string `json:"t"`
-	Host     string `json:"h"`
-	Dest     string `json:"d,omitempty"`
-	Process  string `json:"p,omitempty"`
+	Time    string `json:"t"`
+	Host    string `json:"h"`
+	Dest    string `json:"d,omitempty"`
+	Process string `json:"p,omitempty"`
+	// User is the proxy-inbound account this connection belonged to, when the
+	// inbound authenticates. Kept short like the rest of this record: it is
+	// written once per connection and the file is measured in tens of MB.
+	User     string `json:"usr,omitempty"`
 	Outbound string `json:"o,omitempty"`
 	Up       int64  `json:"u"`
 	Down     int64  `json:"dn"`
@@ -190,7 +194,7 @@ func (s *Store) Close() error {
 // Record appends a completed connection and updates aggregates.
 func (s *Store) Record(e detect.Event) {
 	r := Record{
-		Time: e.Time, Host: e.Host, Dest: e.Destination, Process: e.Process,
+		Time: e.Time, Host: e.Host, Dest: e.Destination, Process: e.Process, User: e.User,
 		Outbound: e.Outbound, Up: e.Upload, Down: e.Download, Denied: e.Denied, Level: e.Level,
 		DurationMS: e.DurationMS, DNSMs: e.DNSMs, ConnectMs: e.ConnectMs, TLSMs: e.TLSMs,
 	}
