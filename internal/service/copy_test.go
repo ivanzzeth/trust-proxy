@@ -133,7 +133,7 @@ func TestProgramFromPlistAndMissingDetection(t *testing.T) {
 	writeBin(t, bin, "x")
 	c := Config{
 		Binary: bin, ConfigPath: "/etc/tp/config.json", DataDir: "/var/lib/tp",
-		APIAddr: "127.0.0.1:9096", LogPath: "/var/log/tp.log",
+		APIAddr: "127.0.0.1:21585", LogPath: "/var/log/tp.log",
 	}
 	plist, err := c.Plist()
 	if err != nil {

@@ -409,7 +409,7 @@ type DNSConfig struct {
 }
 
 // InboundAuth is the optional username/password required on the mixed proxy
-// inbound (:17070). Both empty = auth disabled = the inbound is open.
+// inbound (:21584). Both empty = auth disabled = the inbound is open.
 type InboundAuth struct {
 	Username string `json:"username"`
 	Password string `json:"password"`

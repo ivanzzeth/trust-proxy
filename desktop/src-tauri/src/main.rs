@@ -1,7 +1,7 @@
 // trust-proxy desktop shell (macOS slice).
 //
 // Deliberately thin: the gateway is the Go binary, the console is the UI it
-// already serves at 127.0.0.1:9096, and this process is a window plus a
+// already serves at 127.0.0.1:21585, and this process is a window plus a
 // lifecycle. Nothing about policy or detection lives here — a second
 // implementation of any of it would drift from the CLI within a week.
 //
@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 use tauri::{AppHandle, Manager, RunEvent, State, WebviewWindow};
 
-const DEFAULT_API: &str = "127.0.0.1:9096";
+const DEFAULT_API: &str = "127.0.0.1:21585";
 
 /// Gateway is the child we spawned, if any. `None` means we attached to a
 /// gateway somebody else owns.
@@ -166,7 +166,7 @@ fn start_gateway(app: AppHandle) {
                     let log = rt.data_dir.join("serve.log");
                     // Quote the gateway's own last error instead of pointing at a
                     // log file: the common failure is "port already in use"
-                    // (another gateway, or another proxy app holding 17070), and
+                    // (another gateway, or another proxy app holding 21584), and
                     // that is fixable in ten seconds if we just say it.
                     let why = last_error_line(&log)
                         .map(|l| format!(": {l}"))
@@ -486,7 +486,7 @@ mod tests {
         let log = dir.join("serve.log");
         std::fs::write(
             &log,
-            "\u{1b}[36mINFO\u{1b}[0m network: updated default interface en0\n\u{1b}[31mERROR\u{1b}[0m start inbound/mixed[mixed-in]: listen tcp 127.0.0.1:17070: bind: address already in use\n",
+            "\u{1b}[36mINFO\u{1b}[0m network: updated default interface en0\n\u{1b}[31mERROR\u{1b}[0m start inbound/mixed[mixed-in]: listen tcp 127.0.0.1:21584: bind: address already in use\n",
         )
         .unwrap();
         let got = last_error_line(&log).expect("an error line");

@@ -65,7 +65,7 @@
 - 导出可给 **SFA(Android)/ SFI(iOS)/ Clash Meta / Shadowrocket** 导入的配置/订阅:CN 直连 / 境外走自建出口。检测在出口/网关侧。**不做原生 App**(iOS NE 内存限制 + GPL 与 App Store 冲突)。附使用指引。
 
 ## #4 —— Tauri 桌面壳（**macOS arm64 切片 ✅,其余待做**）
-- ✅ Tauri v2 壳(`desktop/`),`trust-proxy`(embed_ui) 作 **sidecar**;贴附已运行的网关 / 否则拉起,webview 指向 127.0.0.1:9096,数据 `~/.trust-proxy`。产出 `.app` + `.dmg`(`make desktop`)。
+- ✅ Tauri v2 壳(`desktop/`),`trust-proxy`(embed_ui) 作 **sidecar**;贴附已运行的网关 / 否则拉起,webview 指向 127.0.0.1:21585,数据 `~/.trust-proxy`。产出 `.app` + `.dmg`(`make desktop`)。
 - ✅ **透明提权**走系统机制而非壳自己 root:`trust-proxy service install`(launchd LaunchDaemon,root)→ TUN 可用、关窗不掉策略、开机自启;壳上一个按钮＝一次管理员授权跑这条 CLI。`service uninstall` 是逃生口(幂等)。
 - ✅ **不留孤儿**:`serve --exit-with-pid` 让子进程盯父进程(强退/崩溃没有回调,实测过)。
 - ✅ **不指向 bundle 内部**:install 把二进制拷到 `/usr/local/libexec/trust-proxy`(root:wheel)再写 plist;app 删掉/升级不影响 daemon,`uninstall` 只删这份副本。

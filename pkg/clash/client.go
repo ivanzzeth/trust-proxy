@@ -18,7 +18,7 @@ import (
 	"github.com/coder/websocket"
 )
 
-// Client talks to a Clash external controller (e.g. 127.0.0.1:9090).
+// Client talks to a Clash external controller (e.g. 127.0.0.1:21586).
 type Client struct {
 	base   string
 	secret string

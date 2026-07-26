@@ -1,5 +1,4 @@
 SING_BOX_DIR := third_party/sing-box
-WEBUI_DIR    := webui
 
 # Build tags:
 #   with_clash_api -> Clash REST/WS API our backend consumes (pkg/clash)
@@ -15,7 +14,7 @@ TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
-.PHONY: run build build-embed tidy webui webui-dev dashboard dashboard-dev dashboard-test deps clean e2e redeploy desktop desktop-dev desktop-sidecar
+.PHONY: run build build-embed tidy dashboard dashboard-dev dashboard-test deps clean e2e redeploy desktop desktop-dev desktop-sidecar
 
 # Redeploy defaults (override: make redeploy MODE=manual)
 DATA_DIR  ?= $(HOME)/.trust-proxy
@@ -42,7 +41,7 @@ redeploy: build-embed
 	sudo sh -c '$(CURDIR)/trust-proxy proxy stop --pid "$(PID_FILE)" 2>/dev/null || true; \
 		sleep 1; \
 		cd "$(CURDIR)" && ./trust-proxy serve --daemon --data "$(DATA_DIR)" $(if $(CONFIG),-c "$(CONFIG)",) --mode "$(MODE)"'
-	@echo "==> done. UI http://127.0.0.1:9096/  (hard-refresh if needed)"
+	@echo "==> done. UI http://127.0.0.1:21585/  (hard-refresh if needed)"
 	@echo "    stop:  sudo $(CURDIR)/trust-proxy proxy stop --pid $(PID_FILE)"
 
 tidy:
@@ -56,25 +55,15 @@ e2e:
 deps:
 	git submodule update --init --recursive
 
-## Build the cloned official dashboard into webui/dist
-## (uses pnpm; runs codegen `generate` before build — buf generates the
-##  protobuf/Connect client into src/gen, which the app imports)
-webui:
-	cd $(WEBUI_DIR) && corepack pnpm install --frozen-lockfile && corepack pnpm run generate && corepack pnpm run build
-
-## Run the dashboard dev server (talks to the api service on :9095)
-webui-dev:
-	cd $(WEBUI_DIR) && corepack pnpm run dev
-
 ## Frontend unit tests (vitest, jsdom): pages rendered against a mocked API
 dashboard-test:
 	cd dashboard && corepack pnpm test
 
-## Build the shadcn dashboard -> dashboard/dist (served at :9096, the default UI)
+## Build the shadcn dashboard -> dashboard/dist (served at :21585, the default UI)
 dashboard:
 	cd dashboard && corepack pnpm install && corepack pnpm build
 
-## Run the dashboard dev server (Vite at :3100, proxies /api -> :9096)
+## Run the dashboard dev server (Vite at :3100, proxies /api -> :21585)
 dashboard-dev:
 	cd dashboard && corepack pnpm dev
 

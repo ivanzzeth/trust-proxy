@@ -1,4 +1,4 @@
-// trust-proxy backend client. Single origin (:9096); dev server proxies /api.
+// trust-proxy backend client. Single origin (:21585); dev server proxies /api.
 //
 // Multi-node: setNode(id) repoints every call to /api/nodes/{id}/* which the
 // brain reverse-proxies to that gateway. Node-registry calls always target the

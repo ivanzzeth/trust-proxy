@@ -18,7 +18,7 @@ import (
 
 // Options configures the SDK's two endpoints.
 type Options struct {
-	// APIBaseURL is the trust-proxy backend API, e.g. http://127.0.0.1:9096
+	// APIBaseURL is the trust-proxy backend API, e.g. http://127.0.0.1:21585
 	APIBaseURL string
 	// ClashAddr / ClashSecret point at the standard Clash API (low-level).
 	ClashAddr   string

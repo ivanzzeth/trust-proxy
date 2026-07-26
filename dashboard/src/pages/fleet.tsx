@@ -90,7 +90,7 @@ export default function Fleet() {
           </CardHeader>
           <CardContent className="space-y-2">
             <Input placeholder={t('pages.fleet.namePlaceholder')} value={name} onChange={(e) => setName(e.target.value)} />
-            <Input placeholder="http://host:9096" value={url} onChange={(e) => setUrl(e.target.value)} />
+            <Input placeholder="http://host:21585" value={url} onChange={(e) => setUrl(e.target.value)} />
             <Input
               placeholder={t('pages.fleet.tokenPlaceholder')}
               value={token}
@@ -110,7 +110,7 @@ export default function Fleet() {
             </Button>
             <p className="text-xs leading-relaxed text-muted-foreground">
               {t('pages.fleet.remoteHintPre')}
-              <code className="tnum">serve --api-addr 0.0.0.0:9096 --api-token &lt;secret&gt;</code>
+              <code className="tnum">serve --api-addr 0.0.0.0:21585 --api-token &lt;secret&gt;</code>
               {t('pages.fleet.remoteHintPost')}
             </p>
           </CardContent>

@@ -447,7 +447,7 @@ var tunSetCmd = &cobra.Command{
 
 var inboundCmd = &cobra.Command{
 	Use:   "inbound",
-	Short: "Mixed inbound auth (:17070)",
+	Short: "Mixed inbound auth (:21584)",
 }
 
 var inboundGetCmd = &cobra.Command{

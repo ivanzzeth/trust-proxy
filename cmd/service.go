@@ -188,7 +188,7 @@ func init() {
 	f := serviceInstallCmd.Flags()
 	f.StringVarP(&svcConfig, "config", "c", "", "sing-box config path (default <data>/config.json, seeded on first run)")
 	f.StringVar(&svcData, "data", "", "data directory (default ~/.trust-proxy of the invoking user)")
-	f.StringVar(&svcAPIAddr, "api-addr", "127.0.0.1:9096", "backend API listen address")
+	f.StringVar(&svcAPIAddr, "api-addr", "127.0.0.1:21585", "backend API listen address")
 	f.StringVar(&svcMode, "mode", "", "capture mode to start in: manual | system | tun (empty = the config's own)")
 	f.StringVar(&svcLog, "log", "", "log file (default <data>/serve.log)")
 	f.StringVar(&svcBinary, "binary", "", "trust-proxy binary to run (default: this one, symlinks resolved)")

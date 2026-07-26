@@ -25,7 +25,7 @@ func addClientFlags(cmds ...*cobra.Command) {
 	for _, c := range cmds {
 		f := c.PersistentFlags()
 		if f.Lookup("api-addr") == nil {
-			f.StringVar(&apiAddr, "api-addr", "127.0.0.1:9096", "backend API address")
+			f.StringVar(&apiAddr, "api-addr", "127.0.0.1:21585", "backend API address")
 		}
 		if f.Lookup("api-token") == nil {
 			f.StringVar(&apiToken, "api-token", "", "bearer token, when the backend runs with --api-token (probe mode)")

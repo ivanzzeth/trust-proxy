@@ -11,7 +11,7 @@ func base() Config {
 		Binary:     "/usr/local/bin/trust-proxy",
 		ConfigPath: "/etc/trust-proxy/config.json",
 		DataDir:    "/var/lib/trust-proxy",
-		APIAddr:    "127.0.0.1:9096",
+		APIAddr:    "127.0.0.1:21585",
 		LogPath:    "/var/log/trust-proxy.log",
 	}
 }
@@ -31,7 +31,7 @@ func TestPlistIsValidAndCarriesTheServeArguments(t *testing.T) {
 		"<string>/usr/local/bin/trust-proxy</string>",
 		"<string>serve</string>", "<string>-c</string>", "<string>/etc/trust-proxy/config.json</string>",
 		"<string>--data</string>", "<string>/var/lib/trust-proxy</string>",
-		"<string>--api-addr</string>", "<string>127.0.0.1:9096</string>",
+		"<string>--api-addr</string>", "<string>127.0.0.1:21585</string>",
 		"<string>--mode</string>", "<string>tun</string>",
 		"<key>RunAtLoad</key>", "<key>KeepAlive</key>",
 	} {

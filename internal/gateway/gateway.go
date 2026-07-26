@@ -40,7 +40,7 @@ const ProxyGroupTag = "proxy"
 
 // Operating modes: how the gateway captures traffic.
 const (
-	ModeManual = "manual" // mixed inbound only; apps point at 127.0.0.1:17070
+	ModeManual = "manual" // mixed inbound only; apps point at 127.0.0.1:21584
 	ModeSystem = "system" // mixed inbound + set the OS system proxy to it
 	ModeTUN    = "tun"    // tun inbound + auto_route: capture ALL traffic (needs root)
 )

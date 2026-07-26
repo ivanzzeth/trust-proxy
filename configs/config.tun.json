@@ -5,12 +5,17 @@
   },
   "dns": {
     "servers": [
-      { "type": "https", "tag": "dns-local", "server": "8.8.8.8", "detour": "proxy" }
+      {
+        "type": "https",
+        "tag": "dns-local",
+        "server": "8.8.8.8",
+        "detour": "proxy"
+      }
     ]
   },
   "experimental": {
     "clash_api": {
-      "external_controller": "127.0.0.1:9090",
+      "external_controller": "127.0.0.1:21586",
       "secret": ""
     }
   },
@@ -18,7 +23,10 @@
     {
       "type": "tun",
       "tag": "tun-in",
-      "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+      "address": [
+        "172.19.0.1/30",
+        "fdfe:dcba:9876::1/126"
+      ],
       "auto_route": true,
       "strict_route": true,
       "stack": "gvisor"
@@ -27,36 +35,45 @@
       "type": "mixed",
       "tag": "mixed-in",
       "listen": "127.0.0.1",
-      "listen_port": 17070
+      "listen_port": 21584
     }
   ],
   "outbounds": [
-    { "type": "direct", "tag": "direct" },
-    { "type": "block", "tag": "blocked" },
-    { "type": "selector", "tag": "proxy", "outbounds": ["direct"] }
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "blocked"
+    },
+    {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": [
+        "direct"
+      ]
+    }
   ],
   "route": {
     "auto_detect_interface": true,
     "rules": [
-      { "action": "sniff" },
-      { "protocol": "dns", "action": "hijack-dns" },
       {
-        "network": ["tcp", "udp"],
+        "action": "sniff"
+      },
+      {
+        "protocol": "dns",
+        "action": "hijack-dns"
+      },
+      {
+        "network": [
+          "tcp",
+          "udp"
+        ],
         "action": "route",
         "outbound": "blocked"
       }
     ],
     "final": "blocked"
-  },
-  "services": [
-    {
-      "type": "api",
-      "listen": "127.0.0.1",
-      "listen_port": 9095,
-      "dashboard": {
-        "enabled": true,
-        "path": "webui/dist"
-      }
-    }
-  ]
+  }
 }

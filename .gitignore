@@ -2,11 +2,6 @@
 *.log
 .DS_Store
 
-# webui (cloned official dashboard) — regenerable artifacts
-/webui/dist
-/webui/node_modules
-/webui/src/gen
-/webui/vendor/iterm2-color-schemes
 data/
 
 # shadcn dashboard (our console) — regenerable artifacts

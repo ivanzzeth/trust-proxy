@@ -12,7 +12,7 @@
 
 ## 抓取模式（运行时可切换）
 
-`manual`（客户端指 `127.0.0.1:17070`）/ `system`（设为系统代理）/ `tun`（网络层全接管，需 root）。
+`manual`（客户端指 `127.0.0.1:21584`）/ `system`（设为系统代理）/ `tun`（网络层全接管，需 root）。
 
 控制台顶栏或 `POST /api/mode` 热切换，`serve --mode` 指定初始模式。TUN 无 root 会**自动回滚**到上个模式、网关不掉线（控制台会弹平台相关的提权引导，而不是抛 `operation not permitted`）。
 
@@ -48,7 +48,7 @@
 任一 `serve` 即探针。暴露给远程时：
 
 ```bash
-trust-proxy serve --api-addr 0.0.0.0:9096 --api-token <secret>   # /api/* 需 bearer
+trust-proxy serve --api-addr 0.0.0.0:21585 --api-token <secret>   # /api/* 需 bearer
 ```
 
 在其中一台打开控制台（大脑）→ Gateways 页注册其余网关 → 顶栏切换视图；大脑反代 `/api/nodes/{id}/*` 到各探针并注入各自 token（浏览器仍单 origin、不碰 token）。

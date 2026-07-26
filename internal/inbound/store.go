@@ -1,5 +1,5 @@
 // Package inbound persists the auth policy for the mixed proxy inbound
-// (:17070) that the gateway injects into sing-box's inbound. Requiring a
+// (:21584) that the gateway injects into sing-box's inbound. Requiring a
 // username/password keeps unauthorized clients (or a rogue process on the
 // LAN pointing at the gateway) from egressing through it. Both fields empty
 // = disabled = the inbound stays open.

@@ -1,6 +1,6 @@
 # 控制台（`dashboard/`，shadcn/ui + Tailwind + React 19）
 
-浏览器只连 **`:9096` 单一 origin**，一切走 `/api/*`；连接/代理组/日志由后端代理 Clash API，**浏览器不碰 Clash secret**。
+浏览器只连 **`:21585` 单一 origin**，一切走 `/api/*`；连接/代理组/日志由后端代理 Clash API，**浏览器不碰 Clash secret**。
 HashRouter，无需 SPA 服务端兜底。
 
 - **Overview**：实时流量、连接数、告警计数、当前姿势/模式。
@@ -25,7 +25,7 @@ HashRouter，无需 SPA 服务端兜底。
 ## 构建
 
 ```bash
-make dashboard       # -> dashboard/dist（:9096 从磁盘 serve，适合开发）
+make dashboard       # -> dashboard/dist（:21585 从磁盘 serve，适合开发）
 make build-embed     # 把 dist 嵌进二进制（-tags embed_ui），发布单文件
 make dashboard-test  # vitest（jsdom，对着 mock 的 /api 断言页面真的渲染出后端返回的东西）
 cd dashboard && npx tsc --noEmit

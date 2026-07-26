@@ -97,7 +97,7 @@ func setClashDefaultMode(cfg map[string]json.RawMessage, mode string) error {
 
 // applyMode rewrites the inbounds (and, for TUN, adds DNS + hijack) to match the
 // requested capture mode. The mixed inbound's listen/port is preserved from the
-// base config so 127.0.0.1:17070 stays available in every mode.
+// base config so 127.0.0.1:21584 stays available in every mode.
 // tunAddresses are the addresses the TUN inbound gets. Exported through
 // TunPrefixes so the host-level watcher can tell OUR tunnel apart from any other
 // utun on the machine (Tailscale, another VPN) by address rather than by name.
@@ -118,7 +118,7 @@ func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.Inboun
 	if mode == "" {
 		mode = ModeManual
 	}
-	listen, port := "127.0.0.1", 17070
+	listen, port := "127.0.0.1", 21584
 	if raw, ok := cfg["inbounds"]; ok {
 		var existing []map[string]any
 		if err := json.Unmarshal(raw, &existing); err == nil {

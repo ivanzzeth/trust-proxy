@@ -64,7 +64,7 @@ var connKillCmd = &cobra.Command{
 }
 
 func init() {
-	connCmd.PersistentFlags().StringVar(&clashAddr, "clash-addr", "127.0.0.1:9090", "Clash API address")
+	connCmd.PersistentFlags().StringVar(&clashAddr, "clash-addr", "127.0.0.1:21586", "Clash API address")
 	connCmd.PersistentFlags().StringVar(&clashSecret, "clash-secret", "", "Clash API secret (empty = read data/clash-secret)")
 	connCmd.AddCommand(connLsCmd, connKillCmd)
 }

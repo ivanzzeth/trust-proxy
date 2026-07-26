@@ -187,7 +187,7 @@ function CodeBlock({ text }: { text: string }) {
   const [done, setDone] = useState(false);
   const copy = async () => {
     try {
-      // navigator.clipboard needs a secure context; :9096 over plain HTTP is not
+      // navigator.clipboard needs a secure context; :21585 over plain HTTP is not
       // one in every browser, so fall back rather than silently doing nothing.
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);

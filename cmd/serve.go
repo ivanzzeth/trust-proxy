@@ -166,10 +166,10 @@ func resolveDataDir(dir string) (string, error) {
 func init() {
 	f := serveCmd.Flags()
 	f.StringVarP(&serveConfig, "config", "c", "", "sing-box config path (default <data>/config.json, seeded on first run)")
-	f.StringVar(&serveAPIAddr, "api-addr", "127.0.0.1:9096", "trust-proxy backend API listen address")
+	f.StringVar(&serveAPIAddr, "api-addr", "127.0.0.1:21585", "trust-proxy backend API listen address")
 	f.StringVar(&serveDataDir, "data", "", "data directory (subscriptions, cache, etc.); default ~/.trust-proxy")
 	f.StringVar(&serveConsoleDir, "console", "dashboard/dist", "dashboard static dir (shadcn build output)")
-	f.StringVar(&serveClashAddr, "clash-addr", "127.0.0.1:9090", "Clash API address (proxied to the console)")
+	f.StringVar(&serveClashAddr, "clash-addr", "127.0.0.1:21586", "Clash API address (proxied to the console)")
 	f.StringVar(&serveClashSecret, "clash-secret", "", "Clash API secret (empty = load/generate a random one in the data dir)")
 	f.StringVar(&serveAPIToken, "api-token", "", "require this bearer token on /api/* (probe mode; set when exposing --api-addr on a non-loopback address)")
 	f.StringVar(&serveMgmtPorts, "management-ports", "22", "comma-separated ports whose local responses always bypass default-deny (SSH etc.), so TUN/system mode can't lock you out; the API port is added automatically")

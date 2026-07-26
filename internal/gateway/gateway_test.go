@@ -24,8 +24,8 @@ import (
 )
 
 const baseCfg = `{
-  "experimental": {"clash_api": {"external_controller": "127.0.0.1:9090", "secret": ""}},
-  "inbounds": [{"type":"mixed","tag":"mixed-in","listen":"127.0.0.1","listen_port":17070}],
+  "experimental": {"clash_api": {"external_controller": "127.0.0.1:21586", "secret": ""}},
+  "inbounds": [{"type":"mixed","tag":"mixed-in","listen":"127.0.0.1","listen_port":21584}],
   "outbounds": [{"type":"direct","tag":"direct"},{"type":"block","tag":"blocked"},{"type":"selector","tag":"proxy","outbounds":["direct"]}],
   "route": {"rules": [{"action":"sniff"},{"network":["tcp","udp"],"action":"route","outbound":"blocked"}], "final":"blocked"}
 }`
@@ -163,7 +163,7 @@ func TestLayerOrder(t *testing.T) {
 		{Tag: "gg", Type: "remote", Format: "binary", URL: "https://x/gg.srs", Role: apitypes.RuleRoleAllowProxy, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 	}}
 	merged, err := buildMergedConfig([]byte(baseCfg), nil, wl, bl, quarantine.List{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeManual, sets,
-		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, []int{22, 9096}, "proxy", "", "s", t.TempDir())
+		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, []int{22, 21585}, "proxy", "", "s", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -772,7 +772,7 @@ func TestEffectiveRules_MatchesMergedLayers(t *testing.T) {
 				{Tag: "cn", Type: "remote", Format: "binary", URL: "https://x/cn.srs", Role: apitypes.RuleRoleAllowDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 				{Tag: "gg", Type: "remote", Format: "binary", URL: "https://x/gg.srs", Role: apitypes.RuleRoleAllowProxy, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
 			}},
-			mgmt: []int{22, 9096},
+			mgmt: []int{22, 21585},
 		},
 	}
 	for _, tc := range cases {

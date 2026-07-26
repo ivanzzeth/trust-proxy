@@ -24,7 +24,7 @@
 | **2. API** | `internal/api`（路由 + 入参校验 + **失败回滚**，别让一条坏数据 brick 网关） | handler 单测（`internal/api/*_test.go`）+ 对真实实例 curl 一遍；错误必须以 `{"error":…}` 透出，不能静默成功 |
 | **3. SDK** | `pkg/client`（每个端点一个薄方法，wire 类型只放 `pkg/apitypes`，**不建第二套模型**）；底层 Clash 原语在 `pkg/clash` | `httptest` 假后端断言 method/path/body/token（`pkg/client/policy_test.go`）。**注意返回整份 store 文档的端点要解包** |
 | **4. CLI** | `cmd/*.go`（cobra，走 SDK 而非直接拼 HTTP）；每个命令必须有 `--json`，共享 `--api-addr`/`--api-token` | VM 里对真实网关跑通，且**每个写操作用另一个命令读回来**验证（no-proxy 不能顺带授予 Permit 这类轴隔离要显式断言）；危险开关要确认提示 + `-y` |
-| **5. WebUI** | `dashboard/`（页面 + `src/lib/api.ts` 类型 + `src/i18n/pages/*.ts` 的 en/zh 双语） | `npx tsc --noEmit` 通过 + 页面实操；只连 `:9096` 单一 origin，浏览器不碰 secret |
+| **5. WebUI** | `dashboard/`（页面 + `src/lib/api.ts` 类型 + `src/i18n/pages/*.ts` 的 en/zh 双语） | `npx tsc --noEmit` 通过 + 页面实操；只连 `:21585` 单一 origin，浏览器不碰 secret |
 
 **跨阶段规矩**：
 - 发现上游阶段设计不对，**回那一层改**，不要在下游打补丁（例：CLI 里 workaround 一个畸形 API 响应＝把技术债搬到最末端）。
@@ -40,12 +40,12 @@
 ```
                          我们的二进制 (github.com/ivanzzeth/trust-proxy)
   客户端 ──socks/http──▶ ┌─────────────────────────────────────────────────┐
-     :17070             │ sing-box 核心 (route / sniff / 连接跟踪)          │──direct/代理──▶ 出网
+     :21584             │ sing-box 核心 (route / sniff / 连接跟踪)          │──direct/代理──▶ 出网
                         │      │                         ▲                  │
-                        │      │ AppendTracker(未来)     │ service/api      │
-                        │      ▼                         │ (Connect/proto)  │
-                        │  检测引擎(未来)           官方 React dashboard    │◀── 浏览器 :9095/dashboard/
-                        │  信誉/beacon/外泄/断连     (webui/, 我们自维护)   │
+                        │      │ AppendTracker           │ internal/api     │
+                        │      ▼                         │ (+ 代理 Clash)   │
+                        │  检测引擎                我们的控制台 dashboard/  │◀── 浏览器 :21585
+                        │  信誉/beacon/外泄/DGA/JA4  (React, /api 单 origin)│
                         └─────────────────────────────────────────────────┘
 ```
 
@@ -54,7 +54,7 @@
 | 层 | 现状 | 实现 |
 |---|---|---|
 | **数据面** 代理/路由/分流/连接跟踪 | ✅ sing-box 原生 | `configs/config.json` 的 route 规则；**白名单默认拒绝**（allow-list 放行 + 末尾 `reject` 兜底）；`sniff` 取 SNI |
-| **控制面/UI** | ✅ 里程碑 0 | 官方 dashboard（`webui/`），走 sing-box 内置 `service/api`（Connect/protobuf daemon，**非 Clash REST**） |
+| **控制面/UI** | ✅ | 自研控制台 `dashboard/` + `internal/api`（:21585 单一 origin；连接/代理组/日志由后端代理 Clash API） |
 | **检测面** 异常/外泄识别 + 处置 | 🟡 里程碑 1（遥测 stub 已跑通） | `detector.go` 实现 `adapter.ConnectionTracker`，经 `Box.Router().AppendTracker` 挂上；当前记录每条放行连接，后续长检测算法 + 处置（wrap-close / Clash `DELETE /connections/{id}`） |
 
 ### 订阅 → apply（热重载）
@@ -102,10 +102,9 @@ sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 
 **锚点**：地板 reject 在 `preludeLen` 后；闸/路由/Global 在 `catchAllIdx` 前。
 
 ### UI 分工（已决策 + 已落地）
-- **我们自建的控制台 `dashboard/`（shadcn/ui + Tailwind v4 + React 19 + Vite）** 是唯一 UI，由后端 `internal/api`（:9096）从 `dashboard/dist` serve，`make dashboard` 构建。**浏览器只连 :9096 单一 origin**，一切走 `/api/*`；连接/代理组/日志都由后端**代理 Clash API**（浏览器不碰 Clash secret）。HashRouter，无需 SPA 服务端兜底。
+- **我们自建的控制台 `dashboard/`（shadcn/ui + Tailwind v4 + React 19 + Vite）** 是唯一 UI，由后端 `internal/api`（:21585）从 `dashboard/dist` serve，`make dashboard` 构建。**浏览器只连 :21585 单一 origin**，一切走 `/api/*`；连接/代理组/日志都由后端**代理 Clash API**（浏览器不碰 Clash secret）。HashRouter，无需 SPA 服务端兜底。
   - 页面：Overview / Connections（全部·活动·已关闭 + 一键加白）/ Nodes（订阅/粘贴 + **自建出口对话框**）/ Profiles（**当前策略实时快照** + 三步引导 + 覆盖·激活确认）/ **Policy**（Permit / Route / Deny / Subjects）/ **Rules**（Routing 生效视图 + Rule Sets + Custom/策略包）/ Proxies / Endpoints/VPN / Settings / DNS / History / **Gateways / 多网关**（原 Fleet，`/fleet` 路由不变；「节点」留给代理节点，网关叫网关）/ Logs。（`/whitelist`·`/blacklist`→`/acls`，`/rulesets`·`/custom-rules`→`/rules` 重定向。）
   - **（历史）曾 vendored Yacd 作底座（`console/`），里程碑 5 后整体换成自研 shadcn 应用并删除 Yacd**——不再有前端 upstream 同步负担。
-- **官方 dashboard（`webui/`）** 仍可选保留，只做 sing-box `service/api` :9095 的运行时监控；平时用不到。
 - **go:embed 单二进制（✅）**：默认构建从磁盘 serve `dashboard/dist`（开发）；`make build-embed`（或 `-tags embed_ui`，见 `embed_ui.go`）把前端嵌进二进制，release 单文件自带 UI（`internal/api` 的 `consoleHandler` 用 `fs.FS`：embed 优先、否则 `os.DirFS(--console)`）。
 
 **为什么单进程**：深度检测（挂 tracker、镜像连接、自定义 outbound）必须和 sing-box 同进程；
@@ -122,13 +121,13 @@ sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 
 - `pkg/apitypes` — 共享 wire 类型（无内部依赖，避免 import 环）。
 
 **CLI 覆盖全部 API**（控制台能做的，命令行都能做；每个子命令都有 `--json` 供脚本消费，`--api-addr`/`--api-token` 指向本机或探针）：
-`status` | `acl ls|add|rm <permit|deny|no-proxy>` | `rules ls`(生效视图) `rules custom|packs|sets …` | `dns get|set`（`--direct-server` 等单项 patch，`-f` 整档替换）| `mode get|set|confirm`（`--guard` 死亡开关）| `routing get|set`(Rule/Global) | `posture get|set` | `final get|set` | `profile ls|save|activate|rm` | `proxies ls|select|delay` | `groups get|set` | `endpoints ls|add|toggle|rm` | `tun get|set` | `inbound get|set` | `autoblock on|off` | `detections ls|stats` | `history ls|stats` | `node ls|add|rm`(fleet) | `sub add|import|ls|apply|rm|refresh` | `service install|uninstall|status`(**本地 root**,macOS launchd) | `conn ls|kill`(底层 Clash 原语→:9090) | `proxy gen|run|stop`(**本地离线**,不经 SDK——出口机上没有网关在跑；`--json` 与 `POST /api/proxy-gen` 同形)。
+`status` | `acl ls|add|rm <permit|deny|no-proxy>` | `rules ls`(生效视图) `rules custom|packs|sets …` | `dns get|set`（`--direct-server` 等单项 patch，`-f` 整档替换）| `mode get|set|confirm`（`--guard` 死亡开关）| `routing get|set`(Rule/Global) | `posture get|set` | `final get|set` | `profile ls|save|activate|rm` | `proxies ls|select|delay` | `groups get|set` | `endpoints ls|add|toggle|rm` | `tun get|set` | `inbound get|set` | `autoblock on|off` | `detections ls|stats` | `history ls|stats` | `node ls|add|rm`(fleet) | `sub add|import|ls|apply|rm|refresh` | `service install|uninstall|status`(**本地 root**,macOS launchd) | `conn ls|kill`(底层 Clash 原语→:21586) | `proxy gen|run|stop`(**本地离线**,不经 SDK——出口机上没有网关在跑；`--json` 与 `POST /api/proxy-gen` 同形)。
 **坑**：`/api/customrules` 与 `/api/rulesets` 返回的是**整份 store 文档**（`{"rules":[…]}` / `{"sets":[…]}`），不是裸数组——SDK 里 `customRulesDoc`/`ruleSetsDoc` 负责解包（`pkg/client/policy_test.go` 有回归）。
 
 ### 桌面端（macOS 切片，✅）
 
 `desktop/`：**Tauri v2 壳 + Go 网关做 sidecar**。壳里没有任何策略/检测逻辑——它是一个窗口加一段生命周期，
-UI 就是网关自己在 `:9096` serve 的那个控制台（故 sidecar **必须**是 `embed_ui` 构建，`.app` 里没有 `dashboard/dist`）。
+UI 就是网关自己在 `:21585` serve 的那个控制台（故 sidecar **必须**是 `embed_ui` 构建，`.app` 里没有 `dashboard/dist`）。
 
 两条不变量（都在真机上验过，不是设想）：
 
@@ -156,7 +155,7 @@ plist 里所有路径必须绝对（launchd 不解析相对路径，否则每次
 macOS 15.7.7 正常、**macOS 26.4.1 直接 SIGKILL（exit 137）且日志为空**——批准 app 不顺延到它启动的二进制，
 故壳自查隔离标记并把 `xattr -dr com.apple.quarantine <bundle>` 连路径打到界面上（`quarantine_hint`）。首启把内置默认配置写进
 `<data>/config.json`，**已存在则绝不覆盖**（那是用户的东西）。启动失败时把网关日志里的最后一条错误**原样引到界面上**
-（最常见的就是 17070 被别的代理占了，说清楚十秒能修，指一个日志路径不能）。
+（最常见的就是 21584 被别的代理占了，说清楚十秒能修，指一个日志路径不能）。
 
 ### 关键文件 / 目录
 ```
@@ -194,7 +193,6 @@ pkg/client/                上层 SDK：/api + 组合 clash
 pkg/apitypes/              共享 wire 类型
 configs/config.json        sing-box 配置：白名单默认拒绝 + clash_api + service/api(+dashboard)
 third_party/sing-box       【我们的 fork 子模块】`ivanzzeth/sing-box` 分支 `trust-proxy`，replace 进本模块；上游 SagerNet 为 `upstream`
-webui/                     【上游 vendored 副本】官方 dashboard
 data/                      运行时数据（subscriptions.json 等，gitignore）
 ```
 
@@ -208,9 +206,9 @@ data/                      运行时数据（subscriptions.json 等，gitignore�
 
 ## 从上游同步代码
 
-有**两个**独立上游，同步方式不同。
+只有 **sing-box** 一个上游（曾 vendored 官方 dashboard 到 `webui/`，已删除——我们自研控制台后它只是个占端口的摆设）。
 
-### 1. sing-box（`third_party/sing-box`）— 我们的 fork 子模块
+### sing-box（`third_party/sing-box`）— 我们的 fork 子模块（唯一上游）
 
 子模块指向 **[ivanzzeth/sing-box](https://github.com/ivanzzeth/sing-box)** 的 **`trust-proxy`** 分支（可在 fork 上改 urltest 等）。  
 SagerNet 官方仓库在子模块里登记为 remote **`upstream`**（`testing`），用来同步上游。
@@ -247,38 +245,6 @@ git commit -m "chore: merge sing-box upstream/testing into trust-proxy"
   QUIC 加 `with_quic`，uTLS 加 `with_utls`（见 `Makefile` 的 `TAGS`）。
 - 别盲目跟 `testing` HEAD，建议 pin 到具体 commit，升级当独立动作 + 回归。
 
-### 2. 官方 dashboard（`webui/`）— vendored 副本，半手动同步
-
-我们**克隆后删了它的 `.git`**，把源码并入本仓自行维护（因为要往里加安全检测视图）。
-因此它不是子模块，同步需要「拉上游 → 合并进 `webui/`，保留我们的改动」。
-
-**推荐：git subtree（一次性接上，之后可 pull）**
-```bash
-# 一次性：登记上游为远端
-git remote add dashboard-upstream https://github.com/SagerNet/sing-box-dashboard
-
-# 之后每次同步（--squash 把上游历史压成一个提交并入 webui/）
-git subtree pull --prefix=webui dashboard-upstream main --squash
-# 解决与我们本地改动的冲突后：
-make webui && make run                     # 重新 generate+build 验证
-```
-
-**备选：手动 diff（无 git plumbing，适合改动很小时）**
-```bash
-git clone --depth 1 https://github.com/SagerNet/sing-box-dashboard /tmp/sbd
-diff -ru --exclude=.git --exclude=node_modules --exclude=dist --exclude=src/gen webui /tmp/sbd
-# 逐项把上游变更并进 webui/，保留我们自加的安全视图，然后 make webui 验证
-```
-
-同步 dashboard 后务必重跑构建链（它有代码生成步骤）：
-```bash
-git clone --depth 1 https://github.com/mbadolato/iTerm2-Color-Schemes \
-    webui/vendor/iterm2-color-schemes && rm -rf webui/vendor/iterm2-color-schemes/.git   # 若缺
-cd webui && corepack pnpm install --frozen-lockfile && corepack pnpm run generate && corepack pnpm run build
-```
-- 用 **pnpm**（`packageManager: pnpm@11.13.0`，`corepack` 自动取版本），不是 npm。
-- **build 前必须 `generate`**：`buf generate` 把 `proto/daemon/started_service.proto` 生成到 `src/gen`，App 直接 import。
-- 我们改造 dashboard 时，尽量**新增文件/视图**而非改上游文件，降低未来 subtree 合并冲突。
 
 ---
 
@@ -288,7 +254,7 @@ cd webui && corepack pnpm install --frozen-lockfile && corepack pnpm run generat
 make deps        # 首次：git submodule update --init --recursive（拉 sing-box）
 make build       # 编译 -> ./trust-proxy（TAGS="with_clash_api ..." 可选）
 make run         # 用 configs/config.json 启动
-make webui       # 构建官方 dashboard -> webui/dist（pnpm install→generate→build）
+make dashboard   # 构建自研控制台 -> dashboard/dist
 ```
 
 **端到端自测（`cmd/selftest.go`，`trust-proxy selftest`，hidden 子命令）**：**离线、确定性、可扔进 VM 跑**的核心引擎 e2e。自起两个本地「origin」（direct-origin 返回 `direct` / node-origin 返回 `node`）+ 一个 http CONNECT「node」上游，用**真实 `gateway.Manager`** 跑遍：默认拒绝拦截 / 白名单→node / no-proxy→direct / 黑名单胜 / 自定义规则 direct·proxy·block·node / system 模式；`sudo trust-proxy selftest` 额外覆盖 tun（loopback 不被 tun 捕获，故 tun 分支只断言 box 能在 tun 模式起来）。任一场景失败则非零退出。**改引擎后务必 `make build && ./trust-proxy selftest`**（VM 里 `sudo` 跑覆盖全部）。
@@ -304,16 +270,19 @@ make webui       # 构建官方 dashboard -> webui/dist（pnpm install→generat
 
 验证（不影响本机 Surge：无 TUN、不改系统代理、端口错开）：
 ```bash
-curl -x socks5h://127.0.0.1:17070 https://api.ipify.org          # 代理出网
-curl -x socks5h://127.0.0.1:17070 https://ads.doubleclick.net    # 命中黑名单 -> 连接失败(reject)
-curl -x socks5h://127.0.0.1:17070 https://example.com            # 正常 -> 200
-# 浏览器打开 http://127.0.0.1:9095/  （跳 /dashboard/）
+curl -x socks5h://127.0.0.1:21584 https://api.ipify.org          # 代理出网
+curl -x socks5h://127.0.0.1:21584 https://ads.doubleclick.net    # 命中黑名单 -> 连接失败(reject)
+curl -x socks5h://127.0.0.1:21584 https://example.com            # 正常 -> 200
+# 浏览器打开 http://127.0.0.1:21585/
 ```
 
 | 服务 | 地址 |
 |---|---|
-| 代理入站 (mixed socks/http) | `127.0.0.1:17070` |
-| API / dashboard | `127.0.0.1:9095`（UI 在 `/dashboard/`） |
+| 代理入站 (mixed socks/http) | `127.0.0.1:21584` |
+| 后端 /api + 控制台 | `127.0.0.1:21585` |
+| Clash API（后端内部消费，secret 在数据目录） | `127.0.0.1:21586` |
+
+**端口为什么是这三个**：`0x54`=`'T'`、`0x50`=`'P'` → `0x5450` = **21584**，往上连号（TP / TP+1 / TP+2）。原来的 9090 是重灾区（Prometheus、Cockpit、php-fpm status、Clash 自己都用它），9096 也在拥挤区间；21584-21586 在注册端口的稀疏地带，不撞任何主流工具。**曾经的 :9095**（sing-box 官方 `services[].type=api` + vendored `webui/`）已随面板一起删除。
 
 ---
 
@@ -327,12 +296,10 @@ curl -x socks5h://127.0.0.1:17070 https://example.com            # 正常 -> 200
 - **域名管控是 sing-box 原生**：`sniff` 取 SNI + `domain*` 规则 `reject`，零代码。动态「按行为决定挡谁」才是自研。
 - **坑：「DNS 全走出口节点」把国内站点搞垮（已修）**。为了躲 GFW 污染，早期把**所有**解析塞进 `detour:proxy` 的 DoH（`sanitizeTunDNS` 的 `tun-dns` 也是这么兜底的）。后果：`www.baidu.com→164.52.120.52`(印度)、`www.taobao.com→155.102.23.40`(韩国)、`i1.hdslb.com→61.110.192.59`(韩国)，而这些域名命中 `geosite-cn` 走 **direct**——从国内直连境外边缘节点，实测 TLS 0.85~5.3s、taobao 总耗时 15.8s；同域名国内解析器答 `111.123.42.154/183.2.172.177`(国内)。**症状是「开着网关国内站巨慢、杀掉进程立刻飞快」，与 manual/TUN 无关**（manual 下 socks 请求同样由 `direct` 出站按 `default_domain_resolver` 重解析）。修法见上「DNS 跟随路由」；回归覆盖：`gateway_dnsdirect_test.go` + `selftest` 的 `== dns follows route ==`（两个 loopback stub 解析器，谁被查到就证明走了哪条路）。
 - **坑：VM 里量不出真实解析结果**。宿主机跑着 TUN 网关时，VM 的**所有** 53 端口查询都会被宿主 hijack-dns 接管（`dig @223.5.5.5` 也返回宿主 DoH 的境外答案）。故 VM 里验证 DNS 行为必须用 **loopback stub 解析器**（不出 VM、不受宿主干扰）；真实地理答案只能在宿主机上读（read-only curl/ip-api）。
-- dashboard：pnpm、必须先 generate、有 vendor 子模块、UI 路径 `/dashboard/`。
-- 可再生目录已 gitignore：`webui/{dist,node_modules,src/gen,vendor/iterm2-color-schemes}`。
 
 ## 作为代理服务器 / TUN 网关运行
 同一个二进制三种角色：
-- **客户端网关**：`trust-proxy serve`（mixed 入站 :17070 + 检测 + 白名单 + dashboard/api :9096）。
+- **客户端网关**：`trust-proxy serve`（mixed 入站 :21584 + 检测 + 白名单 + dashboard/api :21585）。
 - **代理服务端（出口节点）**：`trust-proxy proxy run -c server.json`；一键生成：`trust-proxy proxy gen --type <ss|vless-reality|vless|vmess|trojan|anytls|hysteria2|tuic> --server <ip> --port <p>` → 输出服务端配置 + 客户端节点（Clash dict，可直接粘进 console）。TLS 协议自动内联自签证书（客户端 skip-cert-verify），vless-reality 免证书自动生成密钥对。
 - **TUN 全流量网关**：`sudo trust-proxy serve -c configs/config.tun.json`（`tun` 入站 + `auto_route` 网络层接管**所有**出入网流量——木马的裸 socket 也逃不掉）。需 **root**，且与其他 TUN 工具（Surge 增强模式等）互斥，用于**专用网关机/软路由**。检测与白名单逻辑不变（同一 route）。构建需 `with_gvisor`（已在默认 TAGS）。
 - **里程碑 0（✅）** 全栈跑通：Go 嵌入 sing-box + 代理 + 官方监控 UI。

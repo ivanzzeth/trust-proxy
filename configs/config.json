@@ -5,7 +5,7 @@
   },
   "experimental": {
     "clash_api": {
-      "external_controller": "127.0.0.1:9090",
+      "external_controller": "127.0.0.1:21586",
       "secret": ""
     }
   },
@@ -14,7 +14,7 @@
       "type": "mixed",
       "tag": "mixed-in",
       "listen": "127.0.0.1",
-      "listen_port": 17070
+      "listen_port": 21584
     }
   ],
   "outbounds": [
@@ -29,29 +29,25 @@
     {
       "type": "selector",
       "tag": "proxy",
-      "outbounds": ["direct"]
+      "outbounds": [
+        "direct"
+      ]
     }
   ],
   "route": {
     "rules": [
-      { "action": "sniff" },
       {
-        "network": ["tcp", "udp"],
+        "action": "sniff"
+      },
+      {
+        "network": [
+          "tcp",
+          "udp"
+        ],
         "action": "route",
         "outbound": "blocked"
       }
     ],
     "final": "blocked"
-  },
-  "services": [
-    {
-      "type": "api",
-      "listen": "127.0.0.1",
-      "listen_port": 9095,
-      "dashboard": {
-        "enabled": true,
-        "path": "webui/dist"
-      }
-    }
-  ]
+  }
 }
