@@ -12,6 +12,7 @@ import (
 	N "github.com/sagernet/sing/common/network"
 
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
+	"github.com/ivanzzeth/trust-proxy/internal/ja4"
 )
 
 // detector implements adapter.ConnectionTracker. Attached via
@@ -66,7 +67,15 @@ func (d *detector) RoutedQuery(ctx context.Context, message *mDNS.Msg, response 
 }
 
 func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) net.Conn {
-	ev := d.engine.Track("tcp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound))
+	// The sniffer kept the raw ClientHello (our fork): fingerprint the client
+	// stack, which stays informative after ECH hides the destination name.
+	fp := ""
+	if len(m.TLSClientHello) > 0 {
+		if f, err := ja4.Compute(m.TLSClientHello, "t"); err == nil {
+			fp = f.JA4
+		}
+	}
+	ev := d.engine.TrackWithFingerprint("tcp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound), fp)
 	if timing := adapter.ConnectionTimingFromContext(ctx); timing != nil {
 		ev.SetTiming(connTiming{timing})
 	}

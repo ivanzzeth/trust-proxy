@@ -42,6 +42,8 @@ func Defaults() apitypes.DetectionConfig {
 		QueryParentRate: 300,
 		QueryOddTypeAt:  20,
 
+		JA4Enabled:      true,
+		JA4LearnMinutes: 1440,
 		DNSBypassDetect: true,
 		RouteWatchSec:   30,
 
@@ -93,6 +95,9 @@ func WithDefaults(c apitypes.DetectionConfig) apitypes.DetectionConfig {
 	}
 	if c.QueryWindowSec <= 0 {
 		c.QueryWindowSec = d.QueryWindowSec
+	}
+	if c.JA4LearnMinutes <= 0 {
+		c.JA4LearnMinutes = d.JA4LearnMinutes
 	}
 	// RouteWatchSec keeps 0 as "don't poll".
 	// ExfilMinRatio / ExfilNewDestHours are deliberately not defaulted from zero:

@@ -279,3 +279,65 @@ func TestEncryptedDNSBypassIsReported(t *testing.T) {
 		t.Fatal("the gateway's own resolver must not be flagged as bypassing itself")
 	}
 }
+
+// Fingerprints are learned before they are reported: an unfamiliar hash from a
+// cold start would fire on every browser update, which is how a detector becomes
+// something people mute.
+func TestFingerprintsAreLearnedBeforeReported(t *testing.T) {
+	e, now, got := newTestEngine(t)
+	e.ApplyConfig(apitypes.DetectionConfig{
+		BeaconEnabled: false, DGAEnabled: false, JA4Enabled: true, JA4LearnMinutes: 60,
+	})
+
+	// During the window: observed, not reported.
+	e.TrackWithFingerprint("tcp", "a.example", "1.2.3.4:443", "127.0.0.1:1", "chrome", "", "proxy", "t13d1516h2_aaaaaaaaaaaa_bbbbbbbbbbbb")
+	e.TrackWithFingerprint("tcp", "b.example", "1.2.3.4:443", "127.0.0.1:1", "curl", "", "proxy", "t13d1311h2_cccccccccccc_dddddddddddd")
+	if n := countKind(*got, KindJA4); n != 0 {
+		t.Fatalf("%d fingerprint alerts during the baseline window", n)
+	}
+	if learning, _ := e.FingerprintLearning(); !learning {
+		t.Fatal("the window should still be open")
+	}
+
+	*now = now.Add(2 * time.Hour)
+
+	// A stack already seen stays quiet...
+	e.TrackWithFingerprint("tcp", "c.example", "1.2.3.4:443", "127.0.0.1:1", "chrome", "", "proxy", "t13d1516h2_aaaaaaaaaaaa_bbbbbbbbbbbb")
+	if n := countKind(*got, KindJA4); n != 0 {
+		t.Fatalf("%d alerts for a fingerprint from the baseline", n)
+	}
+	// ...an unfamiliar one is reported once.
+	e.TrackWithFingerprint("tcp", "evil.example", "5.6.7.8:443", "127.0.0.1:1", "weird-agent", "", "proxy", "t13i2109_eeeeeeeeeeee_ffffffffffff")
+	if n := countKind(*got, KindJA4); n != 1 {
+		t.Fatalf("%d alerts for a new stack after the window, want 1", n)
+	}
+	e.TrackWithFingerprint("tcp", "evil2.example", "5.6.7.8:443", "127.0.0.1:1", "weird-agent", "", "proxy", "t13i2109_eeeeeeeeeeee_ffffffffffff")
+	if n := countKind(*got, KindJA4); n != 1 {
+		t.Fatalf("%d alerts, want the same fingerprint reported only once", n)
+	}
+
+	rows := e.Fingerprints(10)
+	if len(rows) != 3 {
+		t.Fatalf("tracked %d fingerprints, want 3", len(rows))
+	}
+}
+
+// Permitted destinations don't raise fingerprint alerts either — but the stack is
+// still recorded, or the baseline would be missing exactly the traffic that is
+// normal here.
+func TestFingerprintsFromPermittedDestinationsAreRecordedNotAlerted(t *testing.T) {
+	e, now, got := newTestEngine(t)
+	e.SetTrustedDest(func(host, _ string) bool { return host == "api.anthropic.com" })
+	e.ApplyConfig(apitypes.DetectionConfig{
+		BeaconEnabled: false, DGAEnabled: false, JA4Enabled: true, JA4LearnMinutes: 1,
+	})
+	*now = now.Add(time.Hour) // window closed
+
+	e.TrackWithFingerprint("tcp", "api.anthropic.com", "1.2.3.4:443", "127.0.0.1:1", "claude", "", "proxy", "t13d1516h2_111111111111_222222222222")
+	if n := countKind(*got, KindJA4); n != 0 {
+		t.Fatalf("%d alerts for a permitted destination", n)
+	}
+	if len(e.Fingerprints(10)) != 1 {
+		t.Fatal("the stack must still be recorded so the baseline reflects normal traffic")
+	}
+}

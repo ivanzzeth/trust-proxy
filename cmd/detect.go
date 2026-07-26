@@ -36,6 +36,7 @@ var detectGetCmd = &cobra.Command{
 				humanBytes(cfg.ExfilUploadBytes), cfg.ExfilMinRatio, cfg.ExfilNewDestHours)
 			fmt.Printf("dns:      window=%ds  nxdomain-burst=%d  parent-rate=%d  odd-type=%d\n",
 				cfg.QueryWindowSec, cfg.QueryNXBurst, cfg.QueryParentRate, cfg.QueryOddTypeAt)
+			fmt.Printf("ja4:      %s  learn-window=%dm\n", enabledWord(cfg.JA4Enabled), cfg.JA4LearnMinutes)
 			fmt.Printf("host:     route-watch=%ds  host-routes=%s  dns-bypass-detect=%s\n",
 				cfg.RouteWatchSec, yesNo(cfg.RouteWatchHostRoutes), yesNo(cfg.DNSBypassDetect))
 			fmt.Printf("disposal: auto-block=%s  require-warm-permit=%s\n",
@@ -65,6 +66,8 @@ var (
 	detQueryNX        int
 	detQueryRate      int
 	detQueryOddAt     int
+	detJA4            bool
+	detJA4Learn       int
 	detRouteWatch     int
 	detRouteHostRts   bool
 	detDNSBypass      bool
@@ -100,6 +103,42 @@ var detectSetCmd = &cobra.Command{
 			return err
 		}
 		return out(res, func() { fmt.Println("detection settings updated") })
+	},
+}
+
+var ja4Limit int
+
+var detectFingerprintsCmd = &cobra.Command{
+	Use:   "fingerprints",
+	Short: "TLS client stacks seen on this machine (JA4)",
+	Long: "A fingerprint describes the client stack rather than its destination, so it\n" +
+		"keeps working once ECH hides the name the Permit gate matches on. Nothing is\n" +
+		"reported during the baseline window — an unfamiliar hash from a cold start\n" +
+		"would fire on every browser update.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		res, err := sdk().Fingerprints(ja4Limit)
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return emit(res)
+		}
+		if learning, _ := res["learning"].(bool); learning {
+			fmt.Printf("baseline window open until %v — observing, not reporting\n\n", res["learning_until"])
+		}
+		rows, _ := res["fingerprints"].([]any)
+		if len(rows) == 0 {
+			fmt.Println("(no TLS handshakes fingerprinted yet — needs sniffed TLS traffic)")
+			return nil
+		}
+		fmt.Printf("%-42s %-8s %-22s %s\n", "JA4", "SEEN", "LAST", "PROCESSES")
+		for _, r := range rows {
+			m, _ := r.(map[string]any)
+			procs, _ := m["processes"].([]any)
+			fmt.Printf("%-42s %-8v %-22s %s\n",
+				str(m["ja4"]), m["count"], truncate(str(m["last_seen"]), 22), truncate(joinAny(procs, ","), 28))
+		}
+		return nil
 	},
 }
 
@@ -197,6 +236,8 @@ func init() {
 	f.IntVar(&detQueryNX, "query-nxdomain-burst", 30, "NXDOMAIN answers per client per window (0 = ignore)")
 	f.IntVar(&detQueryRate, "query-parent-rate", 300, "queries under one parent per window (0 = ignore)")
 	f.IntVar(&detQueryOddAt, "query-odd-type-at", 20, "TXT/NULL/ANY queries under one parent (0 = ignore)")
+	f.BoolVar(&detJA4, "ja4", true, "fingerprint TLS clients and report unfamiliar stacks")
+	f.IntVar(&detJA4Learn, "ja4-learn-minutes", 1440, "baseline window before unfamiliar fingerprints are reported")
 	f.IntVar(&detRouteWatch, "route-watch", 30, "poll the host routing table every N seconds (0 = off)")
 	f.BoolVar(&detRouteHostRts, "route-watch-host-routes", false, "also report /32 and /128 routes (noisy: one per direct dial)")
 	f.BoolVar(&detDNSBypass, "dns-bypass-detect", true, "report clients resolving through public DoH/DoT")
@@ -223,6 +264,8 @@ func init() {
 	detectSettingsSet["query-nxdomain-burst"] = func(c *apitypes.DetectionConfig) { c.QueryNXBurst = detQueryNX }
 	detectSettingsSet["query-parent-rate"] = func(c *apitypes.DetectionConfig) { c.QueryParentRate = detQueryRate }
 	detectSettingsSet["query-odd-type-at"] = func(c *apitypes.DetectionConfig) { c.QueryOddTypeAt = detQueryOddAt }
+	detectSettingsSet["ja4"] = func(c *apitypes.DetectionConfig) { c.JA4Enabled = detJA4 }
+	detectSettingsSet["ja4-learn-minutes"] = func(c *apitypes.DetectionConfig) { c.JA4LearnMinutes = detJA4Learn }
 	detectSettingsSet["route-watch"] = func(c *apitypes.DetectionConfig) { c.RouteWatchSec = detRouteWatch }
 	detectSettingsSet["route-watch-host-routes"] = func(c *apitypes.DetectionConfig) { c.RouteWatchHostRoutes = detRouteHostRts }
 	detectSettingsSet["dns-bypass-detect"] = func(c *apitypes.DetectionConfig) { c.DNSBypassDetect = detDNSBypass }
@@ -231,6 +274,7 @@ func init() {
 
 	quarantineReleaseCmd.Flags().BoolVar(&quarantineReleaseAll, "all", false, "release everything")
 
-	detectCmd.AddCommand(detectGetCmd, detectSetCmd)
+	detectFingerprintsCmd.Flags().IntVar(&ja4Limit, "limit", 50, "max fingerprints to show")
+	detectCmd.AddCommand(detectGetCmd, detectSetCmd, detectFingerprintsCmd)
 	quarantineCmd.AddCommand(quarantineLsCmd, quarantineReleaseCmd)
 }

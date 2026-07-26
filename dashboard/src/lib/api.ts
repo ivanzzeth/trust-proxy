@@ -346,6 +346,14 @@ export interface NetworkState {
   routes?: { prefix: string; interface: string; gateway?: string }[];
 }
 
+// TLS client fingerprints. Describes the client stack rather than its
+// destination, so it survives ECH hiding the name the Permit gate matches on.
+export interface FingerprintList {
+  learning: boolean;
+  learning_until?: string;
+  fingerprints: { ja4: string; count: number; first_seen: string; last_seen: string; processes?: string[] }[];
+}
+
 export interface QuarantineEntry {
   value: string;
   is_ip: boolean;
@@ -526,6 +534,7 @@ export const api = {
   setDetectionConfig: (c: DetectionConfig) => put<DetectionConfig>('/detection-config', c),
   dnsQueryStats: (top = 10) => get<DNSQueryStats>(`/dns-queries/stats?top=${top}`),
   netcheck: () => get<NetworkState>('/netcheck'),
+  fingerprints: (limit = 50) => get<FingerprintList>(`/fingerprints?limit=${limit}`),
   quarantine: () => get<QuarantineEntry[]>('/quarantine'),
   releaseQuarantine: (value: string) => del<QuarantineEntry[]>('/quarantine', { value }),
   clearQuarantine: () => del<QuarantineEntry[]>('/quarantine', { all: true }),

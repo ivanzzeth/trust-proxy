@@ -25,6 +25,7 @@ export default function Detection() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['detection-config'], queryFn: api.detectionConfig });
   const { data: queries } = useQuery({ queryKey: ['dns-query-stats'], queryFn: () => api.dnsQueryStats(8), refetchInterval: 10000 });
+  const { data: fps } = useQuery({ queryKey: ['fingerprints'], queryFn: () => api.fingerprints(20), refetchInterval: 15000 });
   const { data: net } = useQuery({ queryKey: ['netcheck'], queryFn: api.netcheck, refetchInterval: 15000 });
   const { data: quarantined = [] } = useQuery({ queryKey: ['quarantine'], queryFn: api.quarantine, refetchInterval: 10000 });
   const [cfg, setCfg] = useState<DetectionConfig | null>(null);
@@ -112,6 +113,45 @@ export default function Detection() {
           <Save className="size-3.5" /> {t('pages.detection.apply')}
         </Button>
       </div>
+
+      <Card className="mt-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">{t('pages.detection.ja4Title')}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{t('pages.detection.ja4Hint')}</p>
+          {fps?.learning && (
+            <p className="mb-3 text-xs text-amber-500">
+              {t('pages.detection.ja4Learning')} {fps.learning_until}
+            </p>
+          )}
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>JA4</TableHead>
+                <TableHead className="text-right">{t('pages.detection.ja4Seen')}</TableHead>
+                <TableHead>{t('pages.detection.ja4Last')}</TableHead>
+                <TableHead>{t('pages.detection.ja4Processes')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(fps?.fingerprints ?? []).length === 0 && (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={4} className="py-6 text-center text-muted-foreground">{t('pages.detection.ja4Empty')}</TableCell>
+                </TableRow>
+              )}
+              {(fps?.fingerprints ?? []).map((f) => (
+                <TableRow key={f.ja4}>
+                  <TableCell className="font-mono text-xs">{f.ja4}</TableCell>
+                  <TableCell className="tnum text-right text-xs">{f.count}</TableCell>
+                  <TableCell className="tnum text-xs text-muted-foreground">{f.last_seen}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{(f.processes ?? []).join(', ')}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
 
       <Card className="mt-6">
         <CardHeader className="pb-3">

@@ -75,6 +75,34 @@ func (s *Server) handleDNSQueryStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, s.queryStats.QueryStats(top))
 }
 
+// FingerprintProvider exposes observed TLS client fingerprints.
+type FingerprintProvider interface {
+	Fingerprints(limit int) []detect.FingerprintRow
+	FingerprintLearning() (bool, string)
+}
+
+// handleFingerprints lists the TLS client stacks seen on this machine. The
+// baseline window is reported alongside: during it nothing is alerted, and a
+// console that didn't say so would look like it had found nothing.
+func (s *Server) handleFingerprints(w http.ResponseWriter, r *http.Request) {
+	if s.fingerprints == nil {
+		writeErr(w, http.StatusServiceUnavailable, "fingerprints not available")
+		return
+	}
+	limit := 50
+	if v := r.URL.Query().Get("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	learning, until := s.fingerprints.FingerprintLearning()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"learning":       learning,
+		"learning_until": until,
+		"fingerprints":   s.fingerprints.Fingerprints(limit),
+	})
+}
+
 // NetworkStateProvider exposes the host routing / interface observation.
 type NetworkStateProvider interface {
 	Snapshot() netwatch.Snapshot

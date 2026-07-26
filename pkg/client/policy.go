@@ -227,6 +227,18 @@ func (c *Client) DNSQueryStats(top int) (map[string]any, error) {
 	return out, err
 }
 
+// Fingerprints lists the TLS client stacks this gateway has seen, plus whether
+// the baseline window is still open.
+func (c *Client) Fingerprints(limit int) (map[string]any, error) {
+	v := url.Values{}
+	if limit > 0 {
+		v.Set("limit", strconv.Itoa(limit))
+	}
+	var out map[string]any
+	err := c.do(http.MethodGet, "/api/fingerprints?"+v.Encode(), nil, &out)
+	return out, err
+}
+
 // NetworkState returns the host routing / interface picture the gateway watches
 // for tunnel bypasses (TunnelVision-style routes, LocalNet scope).
 func (c *Client) NetworkState() (map[string]any, error) {

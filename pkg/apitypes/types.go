@@ -237,6 +237,13 @@ type DetectionConfig struct {
 	// connection for coverage of a host-route hijack.
 	RouteWatchHostRoutes bool `json:"route_watch_host_routes,omitempty"`
 
+	// JA4Enabled records the TLS client fingerprint of every sniffed connection
+	// and reports stacks this machine has not used before. JA4LearnMinutes is the
+	// baseline window: reporting "unknown hash" from a cold start would fire on
+	// every browser update, so nothing is reported until it closes.
+	JA4Enabled      bool `json:"ja4_enabled"`
+	JA4LearnMinutes int  `json:"ja4_learn_minutes,omitempty"`
+
 	// Disposal (auto-block / auto-ban).
 	AutoBlock bool `json:"auto_block"`
 	// RequireWarmPermit keeps disposal from running until the Permit index has

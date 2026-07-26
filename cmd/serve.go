@@ -474,6 +474,7 @@ func runServe() error {
 		DLApplier:    mgr,
 		QueryStats:   engine,
 		NetState:     netWatcher,
+		Fingerprints: engine,
 		Detection:    detCfgStore,
 		DetApplier:   detectApplier{engine},
 		Quarantine:   quarStore,

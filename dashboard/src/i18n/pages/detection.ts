@@ -33,6 +33,14 @@ export default {
     requireWarm: 'Wait for the Permit index before disposing',
     requireWarmHint:
       'The Permit index is built asynchronously and fetches remote rule sets. Until it lands, every rule-set-derived Permit reads as "not permitted" — disposing in that window bans destinations you had approved.',
+    ja4Title: 'TLS client fingerprints (JA4)',
+    ja4Hint:
+      'A fingerprint describes the client stack, not its destination, so it keeps working once ECH encrypts the server name this gateway matches policy on. An embedded TLS library among a machine\'s browsers is the shape of an implant. Unfamiliar stacks are reported only after the baseline window closes.',
+    ja4Learning: 'Baseline window open until',
+    ja4Seen: 'Seen',
+    ja4Last: 'Last',
+    ja4Processes: 'Processes',
+    ja4Empty: 'No TLS handshakes fingerprinted yet.',
     hostTitle: 'Host network integrity',
     hostHint:
       'Two bypasses never reach the data plane, so the gateway watches the machine instead: a route that appears after the tunnel is up and carries traffic around it (TunnelVision / DHCP option 121), and a destination inside the LAN bypass that no local subnet actually covers (TunnelCrack LocalNet). Findings appear as route / localnet detections. Observation only — nothing is enforced.',
@@ -87,6 +95,14 @@ export default {
     requireWarm: '等 Permit 索引就绪后再处置',
     requireWarmHint:
       'Permit 索引是异步构建的，还要拉取远端规则集。在它就绪之前，所有来自规则集的 Permit 都读作「未许可」——此时处置会把你其实已批准的目的地封掉。',
+    ja4Title: 'TLS 客户端指纹（JA4）',
+    ja4Hint:
+      '指纹刻画的是客户端「用什么栈」，而不是「去哪」，所以当 ECH 把网关用来做策略的服务器名加密之后，它依然有效。一台机器上一堆浏览器里混进一个内嵌 TLS 库，正是植入物的形状。基线窗口结束后才会对陌生栈告警。',
+    ja4Learning: '基线学习中，截止',
+    ja4Seen: '出现次数',
+    ja4Last: '最近',
+    ja4Processes: '进程',
+    ja4Empty: '尚未指纹化任何 TLS 握手。',
     hostTitle: '主机网络完整性',
     hostHint:
       '有两种绕过根本不经过数据面，只能盯着机器本身看：隧道起来之后新出现、又能把流量带出隧道的路由（TunnelVision / DHCP option 121），以及落在 LAN 旁路里、却不属于任何真实本地子网的目的地（TunnelCrack LocalNet）。命中会以 route / localnet 类型出现在检测事件里。**只观测，不做任何强制**。',

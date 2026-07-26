@@ -76,6 +76,10 @@ type Engine struct {
 	parentWindows   map[string]*queryWindow
 
 	dnsBypassEnabled bool
+	ja4Enabled       bool
+	ja4LearnMinutes  int
+	ja4Start         time.Time
+	fingerprints     map[string]*fingerprintState
 	echDomains       map[string]int
 	echTotal         int64
 
@@ -152,6 +156,8 @@ func (e *Engine) ApplyConfig(c apitypes.DetectionConfig) {
 	e.queryParentRate = c.QueryParentRate
 	e.queryOddTypeAt = c.QueryOddTypeAt
 	e.dnsBypassEnabled = c.DNSBypassDetect
+	e.ja4Enabled = c.JA4Enabled
+	e.ja4LearnMinutes = c.JA4LearnMinutes
 	e.mu.Unlock()
 	e.uploadAlertBytes.Store(c.ExfilUploadBytes)
 	e.autoBlock.Store(c.AutoBlock)
@@ -186,6 +192,8 @@ func New(capacity int) *Engine {
 		dnsParents:       map[string]*parentState{},
 		seen:             map[string]time.Time{},
 		dnsBypassEnabled: true,
+		ja4Enabled:       true,
+		ja4LearnMinutes:  1440,
 		nxWindows:        map[string]*queryWindow{},
 		parentWindows:    map[string]*queryWindow{},
 	}
@@ -215,6 +223,12 @@ func (e *Engine) AutoBlock() bool { return e.autoBlock.Load() }
 // Track records a new connection event, runs connection-time detection, and
 // returns the event (whose Upload/Download the caller updates as bytes flow).
 func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) *Event {
+	return e.TrackWithFingerprint(network, host, dst, src, process, rule, outbound, "")
+}
+
+// TrackWithFingerprint is Track plus the client's TLS fingerprint, when sniffing
+// produced one (see internal/ja4).
+func (e *Engine) TrackWithFingerprint(network, host, dst, src, process, rule, outbound, ja4 string) *Event {
 	// Resolved before the lock: trustedDest is a caller-supplied predicate that
 	// walks the whitelist / pack / rule-set indexes under their own locks. Running
 	// it inside e.mu would serialize every connection behind those lookups and
@@ -226,7 +240,7 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 	ev := &Event{
 		ID: e.seq, Time: now.Format(time.RFC3339), Network: network,
 		Host: host, Destination: dst, Source: src, Process: process, Rule: rule, Outbound: outbound,
-		Level: "info", openedAt: now,
+		JA4: ja4, Level: "info", openedAt: now,
 	}
 	// Routed to the block outbound = denied by default-deny (or a blacklist rule).
 	if strings.HasPrefix(outbound, "block/") {
@@ -254,6 +268,17 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 			ev.Reasons = append(ev.Reasons, r)
 			pending = append(pending, e.makeDetectionLocked(KindBeacon, ActionAlert, ev, []string{r}))
 		}
+	}
+	// An unfamiliar TLS stack is worth naming even when the destination is not:
+	// fingerprints keep working after ECH hides the name the Permit gate uses.
+	if !trusted {
+		if r := e.recordFingerprintLocked(ja4, host, process, now); r != "" {
+			ev.Level = "alert"
+			ev.Reasons = append(ev.Reasons, r)
+			pending = append(pending, e.makeDetectionLocked(KindJA4, ActionAlert, ev, []string{r}))
+		}
+	} else {
+		e.recordFingerprintLocked(ja4, host, process, now)
 	}
 	// A client using its own encrypted DNS takes resolution out of this gateway.
 	if e.dnsBypassEnabled {

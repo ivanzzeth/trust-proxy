@@ -20,6 +20,8 @@ const (
 	// KindDNSBypass: a client resolving through a public encrypted-DNS service
 	// instead of this gateway.
 	KindDNSBypass Kind = "dns-bypass"
+	// KindJA4: a TLS client fingerprint this machine has not produced before.
+	KindJA4 Kind = "ja4"
 	// KindRoute: the host's routing table changed in a way that can carry
 	// traffic around the tunnel (TunnelVision shape).
 	KindRoute Kind = "route"
@@ -44,6 +46,7 @@ type Event struct {
 	Destination string   `json:"destination"`
 	Source      string   `json:"source"`
 	Process     string   `json:"process"`
+	JA4         string   `json:"ja4,omitempty"` // TLS client fingerprint, when sniffed
 	Rule        string   `json:"rule"`
 	Outbound    string   `json:"outbound"`
 	Upload      int64    `json:"upload"`
@@ -121,6 +124,7 @@ type Detection struct {
 	Host        string   `json:"host"`
 	Destination string   `json:"destination"`
 	Process     string   `json:"process,omitempty"`
+	JA4         string   `json:"ja4,omitempty"` // TLS client fingerprint, when sniffed
 	Upload      int64    `json:"upload,omitempty"`
 	Download    int64    `json:"download,omitempty"`
 	Action      Action   `json:"action"`
