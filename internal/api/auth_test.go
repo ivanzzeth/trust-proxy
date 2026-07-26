@@ -337,6 +337,40 @@ func TestBootstrapGuards(t *testing.T) {
 	_ = us
 }
 
+// The console has to learn the code is needed *before* rendering the form: it
+// cannot see its own peer address, and a form without the field can only 403 on
+// every cloud gateway.
+func TestAuthStateAnnouncesTheCodeRequirement(t *testing.T) {
+	s, us, _, _ := newAuthServer(t)
+
+	state := func(remote string) apitypes.AuthState {
+		rec := httptest.NewRecorder()
+		r := httptest.NewRequest(http.MethodGet, "/api/auth/state", nil)
+		r.RemoteAddr = remote
+		s.handleAuthState(rec, r)
+		var st apitypes.AuthState
+		if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+			t.Fatal(err)
+		}
+		return st
+	}
+
+	if st := state("192.168.1.50:5000"); !st.NeedsBootstrap || !st.NeedsBootstrapCode {
+		t.Fatalf("off-loopback on an unclaimed gateway: %+v, want both flags set", st)
+	}
+	if st := state("127.0.0.1:5000"); !st.NeedsBootstrap || st.NeedsBootstrapCode {
+		t.Fatalf("loopback on an unclaimed gateway: %+v, want no code demanded", st)
+	}
+	// Once claimed there is nothing to bootstrap, so no code is advertised either
+	// — otherwise the console would offer a claim form on a live gateway.
+	if _, err := us.Create("alice", "alice-password-long", users.RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	if st := state("192.168.1.50:5000"); st.NeedsBootstrap || st.NeedsBootstrapCode {
+		t.Fatalf("claimed gateway: %+v, want no bootstrap and no code", st)
+	}
+}
+
 func TestLoopbackBootstrapNeedsNoCode(t *testing.T) {
 	s, _, _, _ := newAuthServer(t)
 	rec := httptest.NewRecorder()

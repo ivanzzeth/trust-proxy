@@ -25,7 +25,8 @@
     "grpMonitor": "Monitor",
     "grpPolicy": "Policy",
     "grpEgress": "Egress",
-    "grpSystem": "System"
+    "grpSystem": "System",
+    "users": "Users"
   },
   "top": {
     "capture": "Capture",
@@ -62,7 +63,10 @@
     "routingRuleTip": "Rule: whitelist default-deny (safe)",
     "routingGlobalTip": "Global: default-deny OFF — unlisted traffic egresses via proxy",
     "globalBanner": "Global routing: whitelist default-deny is OFF — unlisted traffic egresses via proxy (blacklist / threat-intel / process·device gates still apply). Switch back to Rule to restore default-deny.",
-    "intel": "{{domains}}d / {{ips}}ip intel"
+    "intel": "{{domains}}d / {{ips}}ip intel",
+    "exit": "Exit",
+    "exitPick": "pick an exit",
+    "exitSwitched": "Traffic now leaves via {{name}}"
   },
   "settings": {
     "pageDesc": "Gateway configuration.",
@@ -146,5 +150,28 @@
       "builtinTitle": "Built-in (LAN / private)",
       "builtinHint": "Common private, loopback, link-local and CGNAT ranges are always routed direct when traffic is permitted — no need to add them."
     }
+  },
+  "auth": {
+    "unreachableTitle": "Cannot reach the gateway",
+    "unreachableDesc": "The console is served by the gateway, so if this page loaded but the API does not answer, the data plane is down.",
+    "retry": "Try again",
+    "username": "Username",
+    "password": "Password",
+    "loginTitle": "Sign in",
+    "loginDesc": "This gateway requires an account.",
+    "login": "Sign in",
+    "registerTitle": "Create an account",
+    "registerDesc": "Registration is open on this gateway. You will get a client account.",
+    "register": "Create account",
+    "noAccount": "No account? Register",
+    "haveAccount": "Already have an account? Sign in",
+    "bootstrapTitle": "Create the first administrator",
+    "bootstrapDesc": "Nobody has claimed this gateway yet. Until you do, its API is open to anyone who can reach it.",
+    "createAdmin": "Create administrator",
+    "bootstrapCode": "One-time claim code",
+    "bootstrapCodeHint": "Printed in the gateway's log at startup (`serve` logs `trust-proxy auth bootstrap … --code …`). It is required because this browser is not on the gateway's own machine.",
+    "bootstrapHint": "The first account is always an administrator. On a headless box you can do this over SSH instead: trust-proxy auth bootstrap <name>.",
+    "bootstrapDone": "Administrator created — this gateway now requires authentication",
+    "signOut": "Sign out"
   }
 }

@@ -540,6 +540,11 @@ type AuthState struct {
 	AllowRegistration bool  `json:"allow_registration"`
 	Authenticated     bool  `json:"authenticated"`
 	User              *User `json:"user,omitempty"`
+	// NeedsBootstrapCode reports that this caller is not on the gateway's own
+	// machine, so claiming it also takes the one-time code from the log. The UI
+	// has to know before showing the form: on a cloud gateway — the normal case
+	// for a remote console — a form without that field can only ever 403.
+	NeedsBootstrapCode bool `json:"needs_bootstrap_code,omitempty"`
 }
 
 // PatchUserRequest is the PATCH /api/users/{id} body. Every field is optional; a

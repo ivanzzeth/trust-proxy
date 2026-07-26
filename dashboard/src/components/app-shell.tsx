@@ -8,6 +8,7 @@ import {
   Cable,
   Github,
   Globe,
+  LogOut,
   History as HistoryIcon,
   Layers,
   ListTree,
@@ -20,6 +21,7 @@ import {
   ShieldCheck,
   Sun,
   Terminal,
+  Users as UsersIcon,
   Waypoints,
   Wifi,
 } from 'lucide-react';
@@ -30,6 +32,7 @@ import { api, currentNode, setNode } from '@/lib/api';
 import { cn, fmtBytes, fmtRate } from '@/lib/utils';
 import { useTrafficRate } from '@/hooks/use-traffic-rate';
 import { Logo } from '@/components/logo';
+import { ExitSwitcher } from '@/components/exit-switcher';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -38,7 +41,18 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 
 // Grouped by the user's mental model: what am I watching / what's my policy /
 // where does traffic exit / system.
-const NAV_SECTIONS = [
+//
+// `admin: true` hides an entry from a client. The API refuses those routes anyway;
+// hiding them keeps the console from offering doors that do not open.
+type NavItem = {
+  to: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  end?: boolean;
+  admin?: boolean;
+};
+
+const NAV_SECTIONS: { key: string; items: NavItem[] }[] = [
   {
     key: 'nav.grpMonitor',
     items: [
@@ -52,30 +66,68 @@ const NAV_SECTIONS = [
   {
     key: 'nav.grpPolicy',
     items: [
-      { to: '/acls', label: 'nav.acls', icon: ShieldCheck },
-      { to: '/rules', label: 'nav.rules', icon: ListTree },
-      { to: '/profiles', label: 'nav.profiles', icon: Layers },
+      { to: '/acls', label: 'nav.acls', icon: ShieldCheck, admin: true },
+      { to: '/rules', label: 'nav.rules', icon: ListTree, admin: true },
+      { to: '/profiles', label: 'nav.profiles', icon: Layers, admin: true },
     ],
   },
   {
     key: 'nav.grpEgress',
     items: [
-      { to: '/subscriptions', label: 'nav.nodes', icon: Wifi },
-      { to: '/proxies', label: 'nav.proxies', icon: Globe },
-      { to: '/endpoints', label: 'nav.vpn', icon: Cable },
+      { to: '/subscriptions', label: 'nav.nodes', icon: Wifi, admin: true },
+      { to: '/proxies', label: 'nav.proxies', icon: Globe, admin: true },
+      { to: '/endpoints', label: 'nav.vpn', icon: Cable, admin: true },
     ],
   },
   {
     key: 'nav.grpSystem',
     items: [
-      { to: '/dns', label: 'nav.dns', icon: Radar },
-      { to: '/fleet', label: 'nav.fleet', icon: Server },
-      { to: '/settings', label: 'nav.settings', icon: SettingsIcon },
+      { to: '/dns', label: 'nav.dns', icon: Radar, admin: true },
+      { to: '/fleet', label: 'nav.fleet', icon: Server, admin: true },
+      { to: '/users', label: 'nav.users', icon: UsersIcon, admin: true },
+      { to: '/settings', label: 'nav.settings', icon: SettingsIcon, admin: true },
     ],
   },
 ];
 
 const MODE_LABEL: Record<string, string> = { manual: 'Manual', system: 'System', tun: 'TUN' };
+
+// A client sees the observability pages and nothing else: policy, nodes, users and
+// the fleet are an administrator's. The API refuses them anyway — hiding them keeps
+// the console from offering doors that do not open.
+function useIsAdmin() {
+  const { data } = useQuery({ queryKey: ['authState'], queryFn: api.authState });
+  return { isAdmin: data?.user?.role === 'admin', user: data?.user };
+}
+
+function AccountMenu() {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const { user } = useIsAdmin();
+  const out = useMutation({
+    mutationFn: api.logout,
+    onSuccess: () => {
+      qc.clear();
+      qc.invalidateQueries({ queryKey: ['authState'] });
+    },
+  });
+  if (!user) return null;
+  return (
+    <div className="flex items-center gap-2 rounded-lg border bg-card px-2 py-1">
+      <span className="text-xs">
+        {user.username}
+        <span className="ml-1 text-[10px] uppercase tracking-wider text-muted-foreground">{user.role}</span>
+      </span>
+      <button
+        className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+        title={t('auth.signOut')}
+        onClick={() => out.mutate()}
+      >
+        <LogOut className="size-3.5" />
+      </button>
+    </div>
+  );
+}
 
 function useTheme() {
   const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'));
@@ -456,6 +508,7 @@ function TrafficPill() {
 }
 
 export function AppShell() {
+  const { isAdmin } = useIsAdmin();
   const { t } = useTranslation();
   const { dark, toggle } = useTheme();
   const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status });
@@ -479,7 +532,7 @@ export function AppShell() {
               <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
                 {t(section.key)}
               </div>
-              {section.items.map(({ to, label, icon: Icon, end }) => (
+              {section.items.filter((i) => !i.admin || isAdmin).map(({ to, label, icon: Icon, end }) => (
                 <NavLink
                   key={to}
                   to={to}
@@ -537,12 +590,20 @@ export function AppShell() {
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 shrink-0 items-center justify-end gap-3 border-b bg-background/80 px-6 backdrop-blur">
-          <NodeSwitcher />
+          {/* "Where does my traffic leave from" is everyone's business; the policy
+              switches below are an administrator's. The admin *target* selector is
+              on the Gateways page, not here — see exit-switcher.tsx. */}
+          <ExitSwitcher />
           <TrafficPill />
-          <AutoBlock />
-          <PostureSwitcher />
-          <RoutingSwitcher />
-          <ModeSwitcher />
+          {isAdmin && (
+            <>
+              <AutoBlock />
+              <PostureSwitcher />
+              <RoutingSwitcher />
+              <ModeSwitcher />
+            </>
+          )}
+          <AccountMenu />
         </header>
         <RevertBanner />
         <SplitModeBanner />

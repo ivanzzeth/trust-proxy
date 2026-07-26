@@ -5,6 +5,7 @@ import { Plus, Server, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api, Gateway, setNode } from '@/lib/api';
+import { Switch } from '@/components/ui/switch';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -29,8 +30,52 @@ function GatewayRow({ g, onDel }: { g: Gateway; onDel: () => void }) {
   const { t } = useTranslation();
   const h = useHealth(g.id);
   const qc = useQueryClient();
+  const err = (e: unknown) => toast.error(String((e as Error).message));
+  const [exitUser, setExitUser] = useState(g.proxy_user ?? '');
+  const [exitPass, setExitPass] = useState('');
+  const [exitPort, setExitPort] = useState(String(g.proxy_port || 21584));
+  const patch = useMutation({
+    mutationFn: (p: Parameters<typeof api.patchGateway>[1]) => api.patchGateway(g.id, p),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['gateways'] }),
+    onError: err,
+  });
+
+  // The local entry is this machine. Its switch is not "delete the process" — the
+  // console is served by this very gateway — but whether it runs a data plane at
+  // all: in client mode it captures nothing and the gateway it exits through
+  // decides everything.
+  if (g.local) {
+    return (
+      <div className="space-y-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2.5">
+        <div className="flex items-center gap-3">
+          <Badge variant="secondary">{t('pages.fleet.thisMachine')}</Badge>
+          <div className="min-w-0 flex-1 truncate text-sm font-medium">{g.name}</div>
+          <span className="text-xs text-muted-foreground">{t('pages.fleet.mode')}</span>
+          <Button
+            size="xs"
+            variant={g.mode !== 'client' ? 'default' : 'ghost'}
+            onClick={() => patch.mutate({ mode: 'gateway' })}
+          >
+            {t('pages.fleet.modeGateway')}
+          </Button>
+          <Button
+            size="xs"
+            variant={g.mode === 'client' ? 'default' : 'ghost'}
+            onClick={() => patch.mutate({ mode: 'client' })}
+          >
+            {t('pages.fleet.modeClient')}
+          </Button>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {g.mode === 'client' ? t('pages.fleet.clientModeHint') : t('pages.fleet.gatewayModeHint')}
+        </p>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex items-center gap-3 rounded-md border px-3 py-2.5">
+    <div className="space-y-2 rounded-md border px-3 py-2.5">
+    <div className="flex items-center gap-3">
       <span
         className={
           'size-2 shrink-0 rounded-full ' +
@@ -57,6 +102,33 @@ function GatewayRow({ g, onDel }: { g: Gateway; onDel: () => void }) {
       <Button size="icon" variant="ghost" className="size-7 text-destructive" onClick={onDel}>
         <Trash2 className="size-3.5" />
       </Button>
+    </div>
+
+    {/* Using it as an exit is a separate axis from administering it: one needs an
+        account on that gateway, the other its admin token. */}
+    <div className="flex flex-wrap items-center gap-2 border-t pt-2">
+      <span className="text-xs text-muted-foreground">{t('pages.fleet.useAsExit')}</span>
+      <Switch checked={g.as_exit} onCheckedChange={(v) => patch.mutate({ as_exit: v })} disabled={!g.as_exit && !g.has_proxy_pass && !exitPass} />
+      <Input className="h-7 w-24 text-xs" placeholder={t('pages.fleet.portPh')} value={exitPort} onChange={(e) => setExitPort(e.target.value.replace(/\D/g, ''))} />
+      <Input className="h-7 w-28 text-xs" placeholder={t('pages.fleet.userPh')} value={exitUser} onChange={(e) => setExitUser(e.target.value)} />
+      <Input className="h-7 w-32 text-xs" type="password" placeholder={g.has_proxy_pass ? '••••••••' : t('pages.fleet.passPh')} value={exitPass} onChange={(e) => setExitPass(e.target.value)} />
+      <Button
+        size="xs"
+        disabled={!exitUser.trim() || (!exitPass && !g.has_proxy_pass)}
+        onClick={() =>
+          patch.mutate({
+            as_exit: true,
+            proxy_port: Number(exitPort) || 21584,
+            proxy_user: exitUser.trim(),
+            ...(exitPass ? { proxy_pass: exitPass } : {}),
+          })
+        }
+      >
+        {t('pages.fleet.saveExit')}
+      </Button>
+      <span className="text-xs text-muted-foreground">{t('pages.fleet.enabled')}</span>
+      <Switch checked={g.enabled} onCheckedChange={(v) => patch.mutate({ enabled: v })} />
+    </div>
     </div>
   );
 }

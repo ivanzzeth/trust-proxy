@@ -25,6 +25,12 @@ export const logsURL = (level: string) => A(`/logs?level=${encodeURIComponent(le
 export const trafficURL = () => A('/traffic');
 
 async function unwrap<T>(r: Response): Promise<T> {
+  if (r.status === 401) {
+    // The session went away (expired, revoked, account disabled). Tell the auth
+    // gate so it re-checks and shows the login screen, rather than letting every
+    // page render an error toast over an empty layout.
+    window.dispatchEvent(new Event('tp-unauthorized'));
+  }
   if (!r.ok) {
     let msg = `HTTP ${r.status}`;
     try {
@@ -422,10 +428,87 @@ export interface HistoryPage {
   limit: number;
   offset: number;
 }
+// A registered gateway. Two independent uses: administering it (url + a token the
+// browser never sees) and using it as this machine's exit (proxy_* plus an account
+// on it). `local` marks this very instance, whose `mode` says whether it runs a
+// data plane at all.
 export interface Gateway {
   id: string;
   name: string;
   url: string;
+  as_exit: boolean;
+  proxy_host?: string;
+  proxy_port?: number;
+  proxy_user?: string;
+  has_proxy_pass: boolean;
+  enabled: boolean;
+  local?: boolean;
+  mode?: 'gateway' | 'client';
+}
+
+export interface PatchGateway {
+  name?: string;
+  enabled?: boolean;
+  as_exit?: boolean;
+  proxy_host?: string;
+  proxy_port?: number;
+  proxy_user?: string;
+  proxy_pass?: string;
+  mode?: 'gateway' | 'client';
+}
+
+// ---- identity ----
+export type Role = 'admin' | 'client';
+
+export interface APIKey {
+  id: string;
+  label: string;
+  prefix: string;
+  created_at: string;
+  last_used_at?: string;
+  expires_at?: string;
+}
+
+export interface User {
+  id: string;
+  username: string;
+  role: Role;
+  disabled?: boolean;
+  has_proxy_cred: boolean;
+  api_keys?: APIKey[];
+  created_at: string;
+  last_login_at?: string;
+}
+
+export interface AuthState {
+  needs_bootstrap: boolean;
+  allow_registration: boolean;
+  authenticated: boolean;
+  user?: User;
+  /** This browser is not on the gateway's machine, so claiming it also takes the
+   *  one-time code from the gateway's log. */
+  needs_bootstrap_code?: boolean;
+}
+
+export interface Session {
+  user: User;
+  expires_at?: string;
+}
+
+export interface PatchUser {
+  role?: Role;
+  disabled?: boolean;
+  password?: string;
+  proxy_password?: string;
+}
+
+export interface PermitRequest {
+  id: string;
+  match: string;
+  value: string;
+  pack?: string;
+  note?: string;
+  enabled: boolean;
 }
 export interface Endpoint {
   tag: string;
@@ -607,6 +690,38 @@ export const api = {
 
   // Node registry — always the local brain (never node-scoped).
   gateways: () => fetch('/api/nodes').then(unwrap<Gateway[]>),
+  patchGateway: (id: string, p: PatchGateway) =>
+    fetch(`/api/nodes/${id}`, { method: 'PATCH', headers: J, body: JSON.stringify(p) }).then(unwrap<Gateway>),
+
+  // ---- identity (always the local brain: you log in to the console you opened) ----
+  authState: () => fetch('/api/auth/state').then(unwrap<AuthState>),
+  login: (username: string, password: string) =>
+    fetch('/api/auth/login', { method: 'POST', headers: J, body: JSON.stringify({ username, password }) }).then(unwrap<Session>),
+  logout: () => fetch('/api/auth/logout', { method: 'POST' }).then(unwrap<void>),
+  bootstrap: (username: string, password: string, code?: string) =>
+    fetch('/api/auth/bootstrap', { method: 'POST', headers: J, body: JSON.stringify({ username, password, code }) }).then(unwrap<Session>),
+  register: (username: string, password: string) =>
+    fetch('/api/auth/register', { method: 'POST', headers: J, body: JSON.stringify({ username, password }) }).then(unwrap<Session>),
+  authSettings: () => get<{ allow_registration: boolean }>('/auth/settings'),
+  setAuthSettings: (allow_registration: boolean) =>
+    put<{ allow_registration: boolean }>('/auth/settings', { allow_registration }),
+
+  users: () => get<User[]>('/users'),
+  createUser: (username: string, password: string, role: Role) =>
+    post<User>('/users', { username, password, role }),
+  patchUser: (id: string, p: PatchUser) => patch<User>(`/users/${encodeURIComponent(id)}`, p),
+  delUser: (id: string) => del<void>(`/users/${encodeURIComponent(id)}`),
+  createAPIKey: (userID: string, label: string, expiresInDays?: number) =>
+    post<APIKey & { key: string }>(`/users/${encodeURIComponent(userID)}/apikeys`,
+      expiresInDays ? { label, expires_in_days: expiresInDays } : { label }),
+  delAPIKey: (userID: string, keyID: string) =>
+    del<void>(`/users/${encodeURIComponent(userID)}/apikeys/${encodeURIComponent(keyID)}`),
+
+  permitRequests: () => get<PermitRequest[]>('/permit-requests'),
+  requestPermit: (host: string, reason: string) =>
+    post<{ requested: string; pending: boolean }>('/permit-requests', { host, reason }),
+  approveRequest: (id: string) => post<PermitRequest[]>(`/permit-requests/${encodeURIComponent(id)}/approve`),
+  denyRequest: (id: string) => del<PermitRequest[]>(`/permit-requests/${encodeURIComponent(id)}`),
   addGateway: (name: string, url: string, token: string) =>
     fetch('/api/nodes', { method: 'POST', headers: J, body: JSON.stringify({ name, url, token }) }).then(unwrap<Gateway>),
   delGateway: (id: string) => fetch(`/api/nodes/${id}`, { method: 'DELETE' }).then(unwrap<void>),

@@ -269,6 +269,7 @@ func (s *Server) handleAuthState(w http.ResponseWriter, r *http.Request) {
 		NeedsBootstrap:    s.users.Empty(),
 		AllowRegistration: s.users.Settings().AllowRegistration,
 	}
+	st.NeedsBootstrapCode = st.NeedsBootstrap && !isLoopback(r.RemoteAddr)
 	if u, err := s.authenticate(r); err == nil && u != nil && u.ID != "unclaimed" {
 		st.Authenticated = true
 		st.User = u

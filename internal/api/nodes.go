@@ -80,10 +80,15 @@ func (s *Server) handleAddNode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "node registry not available")
 		return
 	}
+	// Registering and configuring-as-exit used to be POST-then-PATCH, which meant a
+	// caller that sent as_exit/proxy_* on the POST got a 201 and no exit at all.
+	// Silently dropping fields is worse than refusing them, so create accepts the
+	// same shape patch does.
 	var req struct {
 		Name  string `json:"name"`
 		URL   string `json:"url"`
 		Token string `json:"token"`
+		nodes.PatchRequest
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -91,6 +96,20 @@ func (s *Server) handleAddNode(w http.ResponseWriter, r *http.Request) {
 	}
 	n, err := s.nodes.Add(req.Name, req.URL, req.Token)
 	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.PatchRequest != (nodes.PatchRequest{}) {
+		// A rejected patch must not leave a half-configured gateway behind, so the
+		// registration is rolled back and the caller hears why.
+		n, err = s.nodes.Patch(n.ID, req.PatchRequest)
+		if err != nil {
+			_ = s.nodes.Delete(n.ID)
+			writeErr(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if err := s.syncGatewayExits(); err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}

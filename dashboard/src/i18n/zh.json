@@ -25,7 +25,8 @@
     "grpMonitor": "监控",
     "grpPolicy": "策略",
     "grpEgress": "出口",
-    "grpSystem": "系统"
+    "grpSystem": "系统",
+    "users": "用户"
   },
   "top": {
     "capture": "抓取",
@@ -62,7 +63,10 @@
     "routingRuleTip": "Rule：白名单默认拒绝（安全）",
     "routingGlobalTip": "Global：默认拒绝关闭 —— 未列入流量走代理出网",
     "globalBanner": "Global 路由：白名单默认拒绝已关闭 —— 未列入白名单的流量正走代理出网（黑名单 / 威胁情报 / 进程·设备闸仍生效）。切回 Rule 恢复默认拒绝。",
-    "intel": "{{domains}} 域 / {{ips}} IP 情报"
+    "intel": "{{domains}} 域 / {{ips}} IP 情报",
+    "exit": "出口",
+    "exitPick": "选择出口",
+    "exitSwitched": "流量现在经 {{name}} 出网"
   },
   "settings": {
     "pageDesc": "网关配置。",
@@ -146,5 +150,28 @@
       "builtinTitle": "内置（LAN / 私网）",
       "builtinHint": "常见私网、环回、链路本地、CGNAT 网段在流量已许可时始终直连——无需手动添加。"
     }
+  },
+  "auth": {
+    "unreachableTitle": "连不上网关",
+    "unreachableDesc": "控制台是网关自己提供的：页面能打开但 API 不应答，说明数据面不在了。",
+    "retry": "重试",
+    "username": "用户名",
+    "password": "密码",
+    "loginTitle": "登录",
+    "loginDesc": "这台网关需要账号。",
+    "login": "登录",
+    "registerTitle": "注册账号",
+    "registerDesc": "这台网关开放了注册，你会得到一个客户端账号。",
+    "register": "注册",
+    "noAccount": "没有账号？注册",
+    "haveAccount": "已有账号？登录",
+    "bootstrapTitle": "创建首个管理员",
+    "bootstrapDesc": "这台网关还没有被认领。在认领之前，任何能访问到它的人都能调它的 API。",
+    "createAdmin": "创建管理员",
+    "bootstrapCode": "一次性认领码",
+    "bootstrapCodeHint": "网关启动时打印在日志里（`serve` 会输出 `trust-proxy auth bootstrap … --code …`）。因为你不是在网关本机上打开的控制台，所以需要它。",
+    "bootstrapHint": "首个账号必定是管理员。无界面的机器可以改用 SSH：trust-proxy auth bootstrap <名字>。",
+    "bootstrapDone": "管理员已创建 —— 这台网关现在需要认证",
+    "signOut": "退出登录"
   }
 }

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -99,6 +100,12 @@ func startBox(t *testing.T, cfg map[string]any) *box.Box {
 	}
 	inst, err := box.New(box.Options{Context: ctx, Options: opts})
 	if err != nil {
+		// QUIC/uTLS protocols only exist when the matching build tag is on (see
+		// TAGS in the Makefile). A plain `go test ./...` should skip those
+		// protocols, not report a failure for a feature it did not compile in.
+		if strings.Contains(err.Error(), "is not included in this build") {
+			t.Skipf("build lacks the tag this protocol needs: %v", err)
+		}
 		t.Fatalf("box.New: %v", err)
 	}
 	if err := inst.Start(); err != nil {

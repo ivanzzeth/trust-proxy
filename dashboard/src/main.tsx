@@ -6,6 +6,7 @@ import { createHashRouter, Navigate, RouterProvider } from 'react-router-dom';
 import './index.css';
 import '@/i18n';
 import { AppShell } from '@/components/app-shell';
+import { AuthGate } from '@/components/auth-gate';
 import { Toaster } from '@/components/ui/sonner';
 import Overview from '@/pages/overview';
 import Connections from '@/pages/connections';
@@ -21,6 +22,7 @@ import Fleet from '@/pages/fleet';
 import Settings from '@/pages/settings';
 import Endpoints from '@/pages/endpoints';
 import Detection from '@/pages/detection';
+import Users from '@/pages/users';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
@@ -48,7 +50,12 @@ const router = createHashRouter([
       { path: 'history', element: <History /> },
       { path: 'logs', element: <Logs /> },
       { path: 'fleet', element: <Fleet /> },
+      { path: 'users', element: <Users /> },
       { path: 'settings', element: <Settings /> },
+      // Anything else — a stale bookmark, a renamed page, a hand-typed hash —
+      // goes home. Without this react-router renders its own bare 404 *outside*
+      // the shell, so there is not even a nav to get back with.
+      { path: '*', element: <Navigate to="/" replace /> },
     ],
   },
 ]);
@@ -56,7 +63,9 @@ const router = createHashRouter([
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <AuthGate>
+        <RouterProvider router={router} />
+      </AuthGate>
       <Toaster />
     </QueryClientProvider>
   </StrictMode>,
