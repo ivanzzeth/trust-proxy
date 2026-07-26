@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"os"
-	"syscall"
 	"time"
 )
 
@@ -48,14 +46,6 @@ func watchParent(pid int, interval time.Duration, onGone func()) (stop func()) {
 	return func() { close(done) }
 }
 
-// parentAlive reports whether pid is alive and still our parent.
-func parentAlive(pid int) bool {
-	if pid <= 1 {
-		return false
-	}
-	if os.Getppid() != pid {
-		// We were reparented: whoever spawned us is gone.
-		return false
-	}
-	return syscall.Kill(pid, 0) == nil
-}
+// parentAlive reports whether pid is alive and still our parent. The liveness
+// probe itself is per-OS (see parentwatch_unix.go / parentwatch_windows.go):
+// Unix has signal 0, Windows has no signals at all.

@@ -16,9 +16,7 @@ package service
 
 import (
 	"fmt"
-	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"github.com/ivanzzeth/trust-proxy/internal/paths"
@@ -95,8 +93,10 @@ func (c Config) Plist() (string, error) {
 	return b.String(), nil
 }
 
-// validate refuses a config that would produce a daemon nobody can fix: launchd
-// resolves nothing for us, so every path must already be absolute.
+// validate refuses a config that would produce a daemon nobody can fix: no
+// service manager — launchd, systemd or the SCM — resolves a relative path for
+// us, and a daemon started at boot has no useful working directory to resolve it
+// against either.
 func (c Config) validate() error {
 	for _, f := range []struct{ name, val string }{
 		{"binary", c.Binary}, {"config", c.ConfigPath}, {"data dir", c.DataDir}, {"log path", c.LogPath},
@@ -105,7 +105,7 @@ func (c Config) validate() error {
 			return fmt.Errorf("%s is required", f.name)
 		}
 		if !filepath.IsAbs(f.val) {
-			return fmt.Errorf("%s must be an absolute path (launchd has no working directory to resolve %q)", f.name, f.val)
+			return fmt.Errorf("%s must be an absolute path (a service manager has no working directory to resolve %q against)", f.name, f.val)
 		}
 	}
 	if c.APIAddr == "" {
@@ -119,44 +119,27 @@ func (c Config) validate() error {
 	return nil
 }
 
-// File is the path of the service definition on this OS: a launchd plist, a
-// systemd unit, or empty where we have no implementation. Callers (the CLI, the
-// desktop shell) should print this rather than assuming a plist.
-func File() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return PlistPath
-	case "linux":
-		return UnitPath
-	default:
-		return ""
-	}
-}
-
-// Program is what the installed service will actually exec, read back from the
-// service definition — so status can notice a stale path.
-func Program() string {
-	switch runtime.GOOS {
-	case "darwin":
-		return ProgramFromPlist()
-	case "linux":
-		return ProgramFromUnit()
-	default:
-		return ""
-	}
-}
-
-// Installed reports whether our service definition is present.
-func Installed() bool {
-	f := File()
-	if f == "" {
-		return false
-	}
-	_, err := os.Stat(f)
-	return err == nil
-}
-
 func xmlEscape(s string) string {
 	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
 	return r.Replace(s)
+}
+
+// serviceArgs is the argument list the SCM passes to the binary: the same `serve`
+// flags as everywhere else, plus --windows-service so the process knows to talk
+// the SCM protocol instead of running as a plain foreground gateway.
+func (c Config) serviceArgs() ([]string, error) {
+	if err := c.validate(); err != nil {
+		return nil, err
+	}
+	args := []string{
+		"serve", "--windows-service",
+		"-c", c.ConfigPath,
+		"--data", c.DataDir,
+		"--api-addr", c.APIAddr,
+		"--log", c.LogPath,
+	}
+	if c.Mode != "" {
+		args = append(args, "--mode", c.Mode)
+	}
+	return args, nil
 }

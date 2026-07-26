@@ -135,6 +135,21 @@ func ProgramFromPlist() string {
 	return unescapeXML(rest[:end])
 }
 
+// firstArg pulls the executable out of a service's command line, which is stored
+// as one string and may be quoted.
+func firstArg(cmdline string) string {
+	cmdline = strings.TrimSpace(cmdline)
+	if strings.HasPrefix(cmdline, `"`) {
+		if end := strings.Index(cmdline[1:], `"`); end >= 0 {
+			return cmdline[1 : 1+end]
+		}
+	}
+	if i := strings.Index(cmdline, " "); i > 0 {
+		return cmdline[:i]
+	}
+	return cmdline
+}
+
 func unescapeXML(s string) string {
 	r := strings.NewReplacer("&amp;", "&", "&lt;", "<", "&gt;", ">", "&quot;", `"`)
 	return r.Replace(s)

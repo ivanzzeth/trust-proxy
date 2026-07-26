@@ -52,28 +52,29 @@ import (
 )
 
 var (
-	serveConfig        string
-	serveExitWithPid   int
-	serveDumpConfig    string
-	serveAPIAddr       string
-	serveDataDir       string
-	serveConsoleDir    string
-	serveClashAddr     string
-	serveClashSecret   string
-	serveAPIToken      string
-	serveMgmtPorts     string
-	serveMode          string
-	serveAutoBlock     bool
-	serveThreatFeeds   string
-	serveThreatRefresh time.Duration
-	serveNoThreatFeed  bool
-	serveDaemon        bool
-	serveLog           string
-	servePid           string
-	serveLogMaxMB      int
-	serveLogKeep       int
-	serveLogMaxAge     int
-	serveLogCompress   bool
+	serveConfig         string
+	serveWindowsService bool
+	serveExitWithPid    int
+	serveDumpConfig     string
+	serveAPIAddr        string
+	serveDataDir        string
+	serveConsoleDir     string
+	serveClashAddr      string
+	serveClashSecret    string
+	serveAPIToken       string
+	serveMgmtPorts      string
+	serveMode           string
+	serveAutoBlock      bool
+	serveThreatFeeds    string
+	serveThreatRefresh  time.Duration
+	serveNoThreatFeed   bool
+	serveDaemon         bool
+	serveLog            string
+	servePid            string
+	serveLogMaxMB       int
+	serveLogKeep        int
+	serveLogMaxAge      int
+	serveLogCompress    bool
 
 	serveHistoryMaxMB    int
 	serveHistoryKeep     int
@@ -117,6 +118,13 @@ var serveCmd = &cobra.Command{
 		serveConfig = cfg
 		// Built-in daemon: re-exec detached (survives SSH logout) unless we're
 		// already the daemon child.
+		// A Windows service is not just "a process the SCM starts": it has to
+		// report Running and handle Stop over the SCM protocol, or the SCM kills
+		// it when its start timeout expires. runWindowsService wraps runServe in
+		// that protocol; everything else about the gateway is identical.
+		if serveWindowsService {
+			return runWindowsService(runServe)
+		}
 		if serveDaemon && os.Getenv("TP_DAEMON") == "" {
 			logPath, pidPath := daemonLogPath(dir), servePid
 			if pidPath == "" {
@@ -185,6 +193,8 @@ func init() {
 	f.DurationVar(&serveThreatRefresh, "threat-refresh", 12*time.Hour, "threat-intel feed refresh interval")
 	f.BoolVar(&serveNoThreatFeed, "no-threat-feed", false, "disable automatic threat-intel feed loading")
 	f.BoolVarP(&serveDaemon, "daemon", "d", false, "run in background (detached; survives SSH logout)")
+	f.BoolVar(&serveWindowsService, "windows-service", false, "run under the Windows Service Control Manager (set by `service install`; not for interactive use)")
+	_ = f.MarkHidden("windows-service")
 	f.StringVar(&serveLog, "log", "", "daemon log file (default <data>/serve.log)")
 	f.StringVar(&servePid, "pid", "", "daemon pid file (default <data>/serve.pid)")
 	f.StringVar(&serveDumpConfig, "dump-config", "", "write the merged sing-box config here on every rebuild (debugging: the running config is assembled in memory)")
@@ -620,7 +630,12 @@ func runServe() error {
 		})
 		defer stopWatch()
 	}
-	<-signals
+	// Two ways to be told to stop: a signal (a human, an init system, the parent
+	// watch) or the Windows SCM, which does not use signals at all.
+	select {
+	case <-signals:
+	case <-stopRequested:
+	}
 	logging.L().Info().Msg("shutting down")
 	close(stopSave)
 	saveEvents()
