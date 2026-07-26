@@ -72,6 +72,11 @@
 
 ---
 
+## 出口管控「强制」类改造 —— **暂缓,见 `docs/egress-enforcement-risks.md`**
+- pf kill switch / 收窄 LAN 旁路 / 剥 ECH / 拦 DoH:这几项**会改动系统状态或行为**,bug 的后果是整机断网而不是少报几条告警,所以与观测类分开推进。
+- 观测那一半**已全部上线**(路由完整性、LocalNet、DoH 绕过、ECH 观测、DNS 查询级、JA4 指纹),先跑一段时间攒真实数据再据此设计强制策略。
+- 真要做 kill switch,文档里那 **7 条防板砖脚手架是验收标准**(具名 anchor / 预留生路 / 死亡开关 / 独立看门狗 / `unbrick` / 默认不跨重启 / VM 里验证 kill -9 与重启恢复),缺一条就别上。
+
 ## 给用户的即时动作(非开发任务)
 - **救 aliyun(分层后的正确姿势)**:白名单只管「允不允许」不再强制出境。要让 aliyun 走直连:① 在白名单放行 `aliyun.com`/`aliyuncs.com`/`alicdn.com`(或启用 geosite-cn allow-direct 批量放行),② 若挂了境外出口且想让它直连,把这些域名(或 IP)加进 **ACLs → 免代理(No-Proxy)** tab(私网/LAN 已自动直连,无需手动加)。不再需要「从白名单删掉」的旧绕法。
 - **升级网关**:用户网关跑的是旧二进制,`git pull && make build` 重启才能拿到分层引擎 + no-proxy + 「规则集经代理下载」等修复。
