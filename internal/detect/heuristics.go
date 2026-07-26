@@ -131,9 +131,20 @@ func (e *Engine) analyzeDomain(host string, now time.Time) []string {
 		}
 	}
 
+	// A label under a hosting provider's suffix (elb.amazonaws.com.cn,
+	// herokuapp.com, github.io) is assigned by that provider's tooling, so
+	// machine-generated names are the norm there and say nothing about intent.
+	// The public suffix list marks those suffixes as non-ICANN, which is exactly
+	// the distinction needed: a real registration (including a suspicious .sbs
+	// domain) stays in scope. Measured: the only DGA finding on a real box was
+	// daycount-1450237091.cn-north-1.elb.amazonaws.com.cn — an AWS load balancer.
+	hostedLabel := false
+	if suffix, icann := publicsuffix.PublicSuffix(h); !icann && suffix != "" {
+		hostedLabel = true
+	}
 	// DGA: long, high-entropy registrable label that is digit-heavy or
 	// vowel-starved (kq3v9z7x1p2m.com), unlike real brands.
-	if len(sld) >= e.dgaMinLabelLen && shannon(sld) >= e.dgaMinEntropy && (digitRatio(sld) >= 0.25 || vowelRatio(sld) <= 0.2) {
+	if !hostedLabel && len(sld) >= e.dgaMinLabelLen && shannon(sld) >= e.dgaMinEntropy && (digitRatio(sld) >= 0.25 || vowelRatio(sld) <= 0.2) {
 		reasons = append(reasons, fmt.Sprintf("DGA-like domain %q (entropy %.1f) — possible malware C2", sld, shannon(sld)))
 	}
 	// Tunnel: a single long, high-entropy subdomain label encodes data.

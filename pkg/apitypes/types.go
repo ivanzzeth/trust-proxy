@@ -228,6 +228,10 @@ type DetectionConfig struct {
 	// service instead of this gateway — their names never reach our resolver and
 	// the domain-based Permit gate only ever sees an IP.
 	DNSBypassDetect bool `json:"dns_bypass_detect"`
+	// DNSBypassReAlertSec is the per-endpoint cooldown. A client configured for
+	// public DoH keeps using it, so without one the finding repeats per
+	// connection — 614 of them in an hour on a real box.
+	DNSBypassReAlertSec int `json:"dns_bypass_realert_s,omitempty"`
 	// RouteWatchSec polls the host routing table for routes that appeared after
 	// the tunnel came up and can carry traffic around it (TunnelVision shape).
 	// 0 disables. Observation only — nothing is enforced.

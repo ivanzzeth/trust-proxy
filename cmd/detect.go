@@ -37,8 +37,8 @@ var detectGetCmd = &cobra.Command{
 			fmt.Printf("dns:      window=%ds  nxdomain-burst=%d  parent-rate=%d  odd-type=%d\n",
 				cfg.QueryWindowSec, cfg.QueryNXBurst, cfg.QueryParentRate, cfg.QueryOddTypeAt)
 			fmt.Printf("ja4:      %s  learn-window=%dm\n", enabledWord(cfg.JA4Enabled), cfg.JA4LearnMinutes)
-			fmt.Printf("host:     route-watch=%ds  host-routes=%s  dns-bypass-detect=%s\n",
-				cfg.RouteWatchSec, yesNo(cfg.RouteWatchHostRoutes), yesNo(cfg.DNSBypassDetect))
+			fmt.Printf("host:     route-watch=%ds  host-routes=%s  dns-bypass=%s (re-alert %ds)\n",
+				cfg.RouteWatchSec, yesNo(cfg.RouteWatchHostRoutes), yesNo(cfg.DNSBypassDetect), cfg.DNSBypassReAlertSec)
 			fmt.Printf("disposal: auto-block=%s  require-warm-permit=%s\n",
 				yesNo(cfg.AutoBlock), yesNo(cfg.RequireWarmPermit))
 		})
@@ -71,6 +71,7 @@ var (
 	detRouteWatch     int
 	detRouteHostRts   bool
 	detDNSBypass      bool
+	detDNSBypassRe    int
 	detAutoBlock      bool
 	detRequireWarm    bool
 	detectSettingsSet = map[string]func(*apitypes.DetectionConfig){}
@@ -241,6 +242,7 @@ func init() {
 	f.IntVar(&detRouteWatch, "route-watch", 30, "poll the host routing table every N seconds (0 = off)")
 	f.BoolVar(&detRouteHostRts, "route-watch-host-routes", false, "also report /32 and /128 routes (noisy: one per direct dial)")
 	f.BoolVar(&detDNSBypass, "dns-bypass-detect", true, "report clients resolving through public DoH/DoT")
+	f.IntVar(&detDNSBypassRe, "dns-bypass-realert", 3600, "per-endpoint cooldown for the DoH/DoT finding (seconds)")
 	f.BoolVar(&detAutoBlock, "auto-block", true, "drop and quarantine on high-confidence findings")
 	f.BoolVar(&detRequireWarm, "require-warm-permit", true, "hold disposal until the Permit index is built")
 
@@ -269,6 +271,7 @@ func init() {
 	detectSettingsSet["route-watch"] = func(c *apitypes.DetectionConfig) { c.RouteWatchSec = detRouteWatch }
 	detectSettingsSet["route-watch-host-routes"] = func(c *apitypes.DetectionConfig) { c.RouteWatchHostRoutes = detRouteHostRts }
 	detectSettingsSet["dns-bypass-detect"] = func(c *apitypes.DetectionConfig) { c.DNSBypassDetect = detDNSBypass }
+	detectSettingsSet["dns-bypass-realert"] = func(c *apitypes.DetectionConfig) { c.DNSBypassReAlertSec = detDNSBypassRe }
 	detectSettingsSet["auto-block"] = func(c *apitypes.DetectionConfig) { c.AutoBlock = detAutoBlock }
 	detectSettingsSet["require-warm-permit"] = func(c *apitypes.DetectionConfig) { c.RequireWarmPermit = detRequireWarm }
 

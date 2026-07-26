@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Encrypted-DNS bypass observation.
@@ -38,7 +39,12 @@ var dohAddrs = []string{
 // checkEncryptedDNSBypass returns a reason when a connection looks like a client
 // resolving through someone else's encrypted DNS. Ports matter: 443 is DoH/DoQ,
 // 853 is DoT. Caller holds e.mu.
-func (e *Engine) checkEncryptedDNSBypassLocked(host, dst, process string) string {
+//
+// A client configured to use public DoH keeps doing it: measured on a real box,
+// one WARP-style client produced 614 connections to two endpoints in an hour.
+// That is a standing condition, not 614 findings — so it is reported once per
+// (client, endpoint) per cooldown, exactly like a beaconing cadence.
+func (e *Engine) checkEncryptedDNSBypassLocked(host, dst, process string, now time.Time) string {
 	port := portOf(dst)
 	if port != "443" && port != "853" {
 		return ""
@@ -71,9 +77,32 @@ func (e *Engine) checkEncryptedDNSBypassLocked(host, dst, process string) string
 	if port == "853" {
 		what = "DoT"
 	}
+	if !e.bypassReadyLocked(hostOnly(dst)+"|"+matched, now) {
+		return ""
+	}
 	return fmt.Sprintf(
 		"%s to %s: this client resolves names outside the gateway, so query-level detection and domain policy do not see it",
 		what, matched)
+}
+
+// bypassReadyLocked applies the per-endpoint cooldown. Caller holds e.mu.
+func (e *Engine) bypassReadyLocked(key string, now time.Time) bool {
+	if e.bypassSeen == nil {
+		e.bypassSeen = map[string]time.Time{}
+	}
+	window := time.Duration(e.dnsBypassReAlertSec) * time.Second
+	if last, ok := e.bypassSeen[key]; ok && now.Sub(last) < window {
+		return false
+	}
+	if len(e.bypassSeen) > 4096 {
+		for k, t := range e.bypassSeen {
+			if now.Sub(t) > window {
+				delete(e.bypassSeen, k)
+			}
+		}
+	}
+	e.bypassSeen[key] = now
+	return true
 }
 
 // portOf returns the port part of host:port, or "".

@@ -42,10 +42,11 @@ func Defaults() apitypes.DetectionConfig {
 		QueryParentRate: 300,
 		QueryOddTypeAt:  20,
 
-		JA4Enabled:      true,
-		JA4LearnMinutes: 1440,
-		DNSBypassDetect: true,
-		RouteWatchSec:   30,
+		JA4Enabled:          true,
+		JA4LearnMinutes:     1440,
+		DNSBypassDetect:     true,
+		DNSBypassReAlertSec: 3600,
+		RouteWatchSec:       30,
 
 		AutoBlock:         true,
 		RequireWarmPermit: true,
@@ -95,6 +96,9 @@ func WithDefaults(c apitypes.DetectionConfig) apitypes.DetectionConfig {
 	}
 	if c.QueryWindowSec <= 0 {
 		c.QueryWindowSec = d.QueryWindowSec
+	}
+	if c.DNSBypassReAlertSec <= 0 {
+		c.DNSBypassReAlertSec = d.DNSBypassReAlertSec
 	}
 	if c.JA4LearnMinutes <= 0 {
 		c.JA4LearnMinutes = d.JA4LearnMinutes

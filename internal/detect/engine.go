@@ -75,13 +75,15 @@ type Engine struct {
 	nxWindows       map[string]*queryWindow
 	parentWindows   map[string]*queryWindow
 
-	dnsBypassEnabled bool
-	ja4Enabled       bool
-	ja4LearnMinutes  int
-	ja4Start         time.Time
-	fingerprints     map[string]*fingerprintState
-	echDomains       map[string]int
-	echTotal         int64
+	dnsBypassEnabled    bool
+	dnsBypassReAlertSec int
+	bypassSeen          map[string]time.Time
+	ja4Enabled          bool
+	ja4LearnMinutes     int
+	ja4Start            time.Time
+	fingerprints        map[string]*fingerprintState
+	echDomains          map[string]int
+	echTotal            int64
 
 	// isOnLink answers "is this address really on a local subnet" (netwatch).
 	isOnLink func(netip.Addr) bool
@@ -156,6 +158,7 @@ func (e *Engine) ApplyConfig(c apitypes.DetectionConfig) {
 	e.queryParentRate = c.QueryParentRate
 	e.queryOddTypeAt = c.QueryOddTypeAt
 	e.dnsBypassEnabled = c.DNSBypassDetect
+	e.dnsBypassReAlertSec = c.DNSBypassReAlertSec
 	e.ja4Enabled = c.JA4Enabled
 	e.ja4LearnMinutes = c.JA4LearnMinutes
 	e.mu.Unlock()
@@ -175,27 +178,28 @@ func New(capacity int) *Engine {
 		capacity = 1000
 	}
 	e := &Engine{
-		cap:              capacity,
-		threatDomains:    map[string]struct{}{},
-		threatIPs:        map[string]struct{}{},
-		feedDomains:      map[string]struct{}{},
-		feedIPs:          map[string]struct{}{},
-		now:              time.Now,
-		beaconEnabled:    true,
-		beaconMinSample:  6, // >=5 intervals
-		beaconCV:         0.25,
-		beaconMinIntvl:   5 * time.Second,
-		beaconMaxIntvl:   2 * time.Hour,
-		beaconReAlert:    10 * time.Minute,
-		beacons:          map[string]*beaconState{},
-		dgaEnabled:       true,
-		dnsParents:       map[string]*parentState{},
-		seen:             map[string]time.Time{},
-		dnsBypassEnabled: true,
-		ja4Enabled:       true,
-		ja4LearnMinutes:  1440,
-		nxWindows:        map[string]*queryWindow{},
-		parentWindows:    map[string]*queryWindow{},
+		cap:                 capacity,
+		threatDomains:       map[string]struct{}{},
+		threatIPs:           map[string]struct{}{},
+		feedDomains:         map[string]struct{}{},
+		feedIPs:             map[string]struct{}{},
+		now:                 time.Now,
+		beaconEnabled:       true,
+		beaconMinSample:     6, // >=5 intervals
+		beaconCV:            0.25,
+		beaconMinIntvl:      5 * time.Second,
+		beaconMaxIntvl:      2 * time.Hour,
+		beaconReAlert:       10 * time.Minute,
+		beacons:             map[string]*beaconState{},
+		dgaEnabled:          true,
+		dnsParents:          map[string]*parentState{},
+		seen:                map[string]time.Time{},
+		dnsBypassEnabled:    true,
+		dnsBypassReAlertSec: 3600,
+		ja4Enabled:          true,
+		ja4LearnMinutes:     1440,
+		nxWindows:           map[string]*queryWindow{},
+		parentWindows:       map[string]*queryWindow{},
 	}
 	def := defaultTunables()
 	e.beaconReAlertFactor = def.beaconReAlertFactor
@@ -282,7 +286,7 @@ func (e *Engine) TrackWithFingerprint(network, host, dst, src, process, rule, ou
 	}
 	// A client using its own encrypted DNS takes resolution out of this gateway.
 	if e.dnsBypassEnabled {
-		if r := e.checkEncryptedDNSBypassLocked(host, dst, process); r != "" {
+		if r := e.checkEncryptedDNSBypassLocked(host, dst, process, now); r != "" {
 			ev.Level = "alert"
 			ev.Reasons = append(ev.Reasons, r)
 			pending = append(pending, e.makeDetectionLocked(KindDNSBypass, ActionAlert, ev, []string{r}))

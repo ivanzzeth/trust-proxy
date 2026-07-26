@@ -187,10 +187,12 @@ var historyStatsCmd = &cobra.Command{
 			fmt.Println("(no traffic recorded yet)")
 			return nil
 		}
-		fmt.Printf("%-40s %-14s %-14s %s\n", "HOST", "UP", "DOWN", "CONNS")
+		fmt.Printf("%-40s %-12s %-12s %s\n", "HOST", "UP", "DOWN", "CONNS")
 		for _, t := range talkers {
 			m, _ := t.(map[string]any)
-			fmt.Printf("%-40s %-14v %-14v %v\n", truncate(str(m["host"]), 40), m["up"], m["down"], m["count"])
+			// JSON numbers decode to float64: printing them raw gave "5.426577e+06".
+			fmt.Printf("%-40s %-12s %-12s %v\n",
+				truncate(str(m["host"]), 40), humanBytes(asInt64(m["up"])), humanBytes(asInt64(m["down"])), m["count"])
 		}
 		return nil
 	},
@@ -250,6 +252,12 @@ var nodeRmCmd = &cobra.Command{
 		fmt.Println("removed", args[0])
 		return nil
 	},
+}
+
+// asInt64 converts a JSON-decoded number to int64.
+func asInt64(v any) int64 {
+	f, _ := v.(float64)
+	return int64(f)
 }
 
 // str renders a JSON-decoded value for a table cell.

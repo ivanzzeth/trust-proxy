@@ -83,6 +83,9 @@ func withEngineDefaults(c apitypes.DetectionConfig) apitypes.DetectionConfig {
 	if c.QueryWindowSec <= 0 {
 		c.QueryWindowSec = d.queryWindowSec
 	}
+	if c.DNSBypassReAlertSec <= 0 {
+		c.DNSBypassReAlertSec = 3600
+	}
 	// The three query thresholds keep 0 as "ignore this signal".
 	return c
 }
