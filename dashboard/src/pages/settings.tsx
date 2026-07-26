@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { Save } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { api, InboundAuth, TUNConfig } from '@/lib/api';
+import { api, TUNConfig } from '@/lib/api';
 import { LANGS } from '@/i18n';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -23,69 +23,6 @@ const textToList = (t: string) =>
     .split('\n')
     .map((s) => s.trim())
     .filter(Boolean);
-
-function InboundCard() {
-  const { t } = useTranslation();
-  const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ['inbound'], queryFn: api.inbound });
-  const [auth, setAuth] = useState<InboundAuth | null>(null);
-  useEffect(() => {
-    if (data && !auth) setAuth({ username: data.username ?? '', password: data.password ?? '' });
-  }, [data, auth]);
-
-  const save = useMutation({
-    mutationFn: (a: InboundAuth) => api.setInbound(a),
-    onSuccess: (a) => {
-      toast.success(a.username ? t('settings.inbound.toastOn') : t('settings.inbound.toastOff'));
-      setAuth({ username: a.username ?? '', password: a.password ?? '' });
-      qc.invalidateQueries({ queryKey: ['inbound'] });
-    },
-    onError: (e) => toast.error(String((e as Error).message)),
-  });
-
-  if (!auth) return null;
-  const enabled = auth.username !== '' || auth.password !== '';
-
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-sm">{t('settings.inbound.title')}</CardTitle>
-        <CardDescription>{t('settings.inbound.desc')}</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-1.5">
-          <Label htmlFor="inbound-user">{t('settings.inbound.user')}</Label>
-          <Input
-            id="inbound-user"
-            autoComplete="off"
-            placeholder={t('settings.inbound.ph')}
-            value={auth.username}
-            onChange={(e) => setAuth({ ...auth, username: e.target.value })}
-          />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="inbound-pass">{t('settings.inbound.pass')}</Label>
-          <Input
-            id="inbound-pass"
-            type="password"
-            autoComplete="new-password"
-            placeholder={t('settings.inbound.ph')}
-            value={auth.password}
-            onChange={(e) => setAuth({ ...auth, password: e.target.value })}
-          />
-        </div>
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-muted-foreground">
-            {enabled ? t('settings.inbound.onHint') : t('settings.inbound.offHint')}
-          </p>
-          <Button disabled={save.isPending} onClick={() => save.mutate(auth)}>
-            <Save className="size-4" /> {t('settings.inbound.save')}
-          </Button>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
 
 function TUNCard() {
   const { t } = useTranslation();
@@ -205,7 +142,6 @@ export default function Settings() {
       <PageHeader title={t('nav.settings')} description={t('settings.pageDesc')} />
       <div className="grid gap-4 lg:grid-cols-2">
         <LanguageCard />
-        <InboundCard />
         <TUNCard />
       </div>
     </div>

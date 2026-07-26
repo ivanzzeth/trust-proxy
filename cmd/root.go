@@ -25,7 +25,7 @@ func init() {
 	// client for a running backend and shares --api-addr/--api-token/--json.
 	clients := []*cobra.Command{
 		subCmd, aclCmd, rulesCmd, statusCmd, modeCmd, routingCmd, postureCmd, finalCmd,
-		dnsCmd, tunCmd, inboundCmd, groupsCmd, endpointsCmd, proxiesCmd, autoBlockCmd,
+		dnsCmd, tunCmd, groupsCmd, endpointsCmd, proxiesCmd, autoBlockCmd,
 		profileCmd, detectionsCmd, historyCmd, nodeCmd, detectCmd, quarantineCmd, netcheckCmd,
 	}
 	addClientFlags(clients...)

@@ -6,12 +6,12 @@ package apitypes
 
 // Rule-set roles (new + legacy). Prefer permit / route-* / deny going forward.
 const (
-	RuleRoleDeny               = "deny"
-	RuleRolePermit             = "permit"
-	RuleRoleRouteDirect        = "route-direct"
-	RuleRoleRouteProxy         = "route-proxy"
-	RuleRolePermitRouteDirect  = "permit+route-direct" // migration of allow-direct
-	RuleRolePermitRouteProxy   = "permit+route-proxy"  // migration of allow-proxy
+	RuleRoleDeny              = "deny"
+	RuleRolePermit            = "permit"
+	RuleRoleRouteDirect       = "route-direct"
+	RuleRoleRouteProxy        = "route-proxy"
+	RuleRolePermitRouteDirect = "permit+route-direct" // migration of allow-direct
+	RuleRolePermitRouteProxy  = "permit+route-proxy"  // migration of allow-proxy
 
 	// Legacy aliases — still accepted on load / migration.
 	RuleRoleBlock       = "block"

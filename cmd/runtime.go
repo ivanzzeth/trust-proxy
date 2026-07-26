@@ -13,7 +13,7 @@ import (
 )
 
 // Runtime knobs: capture mode, routing mode, posture, catch-all egress, resolver,
-// TUN/inbound options, proxy groups and VPN endpoints.
+// TUN options, proxy groups and VPN endpoints.
 
 // readJSONArg loads a JSON document from a file, or from stdin when path is "-".
 // Used by the set commands whose payload is a whole document (dns, tun, groups).
@@ -380,7 +380,7 @@ func joinAny(vals []any, sep string) string {
 	return strings.Join(parts, sep)
 }
 
-// ---- TUN / inbound / groups / endpoints ---------------------------------
+// ---- TUN / groups / endpoints -------------------------------------------
 
 var tunCmd = &cobra.Command{
 	Use:   "tun",
@@ -442,52 +442,6 @@ var tunSetCmd = &cobra.Command{
 			return err
 		}
 		return out(res, func() { fmt.Println("tun options updated") })
-	},
-}
-
-var inboundCmd = &cobra.Command{
-	Use:   "inbound",
-	Short: "Mixed inbound auth (:21584)",
-}
-
-var inboundGetCmd = &cobra.Command{
-	Use:   "get",
-	Short: "Show whether inbound auth is enabled",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := sdk().Inbound()
-		if err != nil {
-			return err
-		}
-		return out(a, func() {
-			if a.Username == "" {
-				fmt.Println("inbound auth: off (the proxy port is open)")
-				return
-			}
-			fmt.Printf("inbound auth: on (user %s)\n", a.Username)
-		})
-	},
-}
-
-var (
-	inboundUser string
-	inboundPass string
-)
-
-var inboundSetCmd = &cobra.Command{
-	Use:   "set",
-	Short: "Set (or clear, with both empty) inbound auth",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		a, err := sdk().SetInbound(apitypes.InboundAuth{Username: inboundUser, Password: inboundPass})
-		if err != nil {
-			return err
-		}
-		return out(a, func() {
-			if a.Username == "" {
-				fmt.Println("inbound auth cleared")
-				return
-			}
-			fmt.Println("inbound auth set for", a.Username)
-		})
 	},
 }
 
@@ -697,8 +651,6 @@ func init() {
 	tunSetCmd.Flags().StringVar(&tunStack, "stack", "", "system|gvisor|mixed")
 	tunSetCmd.Flags().IntVar(&tunMTU, "mtu", 0, "MTU (0 = auto)")
 	tunSetCmd.Flags().BoolVar(&tunStrict, "strict-route", true, "strict route")
-	inboundSetCmd.Flags().StringVar(&inboundUser, "username", "", "inbound username (empty pair = auth off)")
-	inboundSetCmd.Flags().StringVar(&inboundPass, "password", "", "inbound password")
 	groupsSetCmd.Flags().StringVarP(&groupsFile, "file", "f", "", "JSON document (- for stdin)")
 	endpointsAddCmd.Flags().StringVarP(&endpointsFile, "file", "f", "", "JSON endpoint document (- for stdin)")
 	endpointsToggleCmd.Flags().BoolVar(&customEnable, "enabled", true, "target state")
@@ -710,7 +662,6 @@ func init() {
 	dnsQueriesCmd.Flags().IntVar(&dnsQueriesTop, "top", 10, "how many parent domains to show")
 	dnsCmd.AddCommand(dnsGetCmd, dnsSetCmd, dnsQueriesCmd)
 	tunCmd.AddCommand(tunGetCmd, tunSetCmd)
-	inboundCmd.AddCommand(inboundGetCmd, inboundSetCmd)
 	groupsCmd.AddCommand(groupsGetCmd, groupsSetCmd)
 	endpointsCmd.AddCommand(endpointsLsCmd, endpointsAddCmd, endpointsToggleCmd, endpointsRmCmd)
 	proxiesCmd.AddCommand(proxiesLsCmd, proxiesSelectCmd, proxiesDelayCmd)

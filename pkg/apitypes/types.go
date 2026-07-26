@@ -408,11 +408,99 @@ type DNSConfig struct {
 	DisableDirectSplit bool `json:"disable_direct_split,omitempty"`
 }
 
-// InboundAuth is the optional username/password required on the mixed proxy
-// inbound (:21584). Both empty = auth disabled = the inbound is open.
+// InboundAuth is the optional credential set required on the mixed proxy inbound
+// (:21584). Empty = auth disabled = the inbound is open.
+//
+// Users is the current shape (sing-box's mixed inbound accepts many). Username /
+// Password are the original single-pair fields, kept so an existing inbound.json
+// still loads; the store migrates them into Users on first read.
 type InboundAuth struct {
+	Users    []ProxyCredential `json:"users,omitempty"`
+	Username string            `json:"username,omitempty"` // deprecated: migrated into Users
+	Password string            `json:"password,omitempty"` // deprecated: migrated into Users
+}
+
+// Credentials returns every credential, folding in the deprecated single pair so
+// an inbound.json written by an older build keeps working.
+func (a InboundAuth) Credentials() []ProxyCredential {
+	out := make([]ProxyCredential, 0, len(a.Users)+1)
+	seen := map[string]bool{}
+	for _, c := range a.Users {
+		if c.Username == "" || c.Password == "" || seen[c.Username] {
+			continue
+		}
+		seen[c.Username] = true
+		out = append(out, c)
+	}
+	if a.Username != "" && a.Password != "" && !seen[a.Username] {
+		out = append(out, ProxyCredential{Username: a.Username, Password: a.Password})
+	}
+	return out
+}
+
+// ProxyCredential is one username/password accepted by the proxy inbound.
+//
+// Stored in the clear, unavoidably: sing-box validates it itself, so it has to be
+// in the generated config. This is why it is a different secret from an account
+// password, which is only ever stored as an argon2id hash.
+type ProxyCredential struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
+}
+
+// User is a console account, with every secret stripped for the wire.
+type User struct {
+	ID           string   `json:"id"`
+	Username     string   `json:"username"`
+	Role         string   `json:"role"` // admin | user
+	Disabled     bool     `json:"disabled,omitempty"`
+	HasProxyCred bool     `json:"has_proxy_cred"` // has a proxy-inbound password
+	APIKeys      []APIKey `json:"api_keys,omitempty"`
+	CreatedAt    string   `json:"created_at"`
+	LastLoginAt  string   `json:"last_login_at,omitempty"`
+}
+
+// APIKey is a non-interactive credential's metadata. The key itself is shown once
+// at creation and only its hash is kept.
+type APIKey struct {
+	ID         string `json:"id"`
+	Label      string `json:"label"`
+	Prefix     string `json:"prefix"`
+	CreatedAt  string `json:"created_at"`
+	LastUsedAt string `json:"last_used_at,omitempty"`
+	ExpiresAt  string `json:"expires_at,omitempty"`
+}
+
+// APIKeyCreated is the one and only response that carries the raw key.
+type APIKeyCreated struct {
+	APIKey
+	Key string `json:"key"`
+}
+
+// LoginRequest is the POST /api/auth/login body.
+type LoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// Session is what the console learns about itself after logging in.
+type Session struct {
+	User      User   `json:"user"`
+	ExpiresAt string `json:"expires_at"`
+}
+
+// AuthState tells a caller what it may do: create the first admin, log in, or
+// (only if an admin opened it) register.
+type AuthState struct {
+	NeedsBootstrap    bool  `json:"needs_bootstrap"`
+	AllowRegistration bool  `json:"allow_registration"`
+	Authenticated     bool  `json:"authenticated"`
+	User              *User `json:"user,omitempty"`
+}
+
+// AuthSettings are the registry-wide auth knobs (admin-writable at runtime).
+type AuthSettings struct {
+	AllowRegistration bool `json:"allow_registration"`
 }
 
 // TUNConfig tunes the tun inbound the gateway builds in TUN mode. Only takes
@@ -479,8 +567,8 @@ type ProxyGenRequest struct {
 // ProxyGenResult is the generated pair plus the commands that deploy it. Both
 // halves come from one generation: the keys in Server are the keys in Client.
 type ProxyGenResult struct {
-	Server        map[string]any `json:"server"`         // sing-box server config
-	Client        map[string]any `json:"client"`         // Clash node dict, importable as-is
+	Server        map[string]any `json:"server"` // sing-box server config
+	Client        map[string]any `json:"client"` // Clash node dict, importable as-is
 	Share         string         `json:"share,omitempty"`
 	GenCommand    string         `json:"gen_command"`    // the equivalent CLI call
 	InstallScript string         `json:"install_script"` // paste on the exit host

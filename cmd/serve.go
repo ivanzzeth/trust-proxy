@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ivanzzeth/trust-proxy/internal/api"
+	"github.com/ivanzzeth/trust-proxy/internal/authn"
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
@@ -30,7 +32,6 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
-	"github.com/ivanzzeth/trust-proxy/internal/inbound"
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/netwatch"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
@@ -43,6 +44,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/threatfeed"
 	"github.com/ivanzzeth/trust-proxy/internal/tuncfg"
+	"github.com/ivanzzeth/trust-proxy/internal/users"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 	"github.com/ivanzzeth/trust-proxy/pkg/clash"
@@ -351,7 +353,11 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
-	inbStore, err := inbound.NewStore(serveDataDir + "/inbound.json")
+	userStore, err := users.NewStore(serveDataDir + "/users.json")
+	if err != nil {
+		return err
+	}
+	auth, err := authn.New(serveDataDir)
 	if err != nil {
 		return err
 	}
@@ -391,7 +397,9 @@ func runServe() error {
 	mgr.SetInitialProxyGroups(pgStore.Get())
 	mgr.SetInitialRuleSets(rsStore.Get())
 	mgr.SetInitialDNS(dnsStore.Get())
-	mgr.SetInitialInbound(inbStore.Get())
+	// Proxy-inbound credentials are derived from the user registry: each account
+	// may carry a proxy password, and an empty result leaves the inbound open.
+	mgr.SetInitialInbound(apitypes.InboundAuth{Users: userStore.ProxyCredentials()})
 	mgr.SetInitialTUN(tunStore.Get())
 	mgr.SetInitialEndpoints(epStore.All())
 	// In TUN mode the gateway captures ALL of this machine's outbound traffic,
@@ -505,7 +513,9 @@ func runServe() error {
 		FinalApplier: mgr,
 		DNS:          dnsStore,
 		DNSApplier:   mgr,
-		Inbound:      inbStore,
+		Users:        userStore,
+		Authn:        auth,
+		DataDir:      serveDataDir,
 		InbApplier:   mgr,
 		TUN:          tunStore,
 		TUNApplier:   mgr,
@@ -534,6 +544,7 @@ func runServe() error {
 
 	logging.L().Info().Str("api", serveAPIAddr).Msg("gateway up")
 	logging.L().Info().Str("url", "http://"+serveAPIAddr+"/").Msg("dashboard")
+	announceBootstrap(userStore, auth, serveDataDir, serveAPIAddr)
 	logging.L().Info().Str("mode", mgr.Mode()).Bool("auto_block", serveAutoBlock).Msg("capture mode")
 
 	// Persist the audit log periodically so a crash loses at most one interval.
@@ -597,6 +608,47 @@ func runServe() error {
 	close(stopSave)
 	saveEvents()
 	return nil
+}
+
+// announceBootstrap tells the operator how to claim an unclaimed gateway.
+//
+// Until the first admin exists the API is open — it has to be, or a fresh install
+// could never be set up — so this says so out loud rather than leaving it
+// implicit. On a machine with no browser (the usual remote gateway) the CLI path
+// is the answer; when the API is exposed off-loopback the network path
+// additionally needs the one-time code printed here, so that whoever reaches the
+// port first cannot simply claim it.
+func announceBootstrap(store *users.Store, auth *authn.Authn, dataDir, apiAddr string) {
+	if store == nil || !store.Empty() {
+		return
+	}
+	log := logging.L()
+	log.Warn().Msg("no accounts yet: this gateway is UNCLAIMED and its API is open until you create the first admin")
+	log.Info().Msgf("  on this machine:  trust-proxy user add <name> --admin --data %s", dataDir)
+	log.Info().Msgf("  or in a browser:  http://%s/", apiAddr)
+	if auth == nil || loopbackAddr(apiAddr) {
+		return
+	}
+	code, err := auth.BootstrapCode(dataDir)
+	if err != nil {
+		log.Error().Err(err).Msg("generate bootstrap code")
+		return
+	}
+	log.Warn().Msgf("  API is reachable off-loopback: remote bootstrap needs this one-time code: %s", code)
+	log.Info().Msgf("  trust-proxy auth bootstrap --api-addr %s --code %s", apiAddr, code)
+}
+
+// loopbackAddr reports whether a listen address only accepts local connections.
+func loopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" || host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // sliceHasFold reports whether ss contains want, case-insensitively.

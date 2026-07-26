@@ -68,18 +68,6 @@
     "pageDesc": "Gateway configuration.",
     "language": "Language",
     "languageDesc": "Console display language. Defaults to your system language; a choice here is saved in this browser.",
-    "inbound": {
-      "title": "Proxy inbound auth",
-      "desc": "Require a username + password on the local proxy inbound (SOCKS/HTTP at 127.0.0.1:21584). Leave both empty to keep it open (the default). Turn this on if other devices can reach the proxy port.",
-      "user": "Username",
-      "pass": "Password",
-      "ph": "(empty = open)",
-      "onHint": "Auth required for clients on :21584.",
-      "offHint": "Inbound is open — no auth required.",
-      "save": "Save",
-      "toastOn": "Proxy inbound auth enabled",
-      "toastOff": "Proxy inbound auth disabled (open)"
-    },
     "tun": {
       "title": "TUN options",
       "desc": "Advanced tuning for TUN capture mode (full-device VPN that captures ALL traffic). Only applies when the capture mode is TUN; ignored in Manual/System.",

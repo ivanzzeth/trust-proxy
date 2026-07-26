@@ -433,10 +433,6 @@ export interface Endpoint {
   exit_node?: string;
   accept_routes?: boolean;
 }
-export interface InboundAuth {
-  username: string;
-  password: string;
-}
 export interface TUNConfig {
   stack: string; // system | gvisor | mixed
   mtu: number; // 0 = auto
@@ -590,8 +586,6 @@ export const api = {
   dns: () => get<DNSConfig>('/dns'),
   setDNS: (c: DNSConfig) => put<DNSConfig>('/dns', c),
 
-  inbound: () => get<InboundAuth>('/inbound'),
-  setInbound: (a: InboundAuth) => put<InboundAuth>('/inbound', a),
 
   tun: () => get<TUNConfig>('/tun'),
   setTUN: (c: TUNConfig) => put<TUNConfig>('/tun', c),

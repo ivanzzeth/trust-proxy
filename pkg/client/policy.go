@@ -364,20 +364,6 @@ func (c *Client) AutoBlock(enabled bool) (map[string]any, error) {
 
 // ---- inbound / tun / groups / endpoints --------------------------------
 
-// Inbound returns the mixed inbound's auth settings.
-func (c *Client) Inbound() (apitypes.InboundAuth, error) {
-	var out apitypes.InboundAuth
-	err := c.do(http.MethodGet, "/api/inbound", nil, &out)
-	return out, err
-}
-
-// SetInbound sets (or clears, with both empty) inbound auth.
-func (c *Client) SetInbound(a apitypes.InboundAuth) (apitypes.InboundAuth, error) {
-	var out apitypes.InboundAuth
-	err := c.do(http.MethodPut, "/api/inbound", a, &out)
-	return out, err
-}
-
 // TUN returns the TUN inbound's advanced options.
 func (c *Client) TUN() (apitypes.TUNConfig, error) {
 	var out apitypes.TUNConfig

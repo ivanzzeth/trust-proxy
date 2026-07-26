@@ -136,11 +136,16 @@ func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.Inboun
 		}
 	}
 	mixed := map[string]any{"type": "mixed", "tag": "mixed-in", "listen": listen, "listen_port": port}
-	// Optional auth: require a username/password on the mixed inbound. Both empty
-	// leaves it open (no "users" field). sing-box rejects a lone half of the pair,
-	// which the store's validation already guards against.
-	if auth.Username != "" && auth.Password != "" {
-		mixed["users"] = []map[string]any{{"username": auth.Username, "password": auth.Password}}
+	// Optional auth on the mixed inbound: no credentials leaves it open (no "users"
+	// field at all). Several are allowed — one per person or per device, so a leaked
+	// one can be revoked without cutting everybody off. sing-box rejects a lone half
+	// of a pair, which the store's validation already guards against.
+	if creds := auth.Credentials(); len(creds) > 0 {
+		list := make([]map[string]any, 0, len(creds))
+		for _, c := range creds {
+			list = append(list, map[string]any{"username": c.Username, "password": c.Password})
+		}
+		mixed["users"] = list
 	}
 
 	var ins []map[string]any

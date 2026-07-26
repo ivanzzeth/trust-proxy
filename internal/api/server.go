@@ -5,7 +5,6 @@
 package api
 
 import (
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -16,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ivanzzeth/trust-proxy/internal/authn"
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
@@ -26,7 +26,6 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
-	"github.com/ivanzzeth/trust-proxy/internal/inbound"
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
@@ -36,6 +35,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/tuncfg"
+	"github.com/ivanzzeth/trust-proxy/internal/users"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 	"github.com/ivanzzeth/trust-proxy/pkg/clash"
@@ -122,7 +122,10 @@ type DNSApplier interface {
 	SetDNS(apitypes.DNSConfig) error
 }
 
-// InboundApplier hot-reloads the mixed-inbound auth (gateway.Manager).
+// InboundApplier hot-reloads the proxy inbound's credential list
+// (gateway.Manager). The list is derived from the user registry — there is no
+// separate inbound-auth store: one list of people, each of whom may or may not
+// have a proxy password.
 type InboundApplier interface {
 	SetInbound(apitypes.InboundAuth) error
 }
@@ -171,7 +174,9 @@ type Options struct {
 	FinalApplier FinalApplier
 	DNS          *dnscfg.Store
 	DNSApplier   DNSApplier
-	Inbound      *inbound.Store
+	Users        *users.Store // console accounts, roles, API keys
+	Authn        *authn.Authn // session tokens (JWT); nil disables sessions
+	DataDir      string       // where the bootstrap code and other secrets live
 	InbApplier   InboundApplier
 	TUN          *tuncfg.Store
 	TUNApplier   TUNApplier
@@ -220,7 +225,9 @@ type Server struct {
 	finalApplier FinalApplier
 	dns          *dnscfg.Store
 	dnsApplier   DNSApplier
-	inbound      *inbound.Store
+	users        *users.Store
+	authn        *authn.Authn
+	dataDir      string
 	inbApplier   InboundApplier
 	tun          *tuncfg.Store
 	tunApplier   TUNApplier
@@ -237,7 +244,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, inbound: o.Inbound, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -312,8 +319,6 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("PUT /api/dns", s.handleSetDNS)
 	mux.HandleFunc("GET /api/final", s.handleGetFinal)
 	mux.HandleFunc("PUT /api/final", s.handleSetFinal)
-	mux.HandleFunc("GET /api/inbound", s.handleGetInbound)
-	mux.HandleFunc("PUT /api/inbound", s.handleSetInbound)
 	mux.HandleFunc("GET /api/tun", s.handleGetTUN)
 	mux.HandleFunc("GET /api/endpoints", s.handleListEndpoints)
 	mux.HandleFunc("POST /api/endpoints", s.handleAddEndpoint)
@@ -324,27 +329,24 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("POST /api/profiles", s.handleAddProfile)
 	mux.HandleFunc("POST /api/profiles/{id}/activate", s.handleActivateProfile)
 	mux.HandleFunc("DELETE /api/profiles/{id}", s.handleDeleteProfile)
+	// auth + user administration
+	mux.HandleFunc("GET /api/auth/state", s.handleAuthState)
+	mux.HandleFunc("GET /api/auth/me", s.handleAuthMe)
+	mux.HandleFunc("POST /api/auth/bootstrap", s.handleBootstrap)
+	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
+	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
+	mux.HandleFunc("GET /api/auth/settings", s.handleGetAuthSettings)
+	mux.HandleFunc("PUT /api/auth/settings", s.handleSetAuthSettings)
+	mux.HandleFunc("GET /api/users", s.handleListUsers)
+	mux.HandleFunc("POST /api/users", s.handleCreateUser)
+	mux.HandleFunc("PATCH /api/users/{id}", s.handlePatchUser)
+	mux.HandleFunc("DELETE /api/users/{id}", s.handleDeleteUser)
+	mux.HandleFunc("POST /api/users/{id}/apikeys", s.handleCreateAPIKey)
+	mux.HandleFunc("DELETE /api/users/{id}/apikeys/{keyID}", s.handleDeleteAPIKey)
 	mux.Handle("/", s.consoleHandler())
 	s.httpSrv = &http.Server{Addr: o.Addr, Handler: s.withAuth(mux), ReadHeaderTimeout: 5 * time.Second}
 	return s
-}
-
-// withAuth requires a bearer token on /api/* when a token is configured (probe
-// mode). Static console assets stay open so the page can load.
-func (s *Server) withAuth(next http.Handler) http.Handler {
-	if s.token == "" {
-		return next
-	}
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-			if subtle.ConstantTimeCompare([]byte(got), []byte(s.token)) != 1 {
-				writeErr(w, http.StatusUnauthorized, "unauthorized")
-				return
-			}
-		}
-		next.ServeHTTP(w, r)
-	})
 }
 
 // Start blocks serving; returns http.ErrServerClosed on Close.
