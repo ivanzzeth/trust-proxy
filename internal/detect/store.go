@@ -10,13 +10,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 func b2r(b []byte) io.Reader { return bytes.NewReader(b) }
 
 const (
-	detMaxBytes = 64 << 20 // rotate JSONL past this size
-	detMaxIndex = 10000    // in-memory newest detections kept for Query
+	// Retention. Was 64 MiB plus one uncompressed rename (~128 MiB on disk, kept
+	// forever); lumberjack owns it now, matching the daemon log and the history.
+	detMaxSizeMB  = 16
+	detMaxBackups = 2
+	detMaxIndex   = 10000 // in-memory newest detections kept for Query
 )
 
 // Query filters detections for the API/UI.
@@ -47,8 +52,7 @@ type Stats struct {
 type Store struct {
 	path string
 	mu   sync.Mutex
-	f    *os.File
-	size int64
+	w    *lumberjack.Logger // owns rotation/retention/compression
 	seq  uint64
 	now  func() time.Time
 
@@ -78,13 +82,11 @@ func NewStore(path string) (*Store, error) {
 			s.index = s.index[len(s.index)-detMaxIndex:]
 		}
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, err
-	}
-	s.f = f
-	if fi, err := f.Stat(); err == nil {
-		s.size = fi.Size()
+	s.w = &lumberjack.Logger{
+		Filename:   path,
+		MaxSize:    detMaxSizeMB,
+		MaxBackups: detMaxBackups,
+		Compress:   true,
 	}
 	return s, nil
 }
@@ -106,12 +108,8 @@ func (s *Store) Record(d Detection) {
 	if err != nil {
 		return
 	}
-	if s.f != nil {
-		if s.size >= detMaxBytes {
-			s.rotate()
-		}
-		n, _ := s.f.Write(append(line, '\n'))
-		s.size += int64(n)
+	if s.w != nil {
+		_, _ = s.w.Write(append(line, '\n'))
 	}
 	s.index = append(s.index, d)
 	if len(s.index) > detMaxIndex {
@@ -119,14 +117,14 @@ func (s *Store) Record(d Detection) {
 	}
 }
 
-func (s *Store) rotate() {
-	s.f.Close()
-	_ = os.Rename(s.path, s.path+".1")
-	f, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err == nil {
-		s.f = f
-		s.size = 0
+// Close flushes and closes the underlying file.
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.w == nil {
+		return nil
 	}
+	return s.w.Close()
 }
 
 // Query returns newest-first detections matching kind/q with offset/limit.

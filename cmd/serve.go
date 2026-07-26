@@ -236,12 +236,14 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	defer histStore.Close()
 	engine.SetOnFinalize(histStore.Record)
 
 	detStore, err := detect.NewStore(filepath.Join(serveDataDir, "detections.jsonl"))
 	if err != nil {
 		return err
 	}
+	defer detStore.Close()
 	engine.SetOnDetection(detStore.Record)
 	// Static demo indicators (always on, for testing); the live feed adds to these.
 	engine.LoadThreats([]string{"malware.test", "c2.example.com"}, nil)
@@ -475,10 +477,34 @@ func runServe() error {
 	logging.L().Info().Str("mode", mgr.Mode()).Bool("auto_block", serveAutoBlock).Msg("capture mode")
 
 	// Persist the audit log periodically so a crash loses at most one interval.
+	// Written to a temp file and renamed: os.WriteFile truncates first, so a crash
+	// mid-write left a half-written file that the restore path then discarded —
+	// losing the whole ring rather than one interval. Skipped entirely when
+	// nothing changed, which on an idle gateway is most ticks (the ring is ~650 KB
+	// and this runs every 30s).
+	var lastSaved uint64
 	saveEvents := func() {
-		if b, err := json.Marshal(engine.Events()); err == nil {
-			_ = os.WriteFile(eventsPath, b, 0o600)
+		events := engine.Events()
+		var seq uint64
+		if n := len(events); n > 0 {
+			seq = events[n-1].ID
 		}
+		if seq == lastSaved {
+			return
+		}
+		b, err := json.Marshal(events)
+		if err != nil {
+			return
+		}
+		tmp := eventsPath + ".tmp"
+		if err := os.WriteFile(tmp, b, 0o600); err != nil {
+			return
+		}
+		if err := os.Rename(tmp, eventsPath); err != nil {
+			_ = os.Remove(tmp)
+			return
+		}
+		lastSaved = seq
 	}
 	stopSave := make(chan struct{})
 	go func() {

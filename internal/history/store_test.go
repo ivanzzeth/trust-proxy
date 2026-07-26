@@ -1,6 +1,7 @@
 package history
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,5 +151,119 @@ func TestRetentionBoundsTheFileAndKeepsBrowsingRotatedData(t *testing.T) {
 	// silently shrinks what the History page can show.
 	if _, total := s.RecentPage(10, 0, ""); total <= 1 {
 		t.Fatalf("rotated (gzipped) records unreachable: total=%d", total)
+	}
+}
+
+// The console polls history every 5s. RecentPage used to parse every record in
+// every generation per call — ~300ms and a full multi-MB read on a real box, for
+// 50 rows. An unfiltered page must decode its own window, not the corpus.
+func TestUnfilteredPageDoesNotDecodeTheWholeHistory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.jsonl")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	const records = 20000
+	for i := 0; i < records; i++ {
+		s.Record(detect.Event{
+			Time: time.Unix(int64(1700000000+i), 0).Format(time.RFC3339),
+			Host: fmt.Sprintf("h%05d.example", i), Destination: "1.1.1.1:443",
+			Process: "curl", Outbound: "direct", Upload: 1, Download: 1,
+		})
+	}
+
+	s.readMu.Lock()
+	s.parsed = 0
+	s.readMu.Unlock()
+
+	items, total := s.RecentPage(50, 0, "")
+	if total != records {
+		t.Fatalf("total = %d, want %d", total, records)
+	}
+	if len(items) != 50 {
+		t.Fatalf("got %d rows, want 50", len(items))
+	}
+	// Newest first, and it really is the newest.
+	if items[0].Host != fmt.Sprintf("h%05d.example", records-1) {
+		t.Fatalf("first row = %s, want the newest record", items[0].Host)
+	}
+	s.readMu.Lock()
+	parsed := s.parsed
+	s.readMu.Unlock()
+	if parsed > 500 { // one tail chunk's worth, not 20k
+		t.Fatalf("decoded %d records to serve 50 rows", parsed)
+	}
+}
+
+// Deep paging still works: an offset past the tail window walks further back,
+// and the ordering stays chronological across the boundary.
+func TestDeepOffsetStillPagesCorrectly(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.jsonl")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	const records = 5000
+	for i := 0; i < records; i++ {
+		s.Record(detect.Event{
+			Time: time.Unix(int64(1700000000+i), 0).Format(time.RFC3339),
+			Host: fmt.Sprintf("h%05d.example", i), Destination: "1.1.1.1:443", Outbound: "direct",
+		})
+	}
+	items, total := s.RecentPage(10, 4000, "")
+	if total != records {
+		t.Fatalf("total = %d, want %d", total, records)
+	}
+	if len(items) != 10 {
+		t.Fatalf("got %d rows", len(items))
+	}
+	// offset 4000 from the newest end => record index records-1-4000.
+	if want := fmt.Sprintf("h%05d.example", records-1-4000); items[0].Host != want {
+		t.Fatalf("first row at offset 4000 = %s, want %s", items[0].Host, want)
+	}
+}
+
+// A filtered page reports the true match count and decodes only candidates.
+func TestFilteredPageCountsMatchesWithoutDecodingEverything(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.jsonl")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	for i := 0; i < 3000; i++ {
+		host := "noise.example"
+		if i%100 == 0 {
+			host = "needle.example"
+		}
+		s.Record(detect.Event{
+			Time: time.Unix(int64(1700000000+i), 0).Format(time.RFC3339),
+			Host: host, Destination: "1.1.1.1:443", Outbound: "direct",
+		})
+	}
+	s.readMu.Lock()
+	s.parsed = 0
+	s.readMu.Unlock()
+
+	items, total := s.RecentPage(10, 0, "needle")
+	if total != 30 {
+		t.Fatalf("total = %d, want 30 matches", total)
+	}
+	if len(items) != 10 || items[0].Host != "needle.example" {
+		t.Fatalf("items = %d, first = %q", len(items), items[0].Host)
+	}
+	s.readMu.Lock()
+	parsed := s.parsed
+	s.readMu.Unlock()
+	if parsed > 100 { // only candidate lines get decoded, not all 3000
+		t.Fatalf("decoded %d records for 30 matches", parsed)
 	}
 }

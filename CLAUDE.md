@@ -143,7 +143,7 @@ internal/customrules/      有序策略规则（Permit 与/或 Egress 正交；L
 internal/inbound/          入站鉴权（mixed users，applyMode 注入）
 internal/tuncfg/           TUN 高级选项（stack/mtu/strict_route/exclude·include_package，applyMode 用）
 internal/endpoints/        WireGuard/Tailscale 出口（wg-quick 解析；injectEndpoints 注入 endpoints[] + 标签加入 proxy 组）
-internal/history/          每条完成连接的持久化历史（append JSONL + 聚合，detect.SetOnFinalize 喂）；轮转/保留交给 **lumberjack**（`--history-max-size/-keep/-max-age/-compress`），已轮转的代仍可在 History 页翻阅（`rotatedFiles()` glob + 透明解 gz；压缩是异步的，同一代会短暂出现 `.jsonl` 与 `.jsonl.gz`，故按代去重）
+internal/history/          每条完成连接的持久化历史（append JSONL + 聚合，detect.SetOnFinalize 喂）；**读路径按需读**（`read.go`：无过滤时只倒读活动文件尾部、total 走增量行数缓存；有过滤时先对原始行做 `bytes.Contains` 预筛、只解析候选——控制台每 5s 轮询一次，旧实现每次全量解析 45MB≈302ms，现在同规模 310µs）；轮转/保留交给 **lumberjack**（`--history-max-size/-keep/-max-age/-compress`），已轮转的代仍可在 History 页翻阅（`rotatedFiles()` glob + 透明解 gz；压缩是异步的，同一代会短暂出现 `.jsonl` 与 `.jsonl.gz`，故按代去重）
 internal/logging/          日志栈：**zerolog**(编码) → **diode**(无锁 ring,不阻塞写者) → **lumberjack**(轮转/保留/gzip)；daemon 下把 fd 1/2 重定向进同一个 ring 以收走 sing-box 自己的行
 internal/nodes/            多节点注册表（大脑侧，data/nodes.json；反代 /api/nodes/{id}/* → 各探针 /api，注入 token）
 internal/api/              我们自己的后端 /api（stdlib mux；订阅/白名单/规则集/配置档 CRUD + 模式/状态/自动阻断 + 代理 Clash connections/proxies/logs + serve dashboard）

@@ -111,6 +111,14 @@ type Store struct {
 	// History/Connections page was open and polling.
 	readMu sync.Mutex
 
+	// Read-side accounting, all guarded by readMu: incremental line counts (so a
+	// page's total doesn't require re-reading the corpus) and a parsed-record
+	// counter the tests use to prove an unfiltered page decodes only its own rows.
+	countedBytes int64
+	countedLines int
+	rotatedLines map[string]int
+	parsed       int
+
 	totalUp, totalDown     int64
 	conns, blocked, alerts int64
 	talkers                map[string]*Talker
@@ -357,39 +365,41 @@ func (s *Store) RecentPage(limit, offset int, q string) ([]Record, int) {
 	s.readMu.Lock()
 	defer s.readMu.Unlock()
 
-	var recs []Record
-	appendFrom := func(path string) {
-		b, err := readMaybeGzip(path)
-		if err != nil {
-			return
-		}
-		sc := bufio.NewScanner(b2r(b))
-		sc.Buffer(make([]byte, 64*1024), 1024*1024)
-		for sc.Scan() {
-			var r Record
-			if json.Unmarshal(sc.Bytes(), &r) != nil {
-				continue
-			}
-			if q != "" && !(contains(r.Host, q) || contains(r.Dest, q) || contains(r.Process, q) || contains(r.Outbound, q)) {
-				continue
-			}
-			recs = append(recs, r)
-		}
-	}
-	// Rotated generations are older and come first so overall order stays
-	// chronological; without them, history past a rotation boundary would be
-	// permanently unreachable via the API even though it is still on disk.
-	for _, p := range s.rotatedFiles() {
-		appendFrom(p)
-	}
-	appendFrom(s.path)
+	needle := strings.ToLower(strings.TrimSpace(q))
+	// Oldest generation first, live file last — so walking the slice backwards
+	// yields records newest-first across the rotation boundary.
+	files := append(s.rotatedFiles(), s.path)
 
-	total := len(recs)
-	// newest first
-	out := make([]Record, 0, limit)
-	start := total - 1 - offset
-	for i := start; i >= 0 && len(out) < limit; i-- {
-		out = append(out, recs[i])
+	want := offset + limit
+	var recs []Record
+	total := 0
+	for i := len(files) - 1; i >= 0; i-- {
+		remaining := want - len(recs)
+		if remaining < 0 {
+			remaining = 0
+		}
+		got, matched := s.scanNewestFirst(files[i], needle, remaining)
+		recs = append(recs, got...)
+		if matched < 0 { // unfiltered: the count comes from the line index
+			matched = s.lineCount(files[i])
+		}
+		total += matched
+		// Unfiltered pages can stop reading older generations once the window is
+		// filled; their totals still come from the (cheap) line counts.
+		if needle == "" && len(recs) >= want {
+			for j := i - 1; j >= 0; j-- {
+				total += s.lineCount(files[j])
+			}
+			break
+		}
 	}
-	return out, total
+
+	if offset >= len(recs) {
+		return []Record{}, total
+	}
+	end := offset + limit
+	if end > len(recs) {
+		end = len(recs)
+	}
+	return recs[offset:end], total
 }
