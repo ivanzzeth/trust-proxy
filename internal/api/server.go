@@ -28,6 +28,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
+	"github.com/ivanzzeth/trust-proxy/internal/paths"
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
@@ -386,8 +387,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	st := map[string]any{
 		"modes": gateway.Modes,
-		"root":  os.Geteuid() == 0,
 		"os":    runtime.GOOS,
+		// What the UI actually wants to know is "can this gateway do TUN", and
+		// "euid == 0" is only the Unix spelling of it: Windows has no euid, and a
+		// Linux binary with CAP_NET_ADMIN can do TUN without being root. So the
+		// capability is reported directly, and `root` is kept as the raw fact for
+		// anything that really means privilege (and for older consoles).
+		"root":       paths.Privileged(),
+		"privileged": paths.Privileged(),
+		"can_tun":    paths.CanTUN(),
 	}
 	if s.mode != nil {
 		st["mode"] = s.mode.Mode()

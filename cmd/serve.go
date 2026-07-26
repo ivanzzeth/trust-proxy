@@ -35,6 +35,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/netwatch"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
+	"github.com/ivanzzeth/trust-proxy/internal/paths"
 	"github.com/ivanzzeth/trust-proxy/internal/policymigrate"
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
@@ -144,21 +145,23 @@ var serveCmd = &cobra.Command{
 	},
 }
 
-// resolveDataDir returns the data directory (default ~/.trust-proxy), expanding
-// a leading ~, and ensures it exists.
+// resolveDataDir returns the data directory (the per-user default when --data is
+// empty), expanding a leading ~, and ensures it exists.
+//
+// serve always defaults to the *per-user* directory even when run as root: `sudo
+// trust-proxy serve` is how a human runs TUN by hand, and it must keep using the
+// policy they configured, not start from an empty root-owned store. The
+// machine-wide directory is for the installed service, which passes --data
+// explicitly (see `service install`).
 func resolveDataDir(dir string) (string, error) {
 	if dir == "" {
-		home, err := os.UserHomeDir()
+		d, err := paths.UserData()
 		if err != nil {
 			return "", err
 		}
-		dir = filepath.Join(home, ".trust-proxy")
-	} else if strings.HasPrefix(dir, "~/") {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", err
-		}
-		dir = filepath.Join(home, dir[2:])
+		dir = d
+	} else {
+		dir = paths.ExpandHome(dir)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err

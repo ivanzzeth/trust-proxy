@@ -160,9 +160,11 @@ function ModeSwitcher() {
   if (!st) return null;
 
   const clickMode = (mode: string) => {
-    // Non-root TUN almost always fails (macOS always; Linux unless setcap'd) —
-    // guide first instead of firing a doomed switch.
-    if (mode === 'tun' && !st.root) {
+    // A TUN switch that cannot work fails *after* the gateway has started
+    // reconfiguring the network, so guide first. "Can it work" is not the same
+    // question as "are we root" (a setcap'd Linux binary can; an elevated
+    // Windows process without wintun cannot), so the gateway answers it.
+    if (mode === 'tun' && !canTun(st)) {
       setHelp({});
       return;
     }
@@ -175,7 +177,7 @@ function ModeSwitcher() {
         <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{t('top.capture')}</span>
         {st.modes.map((mode) => {
           const active = mode === st.mode;
-          const needRoot = mode === 'tun' && !st.root;
+          const needRoot = mode === 'tun' && !canTun(st);
           return (
             <Tooltip key={mode}>
               <TooltipTrigger asChild>
@@ -205,6 +207,12 @@ function ModeSwitcher() {
       />
     </TooltipProvider>
   );
+}
+
+// Older gateways only reported `root`; treat that as the answer when the
+// capability flag is absent rather than declaring TUN impossible.
+function canTun(st: { root: boolean; can_tun?: boolean }) {
+  return st.can_tun ?? st.root;
 }
 
 // TunHelpDialog explains why TUN needs elevated privileges and how to grant

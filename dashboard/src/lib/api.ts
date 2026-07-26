@@ -59,7 +59,12 @@ export interface Status {
   mode: string;
   modes: string[];
   autoBlock: boolean;
+  /** Raw privilege (euid 0 / elevated token). Prefer can_tun for "may I switch". */
   root: boolean;
+  privileged?: boolean;
+  /** Whether TUN has a chance of working here: root, or Linux with CAP_NET_ADMIN,
+   *  or Windows elevated with wintun present. Not the same as `root`. */
+  can_tun?: boolean;
   os?: string; // runtime.GOOS: darwin | linux | windows
   threats: { domains: number; ips: number };
   revert?: { to: string; in_seconds: number };
