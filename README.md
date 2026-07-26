@@ -2,201 +2,105 @@
 
 出入网流量控制 / 检测 / 木马外泄识别网关，以 [sing-box](https://github.com/SagerNet/sing-box) 为数据面底座。
 
-内网机器的出网流量经 trust-proxy 网关 → **白名单默认拒绝**（黑名单追不完，白名单才能卡死木马向任意 C2 回传）→ **检测**异常出网（威胁情报命中、异常大上传=疑似外泄）→ 经订阅/自建节点出口。
+出网流量经 trust-proxy → **默认拒绝**（黑名单追不完，只有许可制才卡死木马向任意 C2 回传）→ **检测**异常出网（威胁情报、beaconing、DGA/DNS 隧道、异常大上传=疑似外泄、JA4 指纹）→ 经订阅或自建节点出口。
 
 一个二进制，三种角色：
 
 | 角色 | 命令 | 说明 |
 |---|---|---|
-| **客户端网关** | `trust-proxy serve` | mixed 入站(:17070) + 白名单 + 检测 + 控制台/API(:9096) |
-| **TUN 全流量网关** | `sudo trust-proxy serve -c configs/config.tun.json` | 网络层接管**所有**出入网流量（木马裸 socket 也逃不掉），需 root，专用网关机 |
-| **代理服务端（出口节点）** | `trust-proxy proxy run` / `proxy gen` | 自建任意协议出口节点 |
-
-> **架构**：Go `main` 以库方式 `import` sing-box（`third_party/sing-box` 子模块）→ 数据面（代理/路由/连接跟踪）。检测/白名单/订阅/控制台是自研的控制面。自用不分发二进制，不触发 GPLv3 分发义务（详见 CLAUDE.md「许可证」）。
+| **客户端网关** | `trust-proxy serve` | mixed 入站(:17070) + 策略 + 检测 + 控制台/API(:9096) |
+| **TUN 全流量网关** | `sudo trust-proxy serve -c configs/config.tun.json` | 网络层接管**所有**流量（木马裸 socket 也逃不掉），需 root |
+| **代理服务端（出口节点）** | `trust-proxy proxy gen` / `proxy run` | 自建任意协议出口节点 |
 
 ## 快速开始
 
 依赖：Go 1.24.7+、Node 20+ / pnpm（构建控制台）。
 
 ```bash
-make deps            # git submodule update --init --recursive（拉 sing-box，testing 分支）
-make dashboard       # 构建控制台(shadcn/ui) -> dashboard/dist
-make build           # 编译 -> ./trust-proxy（从磁盘 serve dashboard/dist，适合开发）
-make build-embed     # 单文件分发：先构建前端，再 -tags embed_ui 把 UI 嵌进二进制（产物不依赖磁盘前端目录）
-./trust-proxy serve  # 启动客户端网关（前台）
-./trust-proxy serve --daemon   # 后台守护（脱离终端，SSH 断开不受影响；停止：proxy stop --pid ~/.trust-proxy/serve.pid）
+make deps            # git submodule update --init --recursive（拉 sing-box）
+make dashboard       # 构建控制台 -> dashboard/dist
+make build           # 编译 -> ./trust-proxy（开发：从磁盘 serve dashboard/dist）
+make build-embed     # 发布：-tags embed_ui 把 UI 嵌进二进制，单文件自带控制台
+./trust-proxy serve            # 前台
+./trust-proxy serve --daemon   # 后台（停止：proxy stop --pid ~/.trust-proxy/serve.pid）
 ```
 
-## 桌面端（macOS，未签名）
+控制台：**http://127.0.0.1:9096/**（`serve` 启动日志会打印）。
+
+**数据目录**默认 `~/.trust-proxy`（订阅/策略/历史/`cache.db`/`clash-secret`），`--data <dir>` 覆盖。**同一数据目录勿并跑两实例**（bolt 单写锁）。
+
+## 安全模型：Permit ⊥ Route
+
+出网默认**拒绝**，两条正交轴永远分开：
+
+| 轴 | 问题 | 默认 |
+|---|---|---|
+| **Permit** | 这个目的地能不能出网？ | 否 |
+| **Route** | 已许可的流量走哪个出口？ | Final（默认 `proxy`） |
+| **Deny** | 硬拒绝（优先于 Permit） | 空 |
+| **Subjects** | 哪个进程/设备可出网 | 不限制 |
+
+**铁律**：Route 永不开闸，Permit 永不选出口。第三条铁律是 **DNS 必须跟随 Route**——解析器的出网路径要和流量一致，否则国内站点会被解析到境外边缘节点再直连过去（实测 taobao 15.8s → 修复后 0.2s）。详见 [CLAUDE.md](./CLAUDE.md)。
+
+## 桌面端（macOS）
 
 ```bash
-make desktop         # -> desktop/src-tauri/target/release/bundle/{macos/Trust Proxy.app,dmg/*.dmg}
+make desktop   # -> Trust Proxy.app + .dmg
 ```
 
-壳很薄：它只负责开窗和进程生命周期，UI 就是网关自己在 `:9096` serve 的那个控制台。已在跑网关（launchd 装的、或你终端里 `serve` 起的）时，它**贴附**过去而不会再起一个（两个 `serve` 会抢 `cache.db` 的写锁）。
+壳只负责开窗和生命周期，UI 就是网关 serve 的控制台；已有网关在跑则**贴附**而不再起一个。
 
-### 安装：这个 app 没有签名（也不打算签）
+**app 未签名**（也不打算签）：自己构建的双击即开；下载来的需放行一次 —— `xattr -dr com.apple.quarantine "/Applications/Trust Proxy.app"`，或系统设置 → 隐私与安全性 →「仍要打开」。
 
-签名+公证要 Apple Developer 会员（$99/年），我们不做。所以：
-
-| 你从哪儿拿到的 | 要做什么 |
-|---|---|
-| **自己 `make desktop` 构建的** | 没有隔离标记，**双击直接开**，零操作 |
-| **别人给的 / 下载的 `.dmg`** | 系统会拦一次，见下 |
-
-下载来的需要放行一次，二选一：
+TUN 需要 root → 装成系统服务（launchd 拥有 daemon，关窗不掉策略）：
 
 ```bash
-# ① 一条命令（推荐）
-xattr -dr com.apple.quarantine "/Applications/Trust Proxy.app"
+sudo trust-proxy service install -c ~/.trust-proxy/config.json
+sudo trust-proxy service uninstall   # 逃生口
 ```
 
-② 或者：双击 → 被拦 → **系统设置 → 隐私与安全性 → 底部「仍要打开」**。
-⚠️ **macOS 15 起「右键→打开」这个老办法对未公证 app 已失效**，只剩上面两条路。
-
-**别漏了第 ① 条的 `-r`**：我们的 app 里有两个可执行文件（壳 + Go 网关），只放行 app 本身不够——实测 macOS 26 会把网关那个直接 SIGKILL，症状是「app 开着但一直显示网关起不来」。app 遇到这种情况会把该执行的命令直接打在界面上。
-
-技术细节（ad-hoc 签名形态、真要签名的完整流程）见 [`docs/release-macos.md`](docs/release-macos.md)。
-
-### TUN 需要 root：装成系统服务
-
-GUI 不该是 root，所以提权交给系统：
-
-```bash
-sudo trust-proxy service install -c ~/.trust-proxy/config.json   # launchd LaunchDaemon，开机自启
-trust-proxy service status                                       # 装了没 / 在跑没 / 指向哪个二进制
-sudo trust-proxy service uninstall                               # 逃生口，任何状态都能收干净
-```
-
-装完壳会自动贴附到这个 daemon（关窗不掉策略）。app 上的按钮就是拿一次管理员授权跑上面这条命令。
-install 会把二进制**拷到 `/usr/local/libexec/trust-proxy`（root:wheel）**再写 plist —— 不能指向 `.app` 内部，否则你把 app 拖进废纸篓，launchd 就永远在重启一个不存在的程序。`uninstall` 只删这份托管副本，绝不碰你自己的二进制（如 Homebrew 装的）。
-install **不会顺手打开 TUN**（不给 `--mode tun` 就不写）。
-
-**数据目录**：默认 **`~/.trust-proxy`**（订阅/白名单/历史/`cache.db`/`clash-secret` 等全在此）；`--data <dir>` 覆盖。旧部署迁移：`mv ./data/* ~/.trust-proxy/` 或 `--data ./data`。
-
-`make build`（开发）从磁盘 serve `dashboard/dist`；`make build-embed`（发布）把前端嵌进二进制，产出的 `./trust-proxy` 单文件自带 UI、不依赖磁盘上的前端目录。**GitHub Release 的二进制即用 `build-embed` 打包。**
-
-启动时 Clash secret 随机生成并持久化到 `data/clash-secret`（浏览器不碰它——控制台单一 origin，Clash 数据由后端 `/api` 代理）。`serve` 日志打印控制台 URL：`http://127.0.0.1:9096/`。
-
-## 控制台（`dashboard/`，shadcn/ui + Tailwind，React 19）
-
-自研页（走后端 `/api`）：
-- **订阅 / 节点**：三种添加方式 —— ① 订阅链接（可 `--via` 经代理抓取）② 手动填写（选协议出对应字段）③ 粘贴（share 链接 / base64 / Clash YAML / sing-box JSON）。列表可 **应用（热重载进 `proxy` 组）/ 刷新 / 删除**。
-- **端点（Endpoints）**：WireGuard / Tailscale 出口——粘贴 wg-quick 配置或填 Tailscale auth key,启用后自动加入 `proxy` 组,白名单流量可从 WG 隧道 / tailnet 出网(与订阅节点并列)。
-- **配置档（Profiles）**:把「应用的订阅 + 白名单 + 启用的规则集 + 抓取模式」打包成命名档，一键切换＝一次热重载整体换（如 strict-gateway ↔ permissive）。「保存当前为配置档」即快照当前状态。
-- **白名单**：出网允许清单（域名 → 走代理组出网；IP 段 → 直连）+ **进程放行**（可选：一旦非空，不在列表内的进程连接全部拒绝——未知二进制/木马即便去白名单目标也出不了网）+ **设备放行**（可选：`source_ip_cidr` 来源白名单，网关模式下只放行已知设备）。增删**即时热重载**生效；非法条目（如把域名填进 IP）被拒绝且不落盘，已污染的存储在重启加载时自动清洗。
-- **黑名单（Blacklist）**：显式拒绝特定 域名/关键字/正则/IP，注入在最前（sniff 之后、白名单之前）——黑名单**永远优先**，白名单里的目标也会被拦。
-- **规则集（Rule Sets）**：一键导入公开 sing-box `rule_set`（内置目录：geosite-cn/geoip-cn 直连、geosite-geolocation-!cn 走代理、category-ads-all 拦截；或按 URL 加 `.srs`/`.json`）。每条选角色 **block / allow-direct / allow-proxy**，注入顺序保持默认拒绝语义（block 在白名单之上、allow 在兜底 reject 之前）。`download_detour` 固定 `direct`（默认拒绝下否则拉不到规则会死锁），开启 `cache_file` 持久化下载。
-- **连接**（一个页面三标签 **全部 / 活动 / 已关闭**）：活动连接来自 Clash API（可断开单条/全部）；已关闭来自我们持久化的连接历史。每行带**状态**（活动/已放行/**已拦截**）；**被拦截的连接也可见**（兜底路由到 `block` 出站而非 reject，detector 记录并拿到 sniff 到的 SNI 域名）。每行**一键加白**：`+域名` / `+IP` / `+进程` / `+设备`（来源 IP）—— 第一次被拦，直接点一下就放行（热重载）；`+IP` 仅在目标确为 IP 时出现（域名请用 `+域名`）。检测项：威胁情报域名/IP 命中、≥10MiB 大上传=疑似外泄、**beaconing**（周期性回连=疑似 C2 心跳）、**DGA/DNS 隧道**（算法生成域名、长高熵子域名、单父域海量子域名=疑似隧道/fast-flux），命中高亮、可只看告警。
-- **顶栏常驻**：**路由模式（Rule ↔ Global）** + 抓取模式切换（手动 / 系统代理 / TUN）+ 威胁自动阻断开关 + 实时流量 + 威胁情报计数 + 明暗主题。
-- **Proxies / Rules / Logs**：出站组（节点选择 + 延迟测速）、数据面当前生效路由规则（只读）、实时日志流，均由后端代理 Clash API（浏览器不碰 secret）。
-- **Settings**：代理入站鉴权（mixed 入站账号密码，空=开放）+ TUN 高级选项（stack/mtu/strict_route/按包名分流）。
-- **DNS**：解析策略——服务器（local/udp/tcp/tls/https/quic）+ 分流规则（domain_suffix / rule_set → server）+ strategy/final，含预设。`detour: proxy` 让 DNS 走出口节点**防泄漏**（DNS 隧道/DGA 检测的前提）。
-- **Fleet（多节点）**：注册远程网关（探针）+ 健康状态 + 顶栏一键切换视图。大脑反代到各探针（token 服务端保存，浏览器单 origin 不碰 token）。
-- **History**：**持久化**的每条完成连接日志（`data/history.jsonl`，重启不丢、聚合可查）——总上下行、连接/拦截数、24h 流量趋势、top talkers、按 host 搜索的连接明细。
-
-## 抓取模式 / 检测处置（运行时可切换）
-
-- **模式**：`manual`（指 127.0.0.1:17070）/ `system`（设为系统代理）/ `tun`（网络层全接管，需 root）。控制台侧边栏或 `POST /api/mode` 热切换；TUN 无 root 会**自动回滚**上个模式、网关不掉线。`serve --mode` 指定初始模式。
-- **路由模式（Rule ↔ Global，`/api/clash-mode`）**：`Rule`=白名单默认拒绝（安全默认值）；`Global`=**默认拒绝关闭**，未列入白名单的流量改走 `proxy` 组出网——但**安全 floor 仍生效**（黑名单 / 威胁情报 / 进程·设备闸照样拦）。**热切换、不重建数据面**（Clash `PATCH /configs`）；只放行 Rule/Global（**拒绝 Direct**，避免全直连泄漏）；模式经 `cache_file` 持久化。控制台顶栏 Routing 分段控件，Global 时全局显**琥珀警告横幅**提示「默认拒绝已关闭」。
-- **远程安全（防板砖）**：远程机开 TUN/系统代理时,①**管理端口豁免**——SSH + 本机 API 端口的响应始终绕过默认拒绝(注入在最顶,`--management-ports`,API 口自动加),不会切断你的连接;②**死亡开关**——控制台切 TUN/系统代理会武装 60s 定时器,**你不点「保持」确认就自动回退**,真锁死了机器自己救回来。
-- **威胁情报 feed**：默认拉 abuse.ch Feodo C2 IP 黑名单（CC0），后台定时刷新替换。`--threat-feeds`（逗号多源）/`--threat-refresh`/`--no-threat-feed`。
-- **自动处置**：`--auto-block`（默认开）命中威胁的连接直接断；控制台可切换。
-- **事件持久化**：审计事件 `data/events.json` 定时 + 退出快照，重启恢复。
-- **多节点（探针+大脑）**：任一 `serve` 即探针；暴露给远程时加 `--api-addr 0.0.0.0:9096 --api-token <secret>`（`/api/*` 需 bearer）。在其中一台打开控制台（大脑）→ Fleet 页注册其余网关 → 顶栏切换，大脑反代 `/api/nodes/{id}/*` 到各探针。
-
-## 节点 / 订阅
-
-- 解析支持：**sing-box JSON**（无损直取）、**Clash YAML**（含单个节点）、base64/明文 **share 链**。协议：vless(reality)、vmess、trojan、shadowsocks、anytls、hysteria2、tuic。
-- 来源：http(s) URL、`file://` 本地文件、或直接粘贴内容。
-- **抓取**用标准 TLS + 跟随重定向（`internal/subscription/fetch.go`）；`--via socks5://|http://` 可经指定代理出口抓取（绕开机场对来源 IP 的封锁）。
-- CLI：`sub add <url> [--via ..]` / `sub import [file]`（stdin 亦可）/ `sub ls` / `sub apply <id>` / `sub refresh` / `sub rm`。
-
-## 一键部署代理服务端
-
-```bash
-./trust-proxy proxy gen --type <协议> --server <你的服务器IP> --port 443
-#   协议: shadowsocks | vless-reality | vless | vmess | trojan | anytls | hysteria2 | tuic
-#   输出：服务端 config + 客户端节点(Clash dict，可粘进控制台导入)
-#   TLS 类自动内联自签证书(客户端 skip-cert-verify)；vless-reality 免证书自动生成密钥对
-./trust-proxy proxy run -c server.json              # 前台运行
-./trust-proxy proxy run -c server.json --daemon     # 后台守护（脱离终端，SSH 断开不受影响）
-./trust-proxy proxy stop                            # 停止守护进程（读 trust-proxy.pid）
-```
-
-## TUN 全流量网关
-
-```bash
-sudo ./trust-proxy serve -c configs/config.tun.json
-```
-`tun` 入站 + `auto_route` 网络层接管全部出入网流量。需 **root**，与其它 TUN 工具（Surge 增强模式等）互斥 → 用于专用网关机/软路由。检测与白名单逻辑不变。
-
-### 权限：sudo vs 非 sudo（建议默认 sudo）
-| 启动方式 | manual / system 代理 | **TUN** + 运行时切到 TUN | 适用 |
-|---|---|---|---|
-| **`sudo` 启动（推荐默认）** | ✅ | ✅ | 网关机 / 想随时切 TUN |
-| 非 sudo 启动 | ✅ | ❌ 建 TUN 网卡报 `operation not permitted` | 只用代理模式 |
-
-- **作为网关默认就 `sudo` 跑**——这样三种模式都能用、控制台能随时切 TUN，不会中途因权限失败。
-- **Linux 想以非 root 常驻**：给二进制授能力即可（每次重编译要重授）：
-  ```bash
-  sudo setcap 'cap_net_admin,cap_net_raw+ep' ./trust-proxy   # 之后非 root 也能建 TUN
-  ```
-- **容器**：Docker 加 `--cap-add=NET_ADMIN --device=/dev/net/tun`；Proxmox 非特权 LXC 需宿主放行 `/dev/net/tun`（或用特权 LXC）。
-- **数据属主**：sudo 与非 sudo 混跑会让 `~/.trust-proxy` 下文件属主混乱（`cache.db` 锁失败）——**固定一种方式**，网关机建议一直 sudo。
+细节见 [docs/desktop.md](docs/desktop.md)。
 
 ## CLI / SDK
 
-- SDK 分层：`pkg/clash`（标准 Clash API 原语，可复用于任何 sing-box/mihomo/clash）+ `pkg/client`（trust-proxy 易用封装，组合 clash）。
-- 低层原语：`conn ls` / `conn kill <id|all>`（走 Clash API）。
-- 高层：`sub *`（走后端 `/api`）。
+控制台能做的，命令行都能做；每个子命令都有 `--json`，`--api-addr`/`--api-token` 可指向本机或远程探针。
+
+```
+status | acl | rules | dns | mode | routing | posture | final | profile | proxies | groups
+endpoints | tun | inbound | autoblock | detect | detections | quarantine | netcheck | history
+node | sub | conn | proxy gen|run|stop | service install|uninstall|status
+```
+
+SDK 两层：`pkg/clash`（标准 Clash API 原语，可复用于任何 sing-box/mihomo/clash）+ `pkg/client`（本项目 `/api` 的易用封装，组合 clash）；wire 类型只在 `pkg/apitypes`。
 
 ## 端口（均绑 loopback）
 
 | 服务 | 地址 |
 |---|---|
 | 代理入站 (mixed) | `127.0.0.1:17070` |
-| Clash API（`pkg/clash` 消费，secret 见 `data/clash-secret`） | `127.0.0.1:9090` |
-| 官方 sing-box dashboard（可选，service/api） | `127.0.0.1:9095` |
 | **后端 /api + 控制台** | `127.0.0.1:9096` |
+| Clash API（`pkg/clash` 消费，secret 在数据目录） | `127.0.0.1:9090` |
+| 官方 sing-box dashboard（可选） | `127.0.0.1:9095` |
 
-客户端网关默认不开 TUN、不改系统代理，与本机 Surge 等互不干扰。
+客户端网关默认不开 TUN、不改系统代理，与本机其它代理工具互不干扰。
 
-## 目录
+## 文档
 
-```
-main.go                  cmd.Execute()
-cmd/                     cobra 命令：serve / proxy / sub / conn
-internal/gateway/        box 引导 + 热重载(节点/白名单注入) + detector 挂载
-internal/detect/         检测引擎（事件环形缓冲 + 字节计数 + 规则）
-internal/subscription/   订阅 抓取/解析/存储 + 转换(share链/clash → sing-box outbound)
-internal/whitelist/      出网白名单存储（域名/IP/进程/设备）
-internal/dnscfg/         DNS 解析策略存储（注入 sing-box dns 块；含 fakeip/hosts）
-internal/blacklist/      出网黑名单（域名/关键字/正则/IP → reject，注入最前）
-internal/inbound/        入站鉴权配置（mixed users）
-internal/tuncfg/         TUN 高级选项（stack/mtu/split-tunnel）
-internal/endpoints/      WireGuard/Tailscale 出口端点（wg-quick 解析 + 注入 endpoints[]，加入 proxy 组）
-internal/history/        每条连接的持久化历史（JSONL 追加 + 聚合）
-internal/nodes/          多节点注册表（大脑侧；反代到各探针 /api）
-internal/api/            后端 /api（订阅/白名单/规则集/配置档/事件 + 代理 Clash proxies/logs）+ serve 控制台
-pkg/clash, pkg/client, pkg/apitypes   SDK
-dashboard/               控制台（shadcn/ui + Tailwind + React 19，自研，走 /api 单一 origin）
-webui/                   官方 sing-box dashboard（vendored，可选监控 :9095）
-configs/config.json      客户端网关配置（mixed + sniff + reject + 注入白名单）
-configs/config.tun.json  TUN 网关配置
-third_party/sing-box     子模块（testing 分支），replace 进本模块编译
-data/                    运行时数据（subscriptions.json / whitelist.json，gitignore）
-```
+| 文档 | 内容 |
+|---|---|
+| [CLAUDE.md](./CLAUDE.md) | 架构、开发顺序铁律、注入分层、上游同步、**已踩的坑**、路线图 |
+| [docs/console.md](docs/console.md) | 控制台各页 |
+| [docs/operations.md](docs/operations.md) | 抓取/路由模式、防板砖、检测处置、多网关、TUN 与权限 |
+| [docs/nodes.md](docs/nodes.md) | 订阅解析、自建出口节点、代理分组 |
+| [docs/desktop.md](docs/desktop.md) | 桌面端、未签名安装、系统服务 |
+| [docs/release-macos.md](docs/release-macos.md) | 签名 / 公证（决定不做，流程留档） |
+| [docs/egress-enforcement-risks.md](docs/egress-enforcement-risks.md) | 出口**强制**类改造为何暂缓 + 7 条防板砖验收标准 |
+| [docs/TODO.md](docs/TODO.md) | 待办 |
 
 ## 许可证与归属
 
-本项目以 **GPLv3** 授权（见 [LICENSE](./LICENSE)），因为它链接/内嵌了 GPLv3 的上游代码。分发本项目源码或二进制须遵守 GPLv3（保留声明、随附对应源码）。
+本项目以 **GPLv3** 授权（见 [LICENSE](./LICENSE)），因为它链接/内嵌了 GPLv3 的上游代码。分发源码或二进制须遵守 GPLv3（保留声明、随附对应源码）。
 
-上游组件：
 - [sing-box](https://github.com/SagerNet/sing-box) — 数据面（子模块），**GPLv3**（+ 命名附加条款：衍生品不得使用其名称做宣传）
-- [shadcn/ui](https://ui.shadcn.com) + [Radix UI](https://www.radix-ui.com) — 控制台组件（`dashboard/`），MIT
+- [shadcn/ui](https://ui.shadcn.com) + [Radix UI](https://www.radix-ui.com) — 控制台组件，MIT
 - [sing-box-dashboard](https://github.com/SagerNet/sing-box-dashboard) — 可选官方监控面板（`webui/`），GPLv3
-
-## 上游同步 & 更多细节
-
-见 [CLAUDE.md](./CLAUDE.md)：架构、sing-box 子模块 vs vendored 前端的同步方式、build tags、已踩的坑、路线图、许可证边界。
