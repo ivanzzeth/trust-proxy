@@ -135,6 +135,39 @@ func (c *Client) DeleteAPIKey(userID, keyID string) error {
 	return c.do(http.MethodDelete, "/api/users/"+url.PathEscape(userID)+"/apikeys/"+url.PathEscape(keyID), nil, nil)
 }
 
+// ---- permit requests -----------------------------------------------------
+
+// RequestPermit asks the gateway's admins to permit a destination. It creates a
+// disabled rule; nothing changes until somebody approves it.
+func (c *Client) RequestPermit(host, reason string) (map[string]any, error) {
+	var out map[string]any
+	err := c.do(http.MethodPost, "/api/permit-requests",
+		map[string]string{"host": host, "reason": reason}, &out)
+	return out, err
+}
+
+// PermitRequests lists pending requests: all of them for an admin, your own for a
+// client.
+func (c *Client) PermitRequests() ([]apitypes.CustomRule, error) {
+	var out []apitypes.CustomRule
+	err := c.do(http.MethodGet, "/api/permit-requests", nil, &out)
+	return out, err
+}
+
+// ApprovePermitRequest turns a request into policy (admin).
+func (c *Client) ApprovePermitRequest(id string) ([]apitypes.CustomRule, error) {
+	var out []apitypes.CustomRule
+	err := c.do(http.MethodPost, "/api/permit-requests/"+url.PathEscape(id)+"/approve", nil, &out)
+	return out, err
+}
+
+// DenyPermitRequest discards a request (admin).
+func (c *Client) DenyPermitRequest(id string) ([]apitypes.CustomRule, error) {
+	var out []apitypes.CustomRule
+	err := c.do(http.MethodDelete, "/api/permit-requests/"+url.PathEscape(id), nil, &out)
+	return out, err
+}
+
 // ensureJar gives this client a cookie jar so a session survives across calls.
 func (c *Client) ensureJar() {
 	if c.hc.Jar != nil {

@@ -132,16 +132,25 @@ type PatchRuleSetRequest struct {
 // ⇒ permit+egress). A node egress targets a subscription/endpoint/group tag;
 // missing tags are skipped (self-heal).
 type CustomRule struct {
-	ID      string `json:"id"`    // sha256(match|value|action|node)[:12], idempotent
-	Match   string `json:"match"` // domain | domain_suffix | keyword | regex | ip_cidr
-	Value   string `json:"value"`
-	Action  string `json:"action"`           // legacy/wire: direct|proxy|block|node (mirrors Egress)
-	Egress  string `json:"egress,omitempty"` // none|direct|proxy|block|node
-	Permit  *bool  `json:"permit,omitempty"` // nil ⇒ derive from Action/Egress (compat)
-	Node    string `json:"node,omitempty"`   // target outbound tag (required when egress==node)
-	Pack    string `json:"pack,omitempty"`   // optional named pack; metadata only
+	ID     string `json:"id"`    // sha256(match|value|action|node)[:12], idempotent
+	Match  string `json:"match"` // domain | domain_suffix | keyword | regex | ip_cidr
+	Value  string `json:"value"`
+	Action string `json:"action"`           // legacy/wire: direct|proxy|block|node (mirrors Egress)
+	Egress string `json:"egress,omitempty"` // none|direct|proxy|block|node
+	Permit *bool  `json:"permit,omitempty"` // nil ⇒ derive from Action/Egress (compat)
+	Node   string `json:"node,omitempty"`   // target outbound tag (required when egress==node)
+	Pack   string `json:"pack,omitempty"`   // optional named pack; metadata only
+	// Note is free text carried with the rule. It exists so a client's request to
+	// permit something can travel as a *disabled* rule with its reason attached —
+	// approval is then the admin enabling it, and no second store is needed for
+	// "pending requests".
+	Note    string `json:"note,omitempty"`
 	Enabled bool   `json:"enabled"`
 }
+
+// PackRequestPrefix marks a pack that is a client's pending request rather than a
+// curated policy pack: pack="request:<username>".
+const PackRequestPrefix = "request:"
 
 // PackPreset is a curated, one-click-importable policy pack. Applying it:
 //   - imports each RuleSets entry with an explicit Role (permit and/or route);

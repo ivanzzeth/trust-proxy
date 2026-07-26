@@ -53,6 +53,7 @@ import (
 var (
 	serveConfig        string
 	serveExitWithPid   int
+	serveDumpConfig    string
 	serveAPIAddr       string
 	serveDataDir       string
 	serveConsoleDir    string
@@ -183,6 +184,7 @@ func init() {
 	f.BoolVarP(&serveDaemon, "daemon", "d", false, "run in background (detached; survives SSH logout)")
 	f.StringVar(&serveLog, "log", "", "daemon log file (default <data>/serve.log)")
 	f.StringVar(&servePid, "pid", "", "daemon pid file (default <data>/serve.pid)")
+	f.StringVar(&serveDumpConfig, "dump-config", "", "write the merged sing-box config here on every rebuild (debugging: the running config is assembled in memory)")
 	f.IntVar(&serveExitWithPid, "exit-with-pid", 0, "shut down when this pid exits (used by the desktop shell so a force-quit leaves no orphan gateway)")
 	f.IntVar(&serveLogMaxMB, "log-max-size", logging.DefaultMaxSizeMB, "rotate the daemon log past this many MB (0 = never rotate)")
 	f.IntVar(&serveLogKeep, "log-keep", logging.DefaultMaxBackups, "how many rotated daemon logs to keep")
@@ -406,6 +408,12 @@ func runServe() error {
 	// them before the first Start() means an exit survives a restart without
 	// waiting for the console to touch anything.
 	mgr.SetInitialGatewayExits(nodesStore.ExitNodes())
+	// In client mode this instance captures local traffic but leaves enforcement to
+	// the gateway it exits through.
+	mgr.SetInitialClientMode(nodesStore.LocalMode() == nodes.ModeClient)
+	if serveDumpConfig != "" {
+		mgr.SetDumpConfigPath(serveDumpConfig)
+	}
 	// In TUN mode the gateway captures ALL of this machine's outbound traffic,
 	// including this store's OWN subscription-fetch HTTP client — which has
 	// nothing to do with sing-box's internal dialer. Without an explicit
@@ -529,6 +537,7 @@ func runServe() error {
 		Detections:   detStore,
 		Nodes:        nodesStore,
 		GWApplier:    mgr,
+		CMApplier:    mgr,
 		Token:        serveAPIToken,
 		Clash:        clash.New(serveClashAddr, secret),
 		ConsoleDir:   serveConsoleDir,

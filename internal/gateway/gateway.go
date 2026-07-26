@@ -27,6 +27,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
+	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
@@ -91,6 +92,15 @@ type Manager struct {
 	mgmtPorts []int
 	final     string // catch-all egress when ACL gate is open (default proxy)
 	posture   string // strict|split — Split skips L3 permit gate (default-allow)
+	// clientMode means this instance does not enforce egress policy itself: it
+	// captures local traffic and hands it to a gateway that does. Its own Permit
+	// gate is therefore off — leaving it on would force every client machine to
+	// maintain a second copy of the policy, which is the thing sharing a gateway is
+	// meant to avoid. Local overrides can still deny or route around the gateway;
+	// they cannot widen what it allows.
+	clientMode bool
+	// dumpConfigPath, when set, receives the merged config on every rebuild.
+	dumpConfigPath string
 
 	// mode dead-man's switch (remote-safety): a guarded mode switch auto-reverts
 	// unless confirmed in time.
@@ -121,6 +131,30 @@ func (m *Manager) SetInitialEndpoints(eps []apitypes.Endpoint) {
 	m.mu.Lock()
 	m.endpoints = eps
 	m.mu.Unlock()
+}
+
+// SetDumpConfigPath makes every rebuild write the merged config there.
+func (m *Manager) SetDumpConfigPath(path string) {
+	m.mu.Lock()
+	m.dumpConfigPath = path
+	m.mu.Unlock()
+}
+
+// SetInitialClientMode records whether this instance enforces policy itself
+// (gateway) or defers to one (client), before the first Start().
+func (m *Manager) SetInitialClientMode(client bool) {
+	m.mu.Lock()
+	m.clientMode = client
+	m.mu.Unlock()
+}
+
+// SetClientMode switches between gateway and client behaviour and hot-reloads.
+func (m *Manager) SetClientMode(client bool) error {
+	return m.setAndRebuild("client mode", func() func() {
+		prev := m.clientMode
+		m.clientMode = client
+		return func() { m.clientMode = prev }
+	})
 }
 
 // SetInitialGatewayExits sets gateway-as-exit outbounds used by the first Start().
@@ -621,6 +655,10 @@ func (m *Manager) rebuild() error {
 	m.mu.Lock()
 	nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture :=
 		m.nodes, m.wl, m.bl, m.quar, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts, m.final, m.posture
+	if m.clientMode {
+		// Enforcement lives at the gateway in client mode.
+		posture = apitypes.PostureSplit
+	}
 	// Gateway exits ride along as nodes, so the proxy group, select, delay checks
 	// and `node` rule targets need no special case for them.
 	if len(m.gwExits) > 0 {
@@ -638,6 +676,16 @@ func (m *Manager) rebuild() error {
 	merged, err := buildMergedConfig(base, nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture, m.clashSecret, m.dataDir)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
+	}
+	// Debugging aid: the config the data plane actually runs is assembled in memory
+	// from a dozen stores, so when routing does something surprising there is
+	// nothing on disk to look at. Writing it out beats deducing it from logs — this
+	// exists because a routing question cost an hour of inference that one file
+	// would have answered.
+	if m.dumpConfigPath != "" {
+		if err := os.WriteFile(m.dumpConfigPath, merged, 0o600); err != nil {
+			logging.L().Warn().Err(err).Str("path", m.dumpConfigPath).Msg("dump merged config")
+		}
 	}
 	newInst, err := m.buildBox(merged)
 	if err != nil {

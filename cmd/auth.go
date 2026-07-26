@@ -531,4 +531,88 @@ func init() {
 	apikeyNewCmd.Flags().IntVar(&keyDays, "expires-in", 0, "expire after N days (0 = never)")
 	apikeyRmCmd.Flags().StringVar(&keyUser, "user", "", "another account, by id or username (admin only)")
 	apikeyCmd.AddCommand(apikeyLsCmd, apikeyNewCmd, apikeyRmCmd)
+
+	requestAskCmd.Flags().StringVar(&requestReason, "reason", "", "why you need it (shown to the admin)")
+	requestCmd.AddCommand(requestAskCmd, requestLsCmd, requestApproveCmd, requestDenyCmd)
+}
+
+// ---- permit requests -----------------------------------------------------
+
+// `request` is how a client asks for something the gateway denies. It cannot
+// widen policy itself — a local rule would be silently ineffective, since the
+// traffic still meets the gateway's default-deny — so asking is the honest path.
+
+var requestCmd = &cobra.Command{
+	Use:   "request",
+	Short: "Ask an admin to permit a destination (or, as admin, review requests)",
+}
+
+var requestReason string
+
+var requestAskCmd = &cobra.Command{
+	Use:   "ask <host>",
+	Short: "Ask for a destination to be permitted",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		res, err := sdk().RequestPermit(args[0], requestReason)
+		if err != nil {
+			return err
+		}
+		return out(res, func() {
+			fmt.Printf("✓ requested %s — pending an administrator's approval\n", args[0])
+		})
+	},
+}
+
+var requestLsCmd = &cobra.Command{
+	Use:   "ls",
+	Short: "List pending requests (yours, or everyone's if you are an admin)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		reqs, err := sdk().PermitRequests()
+		if err != nil {
+			return err
+		}
+		return out(reqs, func() {
+			if len(reqs) == 0 {
+				fmt.Println("(no pending requests)")
+				return
+			}
+			fmt.Printf("%-14s %-30s %-18s %-8s %s\n", "ID", "HOST", "ASKED BY", "STATE", "REASON")
+			for _, r := range reqs {
+				state := "pending"
+				if r.Enabled {
+					state = "approved"
+				}
+				fmt.Printf("%-14s %-30s %-18s %-8s %s\n",
+					r.ID, truncate(r.Value, 30), strings.TrimPrefix(r.Pack, apitypes.PackRequestPrefix),
+					state, truncate(r.Note, 40))
+			}
+		})
+	},
+}
+
+var requestApproveCmd = &cobra.Command{
+	Use:   "approve <id>",
+	Short: "Permit what was asked for (admin)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		rules, err := sdk().ApprovePermitRequest(args[0])
+		if err != nil {
+			return err
+		}
+		return out(rules, func() { fmt.Println("✓ approved; the rule is now in force") })
+	},
+}
+
+var requestDenyCmd = &cobra.Command{
+	Use:   "deny <id>",
+	Short: "Discard a request (admin)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		rules, err := sdk().DenyPermitRequest(args[0])
+		if err != nil {
+			return err
+		}
+		return out(rules, func() { fmt.Println("✓ discarded") })
+	},
 }

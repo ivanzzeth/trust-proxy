@@ -31,10 +31,7 @@ import (
 const (
 	gwAPI     = "21585"
 	gwProxy   = "21584"
-	gwClash   = "21586"
 	cliAPI    = "22585"
-	cliProxy  = "22584"
-	cliClash  = "22586"
 	adminPass = "gateway-admin-password"
 	userPass  = "laptop-console-password"
 	proxyPass = "laptop-proxy-password"
@@ -44,27 +41,63 @@ func TestFleetGatewayAsExit(t *testing.T) {
 	requireDocker(t)
 	bin := buildLinuxBinary(t)
 
+	// Two networks, and the origin sits on the far one. The gateway straddles both;
+	// the client is only on the near one.
+	//
+	// This topology is the test: with everything on one network the origin resolves
+	// to an RFC1918 address, the client's own LAN bypass sends it direct, and an
+	// assertion that "the chain carried the request" passes without the gateway
+	// being involved at all. Measured — the first version of this test did exactly
+	// that, and the gateway's attribution came from an unrelated health-check probe.
+	// Here a direct attempt cannot resolve or reach the origin, so success means the
+	// gateway carried it.
 	net := "tp-e2e-" + fmt.Sprint(os.Getpid())
+	far := net + "-far"
 	run(t, "docker", "network", "create", net)
-	t.Cleanup(func() { _ = exec.Command("docker", "network", "rm", net).Run() })
+	run(t, "docker", "network", "create", far)
+	t.Cleanup(func() {
+		_ = exec.Command("docker", "network", "rm", net).Run()
+		_ = exec.Command("docker", "network", "rm", far).Run()
+	})
 
-	// ---- origin: what the client will fetch --------------------------------
+	// ---- origin: on the far network only ------------------------------------
 	origin := container{t: t, name: net + "-origin"}
-	origin.start("--network", net, "busybox", "sh", "-c",
+	origin.start("--network", far, "busybox", "sh", "-c",
 		"mkdir -p /www && echo REACHED-THE-ORIGIN > /www/index.html && httpd -f -p 80 -h /www")
 
+	// A second origin, deliberately not permitted: the request/approve loop below
+	// has to make a real destination reachable, or "it still fails" cannot tell
+	// "policy refused it" from "the name does not exist".
+	origin2 := container{t: t, name: net + "-origin2"}
+	origin2.start("--network", far, "busybox", "sh", "-c",
+		"mkdir -p /www && echo REACHED-THE-SECOND-ORIGIN > /www/index.html && httpd -f -p 80 -h /www")
+
 	// ---- gateway: owns the policy, requires a credential -------------------
+	// No -c: each container seeds the shipped default config into its own data
+	// directory, which is what a real install does. Hand-writing one here is how the
+	// first version of this test ended up without a catch-all rule — and therefore
+	// without default-deny — while asserting nothing about it.
 	gw := container{t: t, name: net + "-gateway"}
-	gwCfg := writeConfig(t, "gateway", gwProxy, gwClash, "0.0.0.0")
-	gw.start("--network", net, "-v", bin+":/trust-proxy:ro", "-v", gwCfg+":/config.json:ro",
-		"alpine", "/trust-proxy", "serve", "-c", "/config.json", "--data", "/data",
-		"--api-addr", "0.0.0.0:"+gwAPI, "--clash-addr", "127.0.0.1:"+gwClash)
+	gw.start("--network", net, "-v", bin+":/trust-proxy:ro",
+		"alpine", "/trust-proxy", "serve", "--data", "/data",
+		"--api-addr", "0.0.0.0:"+gwAPI, "--dump-config", "/data/merged.json")
+	// Attach the gateway to the far network too: it is the only route to the origin.
+	run(t, "docker", "network", "connect", far, gw.name)
+	gw.waitAPI(gwAPI)
+
+	// The shipped default binds the proxy inbound to loopback — right for a laptop,
+	// wrong for a gateway that serves other machines. Widen it the way an operator
+	// would (edit the config, restart) rather than by hand-writing a whole config.
+	gw.mustExec("sh", "-c",
+		`sed -i 's/"listen": "127.0.0.1"/"listen": "0.0.0.0"/' /data/config.json`)
+	gw.restart()
 	gw.waitAPI(gwAPI)
 
 	// Claiming it from inside the container is loopback, so no bootstrap code is
 	// needed — the headless path the design promises.
 	gw.exec("sh", "-c", "printf '"+adminPass+"\\n' | /trust-proxy auth bootstrap root --api-addr 127.0.0.1:"+gwAPI)
-	key := strings.TrimSpace(gw.execOut("sh", "-c",
+	key := loginKey(gw, "root", adminPass, gwAPI)
+	_ = strings.TrimSpace(gw.execOut("sh", "-c",
 		"printf '"+adminPass+"\\n' | /trust-proxy auth login root --api-addr 127.0.0.1:"+gwAPI+" --json | grep -o '\"key\": *\"[^\"]*\"' | cut -d'\"' -f4"))
 	if !strings.HasPrefix(key, "tp_") {
 		t.Fatalf("did not get an API key from login: %q", key)
@@ -85,10 +118,9 @@ func TestFleetGatewayAsExit(t *testing.T) {
 
 	// ---- client: no policy, exits through the gateway ---------------------
 	cli := container{t: t, name: net + "-client"}
-	cliCfg := writeConfig(t, "client", cliProxy, cliClash, "0.0.0.0")
-	cli.start("--network", net, "-v", bin+":/trust-proxy:ro", "-v", cliCfg+":/config.json:ro",
-		"alpine", "/trust-proxy", "serve", "-c", "/config.json", "--data", "/data",
-		"--api-addr", "0.0.0.0:"+cliAPI, "--clash-addr", "127.0.0.1:"+cliClash)
+	cli.start("--network", net, "-v", bin+":/trust-proxy:ro",
+		"alpine", "/trust-proxy", "serve", "--data", "/data",
+		"--api-addr", "0.0.0.0:"+cliAPI, "--dump-config", "/data/merged.json")
 	cli.waitAPI(cliAPI)
 
 	cliCLI := func(args ...string) string {
@@ -96,10 +128,11 @@ func TestFleetGatewayAsExit(t *testing.T) {
 	}
 	cliCLI("node", "add", "cloud", "http://"+gw.name+":"+gwAPI)
 	cliCLI("node", "exit", "cloud", "--port", gwProxy, "--user", "laptop", "--password", proxyPass)
-	// The client permits the origin locally too: its own default-deny is upstream
-	// of the gateway's, so both have to allow it. (Client mode, which drops the
-	// local gate entirely, is the next step.)
-	cliCLI("acl", "add", "permit", origin.name, "--type", "domain")
+	// Client mode: this machine captures traffic and hands it to the gateway, which
+	// is the only thing that decides what may leave. Without it the client's own
+	// default-deny would block first, and every client machine would have to carry a
+	// copy of the policy — the thing sharing a gateway is supposed to avoid.
+	cliCLI("node", "mode", "client")
 	// Point the catch-all straight at the gateway, so the test exercises the exit
 	// rather than urltest's opinion of it (the health check probes the internet,
 	// which this network deliberately does not have).
@@ -112,12 +145,19 @@ func TestFleetGatewayAsExit(t *testing.T) {
 		t.Fatalf("the gateway did not become a proxy-group member:\n%s", proxies)
 	}
 
+	// ---- a direct attempt must be impossible, or the next assertion is empty
+	direct := cli.execOut("sh", "-c",
+		"wget -q -T 5 -O - http://"+origin.name+"/ 2>&1; echo rc=$?")
+	if strings.Contains(direct, "REACHED-THE-ORIGIN") {
+		t.Fatalf("the client can reach the origin without the gateway, so this test proves nothing:\n%s", direct)
+	}
+
 	// ---- the actual point: traffic goes client -> gateway -> origin --------
 	// BusyBox wget with http_proxy: the mixed inbound speaks HTTP proxy as well as
 	// socks, so the container needs nothing installed — and a test that apk-installs
 	// curl fails on a machine with no route to the package mirror.
 	body := cli.execOut("sh", "-c",
-		"env http_proxy=http://127.0.0.1:"+cliProxy+" wget -q -T 15 -O - http://"+origin.name+"/ 2>&1")
+		"env http_proxy=http://127.0.0.1:"+gwProxy+" wget -q -T 15 -O - http://"+origin.name+"/ 2>&1")
 	if !strings.Contains(body, "REACHED-THE-ORIGIN") {
 		t.Fatalf("the chain did not carry the request; got %q\nclient log:\n%s\ngateway log:\n%s",
 			body, cli.logs(), gw.logs())
@@ -128,6 +168,55 @@ func TestFleetGatewayAsExit(t *testing.T) {
 	hist := gwCLI("history", "ls", "--json")
 	if !strings.Contains(hist, `"usr":"laptop"`) && !strings.Contains(hist, `"usr": "laptop"`) {
 		t.Fatalf("the gateway did not attribute the connection to laptop:\n%s", hist)
+	}
+
+	// ---- blocked upstream -> ask -> approved -> works ----------------------
+	//
+	// A client cannot widen the gateway's policy, so the only honest recourse is to
+	// ask. The request travels as a disabled rule and approval is the admin enabling
+	// it; this walks the whole loop and proves the traffic changes state.
+	wanted := origin2.name
+	before := cli.execOut("sh", "-c",
+		"env http_proxy=http://127.0.0.1:"+gwProxy+" wget -q -T 8 -O - http://"+wanted+"/ 2>&1")
+	if strings.Contains(before, "REACHED-THE-SECOND-ORIGIN") {
+		t.Fatalf("a destination the gateway never permitted was reachable:\n%s", before)
+	}
+
+	// The client asks, with its own account on the gateway (creating a request is
+	// the only write a client has).
+	laptopKey := loginKey(gw, "laptop", userPass, gwAPI)
+	asked := gw.mustExec("env", "TP_API_KEY="+laptopKey, "/trust-proxy",
+		"request", "ask", wanted, "--reason", "needed for work", "--api-addr", "127.0.0.1:"+gwAPI)
+	if !strings.Contains(asked, "pending") {
+		t.Fatalf("the request was not accepted: %s", asked)
+	}
+
+	// A pending request must not itself permit anything.
+	stillBlocked := cli.execOut("sh", "-c",
+		"env http_proxy=http://127.0.0.1:"+gwProxy+" wget -q -T 8 -O - http://"+wanted+"/ 2>&1")
+	if strings.Contains(stillBlocked, "REACHED-THE-SECOND-ORIGIN") {
+		t.Fatalf("a pending request opened the destination before approval:\n%s", stillBlocked)
+	}
+
+	// The admin sees who asked and why…
+	pending := gwCLI("request", "ls", "--json")
+	if !strings.Contains(pending, "laptop") || !strings.Contains(pending, "needed for work") {
+		t.Fatalf("the admin cannot see the request:\n%s", pending)
+	}
+	// …and a client cannot approve its own request.
+	selfApprove := gw.execOut("env", "TP_API_KEY="+laptopKey, "/trust-proxy",
+		"request", "approve", requestID(t, pending), "--api-addr", "127.0.0.1:"+gwAPI)
+	if !strings.Contains(selfApprove, "error") {
+		t.Fatalf("a client approved its own request:\n%s", selfApprove)
+	}
+
+	// The admin approves, and the destination opens.
+	gwCLI("request", "approve", requestID(t, pending))
+	time.Sleep(2 * time.Second)
+	after := cli.execOut("sh", "-c",
+		"env http_proxy=http://127.0.0.1:"+gwProxy+" wget -q -T 10 -O - http://"+wanted+"/ 2>&1")
+	if !strings.Contains(after, "REACHED-THE-SECOND-ORIGIN") {
+		t.Fatalf("approval did not open the destination:\n%s\ngateway log:\n%s", after, gw.logs())
 	}
 
 	// ---- a client without the credential must not get through -------------
@@ -186,8 +275,15 @@ func (c *container) mustExec(args ...string) string {
 	return body
 }
 
+// restart bounces the container, so a config edit takes effect the way it would
+// for an operator.
+func (c *container) restart() {
+	c.t.Helper()
+	run(c.t, "docker", "restart", c.name)
+}
+
 func (c *container) logs() string {
-	out, _ := exec.Command("docker", "logs", "--tail", "40", c.name).CombinedOutput()
+	out, _ := exec.Command("docker", "logs", "--tail", "120", c.name).CombinedOutput()
 	return string(out)
 }
 
@@ -204,6 +300,35 @@ func (c *container) waitAPI(port string) {
 		time.Sleep(time.Second)
 	}
 	c.t.Fatalf("%s never came up:\n%s", c.name, c.logs())
+}
+
+// requestID pulls the first rule id out of `request ls --json`.
+func requestID(t *testing.T, jsonOut string) string {
+	t.Helper()
+	var rules []struct{ ID string }
+	if err := json.Unmarshal([]byte(jsonOut), &rules); err != nil || len(rules) == 0 {
+		t.Fatalf("cannot read a request id from:\n%s", jsonOut)
+	}
+	return rules[0].ID
+}
+
+// loginKey logs in inside the container and returns the API key it prints.
+func loginKey(c container, user, pass, api string) string {
+	c.t.Helper()
+	out := c.mustExec("sh", "-c",
+		"printf '"+pass+"\n' | /trust-proxy auth login "+user+" --api-addr 127.0.0.1:"+api+" --json")
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, `"key"`) {
+			continue
+		}
+		parts := strings.Split(line, `"`)
+		if len(parts) >= 4 {
+			return parts[len(parts)-2]
+		}
+	}
+	c.t.Fatalf("no API key in the login output for %s:\n%s", user, out)
+	return ""
 }
 
 func requireDocker(t *testing.T) {
@@ -233,48 +358,9 @@ func buildLinuxBinary(t *testing.T) string {
 	return bin
 }
 
-// writeConfig produces a minimal gateway config: one mixed inbound plus the Clash
-// API the console reads. Everything else the gateway injects at runtime.
-func writeConfig(t *testing.T, role, port, clash, listen string) string {
-	t.Helper()
-	cfg := map[string]any{
-		"log": map[string]any{"level": "info", "timestamp": true},
-		"inbounds": []any{map[string]any{
-			"type": "mixed", "tag": "mixed-in", "listen": listen, "listen_port": atoi(port),
-		}},
-		"outbounds": []any{
-			map[string]any{"type": "selector", "tag": "proxy", "outbounds": []any{"direct"}, "default": "direct"},
-			map[string]any{"type": "direct", "tag": "direct"},
-			map[string]any{"type": "block", "tag": "blocked"},
-		},
-		"route": map[string]any{"rules": []any{map[string]any{"action": "sniff"}}},
-		"experimental": map[string]any{
-			"clash_api":  map[string]any{"external_controller": "127.0.0.1:" + clash},
-			"cache_file": map[string]any{"enabled": true, "path": "/data/cache.db"},
-		},
-	}
-	raw, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(t.TempDir(), role+".json")
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 func run(t *testing.T, name string, args ...string) {
 	t.Helper()
 	if out, err := exec.Command(name, args...).CombinedOutput(); err != nil {
 		t.Fatalf("%s %s: %v\n%s", name, strings.Join(args, " "), err, out)
 	}
-}
-
-func atoi(s string) int {
-	n := 0
-	for _, r := range s {
-		n = n*10 + int(r-'0')
-	}
-	return n
 }

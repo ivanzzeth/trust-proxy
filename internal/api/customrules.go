@@ -2,9 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
+	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
@@ -29,6 +31,15 @@ func (s *Server) handleAddCustomRule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.ID = "" // ID is derived by the store
+	// In client mode this machine does not enforce egress policy — the gateway it
+	// exits through does — so a local rule that grants Permit cannot have any
+	// effect: that traffic still meets the gateway's default-deny. Refusing it is
+	// the honest answer; accepting it would leave someone staring at a rule they
+	// think opened something.
+	if err := s.refuseIneffectivePermit(req); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	rules, err := s.cr.Add(req)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error()) // validation error
@@ -471,4 +482,31 @@ func (s *Server) applyCustomRules(rules customrules.Rules) error {
 		return nil
 	}
 	return s.crApplier.SetCustomRules(rules)
+}
+
+// refuseIneffectivePermit rejects a Permit-granting rule on a client instance.
+//
+// A client may only be stricter (deny) or route around the gateway (direct); it
+// cannot widen what the gateway allows. Asking for that is what
+// POST /api/permit-requests is for.
+func (s *Server) refuseIneffectivePermit(r apitypes.CustomRule) error {
+	if s.nodes == nil || s.nodes.LocalMode() != nodes.ModeClient {
+		return nil
+	}
+	grants := r.Permit != nil && *r.Permit
+	if r.Permit == nil {
+		// Legacy shape: any egress other than block/none implies Permit.
+		switch r.Egress {
+		case apitypes.CustomEgressProxy, apitypes.CustomEgressNode:
+			grants = true
+		case "":
+			grants = r.Action == apitypes.CustomActionProxy || r.Action == apitypes.CustomActionNode
+		}
+	}
+	if !grants {
+		return nil
+	}
+	return fmt.Errorf(
+		"this machine is in client mode: a local rule cannot permit what the gateway denies — " +
+			"deny or route-direct here, and ask the gateway's admin with a permit request")
 }

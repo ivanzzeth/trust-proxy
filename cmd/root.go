@@ -27,7 +27,7 @@ func init() {
 		subCmd, aclCmd, rulesCmd, statusCmd, modeCmd, routingCmd, postureCmd, finalCmd,
 		dnsCmd, tunCmd, groupsCmd, endpointsCmd, proxiesCmd, autoBlockCmd,
 		profileCmd, detectionsCmd, historyCmd, nodeCmd, detectCmd, quarantineCmd, netcheckCmd,
-		authCmd, apikeyCmd, userCmd,
+		authCmd, apikeyCmd, userCmd, requestCmd,
 	}
 	addClientFlags(clients...)
 	rootCmd.AddCommand(append(clients, serveCmd, connCmd, proxyCmd, serviceCmd, selftestCmd)...)

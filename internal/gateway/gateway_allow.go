@@ -182,7 +182,16 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	merged = append(merged, inserted...)
 	merged = append(merged, rules[catchIdx:]...)
 
+	// The catch-all decides where everything unmatched goes — Final in Strict, and
+	// the thing that makes default-deny hold at all. It used to be *rewritten* only
+	// if the base config already had a rule with a `network` matcher, so a
+	// hand-written config without one silently produced a gateway with no catch-all:
+	// unmatched traffic then fell through to sing-box's default outbound (the first
+	// one in the list, i.e. direct), with no Final and no default-deny, and nothing
+	// said so. Measured in a container. Now it is rewritten if present and appended
+	// if not.
 	newCatchIdx := catchIdx + len(inserted)
+	rewritten := false
 	if newCatchIdx < len(merged) {
 		var catchRule map[string]any
 		if err := json.Unmarshal(merged[newCatchIdx], &catchRule); err == nil {
@@ -191,9 +200,20 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 				catchRule["outbound"] = resolveFinal(final, memberTags)
 				if b, err := json.Marshal(catchRule); err == nil {
 					merged[newCatchIdx] = b
+					rewritten = true
 				}
 			}
 		}
+	}
+	if !rewritten {
+		catchAll, err := json.Marshal(map[string]any{
+			"action": "route", "network": []string{"tcp", "udp"},
+			"outbound": resolveFinal(final, memberTags),
+		})
+		if err != nil {
+			return err
+		}
+		merged = append(merged, catchAll)
 	}
 
 	nr, err := json.Marshal(merged)

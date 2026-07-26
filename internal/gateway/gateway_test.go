@@ -1403,3 +1403,61 @@ func assertNoLocalDNS(t *testing.T, merged []byte) {
 		}
 	}
 }
+
+// A config without a catch-all rule must still get one, or default-deny silently
+// stops holding: unmatched traffic falls through to sing-box's default outbound
+// (the first in the list — direct), with no Final either. Measured in a container
+// with a hand-written config, where a client's traffic went direct while the
+// console reported Final=gw-cloud.
+func TestCatchAllIsAppendedWhenTheBaseConfigHasNone(t *testing.T) {
+	// A base config with no `network`-matcher rule at all.
+	bare := `{
+	  "inbounds": [{"type":"mixed","tag":"mixed-in","listen":"127.0.0.1","listen_port":21584}],
+	  "outbounds": [
+	    {"type":"direct","tag":"direct"},
+	    {"type":"block","tag":"blocked"},
+	    {"type":"selector","tag":"proxy","outbounds":["direct"],"default":"direct"}
+	  ],
+	  "route": {"rules": [{"action":"sniff"}]},
+	  "experimental": {"clash_api": {"external_controller":"127.0.0.1:21586"}}
+	}`
+	merged, err := buildMergedConfig([]byte(bare), nil,
+		whitelist.Rules{Domains: []string{"example.com"}}, blacklist.Rules{}, quarantine.List{},
+		directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeManual, ruleset.Sets{},
+		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil,
+		"proxy", apitypes.PostureStrict, "secret", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(merged, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	var route struct {
+		Rules []map[string]any `json:"rules"`
+	}
+	if err := json.Unmarshal(cfg["route"], &route); err != nil {
+		t.Fatal(err)
+	}
+	if len(route.Rules) == 0 {
+		t.Fatal("no rules at all")
+	}
+	last := route.Rules[len(route.Rules)-1]
+	if _, hasNet := last["network"]; !hasNet || last["action"] != "route" {
+		t.Fatalf("the last rule is not a catch-all: %v", last)
+	}
+	if last["outbound"] != "proxy" {
+		t.Fatalf("catch-all outbound = %v, want the Final (proxy)", last["outbound"])
+	}
+	// And the permit gate must precede it, or "unmatched" would be decided before
+	// "not permitted".
+	gate := -1
+	for i, r := range route.Rules {
+		if r["invert"] == true && r["outbound"] == "blocked" {
+			gate = i
+		}
+	}
+	if gate < 0 || gate > len(route.Rules)-2 {
+		t.Fatalf("the permit gate is missing or after the catch-all (gate=%d of %d)", gate, len(route.Rules))
+	}
+}

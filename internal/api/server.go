@@ -140,6 +140,11 @@ type GatewayExitApplier interface {
 	SetGatewayExits([]apitypes.Node) error
 }
 
+// ClientModeApplier switches between enforcing policy and deferring to a gateway.
+type ClientModeApplier interface {
+	SetClientMode(bool) error
+}
+
 // EndpointsApplier hot-reloads WireGuard/Tailscale exits (gateway.Manager).
 type EndpointsApplier interface {
 	SetEndpoints([]apitypes.Endpoint) error
@@ -191,6 +196,7 @@ type Options struct {
 	Detections   *detect.Store // durable alert findings (JSONL)
 	Nodes        *nodes.Store  // brain: registry of remote gateways (reverse-proxied)
 	GWApplier    GatewayExitApplier
+	CMApplier    ClientModeApplier
 	Token        string        // if set, /api/* requires this bearer token (probe mode)
 	Clash        *clash.Client // low-level Clash primitives, proxied to the browser
 	ConsoleDir   string        // on-disk dashboard dir (dev); used when ConsoleFS is nil
@@ -243,6 +249,7 @@ type Server struct {
 	detections   *detect.Store
 	nodes        *nodes.Store
 	gwApplier    GatewayExitApplier
+	cmApplier    ClientModeApplier
 	token        string
 	clash        *clash.Client
 	consoleDir   string
@@ -251,7 +258,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, cmApplier: o.CMApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -307,6 +314,11 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("POST /api/customrules/packs/apply", s.handleApplyPack)
 	mux.HandleFunc("PATCH /api/customrules/packs/{name}", s.handlePatchPack)
 	mux.HandleFunc("DELETE /api/customrules/packs/{name}", s.handleDeletePack)
+	// Permit requests: a client may ask, an admin approves. See requests.go.
+	mux.HandleFunc("POST /api/permit-requests", s.handleCreatePermitRequest)
+	mux.HandleFunc("GET /api/permit-requests", s.handleListPermitRequests)
+	mux.HandleFunc("POST /api/permit-requests/{id}/approve", s.handleApprovePermitRequest)
+	mux.HandleFunc("DELETE /api/permit-requests/{id}", s.handleDenyPermitRequest)
 	mux.HandleFunc("GET /api/effective-rules", s.handleEffectiveRules)
 	mux.HandleFunc("GET /api/proxygroups", s.handleGetProxyGroups)
 	mux.HandleFunc("PUT /api/proxygroups", s.handleSetProxyGroups)

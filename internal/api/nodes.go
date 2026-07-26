@@ -48,6 +48,14 @@ func (s *Server) handlePatchNode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "apply gateway exits: "+err.Error())
 		return
 	}
+	// Switching this machine between gateway and client changes whether it enforces
+	// egress policy at all, so it has to reach the data plane now.
+	if req.Mode != nil && s.cmApplier != nil {
+		if err := s.cmApplier.SetClientMode(s.nodes.LocalMode() == nodes.ModeClient); err != nil {
+			writeErr(w, http.StatusBadGateway, "apply client mode: "+err.Error())
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, out)
 }
 

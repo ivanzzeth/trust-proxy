@@ -52,6 +52,7 @@ var readOnlyForUsers = []string{
 	"/api/events", "/api/detections", "/api/history", "/api/logs",
 	"/api/dns-queries", "/api/netcheck", "/api/fingerprints", "/api/rules",
 	"/api/proxies", "/api/effective-rules", "/api/auth/me", "/api/auth/state",
+	"/api/permit-requests", // scoped to the caller's own in the handler
 }
 
 // publicPaths need no identity at all. Deliberately tiny: everything here is
@@ -92,6 +93,12 @@ func isSelfService(r *http.Request) (id string, ok bool) {
 // requirement returns the access level a request needs.
 func requirement(r *http.Request) access {
 	p := path0(r.URL.Path)
+	// Asking for a destination to be permitted is the one write a client has, and
+	// it is a proposal: the rule it creates is disabled and grants nothing (see
+	// requests.go). Approving one is admin.
+	if p == "/api/permit-requests" && r.Method == http.MethodPost {
+		return accessUser
+	}
 	for _, pub := range publicPaths {
 		if p == pub {
 			return accessPublic
