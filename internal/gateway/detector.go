@@ -5,6 +5,7 @@ import (
 	"net"
 	"time"
 
+	mDNS "github.com/miekg/dns"
 	"github.com/sagernet/sing-box/adapter"
 	tun "github.com/sagernet/sing-tun"
 	N "github.com/sagernet/sing/common/network"
@@ -24,7 +25,36 @@ func newDetector(engine *detect.Engine) *detector {
 	return &detector{engine: engine}
 }
 
-var _ adapter.ConnectionTracker = (*detector)(nil)
+var (
+	_ adapter.ConnectionTracker = (*detector)(nil)
+	_ adapter.DNSQueryTracker   = (*detector)(nil)
+)
+
+// RoutedQuery observes every resolved DNS query (our sing-box fork's
+// DNSQueryTracker). This is the only place the gateway sees names that never
+// become connections — a DGA sweep is mostly NXDOMAIN, and a DNS tunnel's
+// payload *is* the query stream. Runs on the resolution path, so it does a
+// couple of map bumps and hands any finding to the engine's sink.
+func (d *detector) RoutedQuery(ctx context.Context, message *mDNS.Msg, response *mDNS.Msg, err error) {
+	if message == nil || len(message.Question) == 0 {
+		return
+	}
+	q := message.Question[0]
+	rcode := "NOERROR"
+	switch {
+	case err != nil:
+		rcode = "SERVFAIL"
+	case response != nil:
+		rcode = mDNS.RcodeToString[response.Rcode]
+	}
+	client := ""
+	if m := adapter.ContextFrom(ctx); m != nil && m.Source.IsValid() {
+		client = m.Source.Addr.String()
+	}
+	for _, det := range d.engine.RecordQuery(client, q.Name, mDNS.TypeToString[q.Qtype], rcode) {
+		d.engine.EmitDetection(det)
+	}
+}
 
 func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) net.Conn {
 	ev := d.engine.Track("tcp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound))

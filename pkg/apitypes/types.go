@@ -215,6 +215,15 @@ type DetectionConfig struct {
 	ExfilMinRatio     float64 `json:"exfil_min_ratio,omitempty"`      // upload/download ratio
 	ExfilNewDestHours int     `json:"exfil_new_dest_hours,omitempty"` // "never seen in this window" counts as new
 
+	// Query-level DNS observation. A DGA sweep is mostly NXDOMAIN and a DNS
+	// tunnel encodes payload into names, so neither ever becomes a connection the
+	// connection-side detectors could see. Counted in fixed windows; set a
+	// threshold to 0 to ignore that signal.
+	QueryWindowSec  int `json:"query_window_s,omitempty"`
+	QueryNXBurst    int `json:"query_nxdomain_burst,omitempty"` // NXDOMAIN answers per client per window
+	QueryParentRate int `json:"query_parent_rate,omitempty"`    // queries under one parent per window
+	QueryOddTypeAt  int `json:"query_odd_type_at,omitempty"`    // TXT/NULL/ANY queries under one parent
+
 	// Disposal (auto-block / auto-ban).
 	AutoBlock bool `json:"auto_block"`
 	// RequireWarmPermit keeps disposal from running until the Permit index has

@@ -214,6 +214,19 @@ func (c *Client) SetDetectionConfig(cfg apitypes.DetectionConfig) (apitypes.Dete
 	return out, err
 }
 
+// DNSQueryStats returns query-level activity: totals, NXDOMAIN share and the
+// busiest parent domains. This is where a DGA sweep or a DNS tunnel shows up —
+// neither ever becomes a connection.
+func (c *Client) DNSQueryStats(top int) (map[string]any, error) {
+	v := url.Values{}
+	if top > 0 {
+		v.Set("top", strconv.Itoa(top))
+	}
+	var out map[string]any
+	err := c.do(http.MethodGet, "/api/dns-queries/stats?"+v.Encode(), nil, &out)
+	return out, err
+}
+
 // Quarantine lists what the gateway blocked by itself (threat intel / exfil
 // disposal). Separate from the deny list, which is operator policy.
 func (c *Client) Quarantine() ([]apitypes.QuarantineEntry, error) {

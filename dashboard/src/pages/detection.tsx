@@ -24,6 +24,7 @@ export default function Detection() {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['detection-config'], queryFn: api.detectionConfig });
+  const { data: queries } = useQuery({ queryKey: ['dns-query-stats'], queryFn: () => api.dnsQueryStats(8), refetchInterval: 10000 });
   const { data: quarantined = [] } = useQuery({ queryKey: ['quarantine'], queryFn: api.quarantine, refetchInterval: 10000 });
   const [cfg, setCfg] = useState<DetectionConfig | null>(null);
   useEffect(() => { if (data) setCfg(data); }, [data]);
@@ -110,6 +111,48 @@ export default function Detection() {
           <Save className="size-3.5" /> {t('pages.detection.apply')}
         </Button>
       </div>
+
+      <Card className="mt-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">{t('pages.detection.queriesTitle')}</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{t('pages.detection.queriesHint')}</p>
+          <div className="mb-3 flex flex-wrap gap-4 text-xs">
+            <span>{t('pages.detection.queriesTotal')}: <b className="tnum">{queries?.total ?? 0}</b></span>
+            <span>
+              NXDOMAIN: <b className="tnum">{queries?.nxdomain ?? 0}</b>
+              {queries && queries.total > 0 && (
+                <span className="text-muted-foreground"> ({((queries.nxdomain / queries.total) * 100).toFixed(1)}%)</span>
+              )}
+            </span>
+            <span>TXT/NULL/ANY: <b className="tnum">{queries?.odd_type ?? 0}</b></span>
+          </div>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('pages.detection.colParent')}</TableHead>
+                <TableHead className="text-right">{t('pages.detection.colQueries')}</TableHead>
+                <TableHead className="text-right">NXDOMAIN</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(queries?.top_parents ?? []).length === 0 && (
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={3} className="py-6 text-center text-muted-foreground">{t('pages.detection.queriesEmpty')}</TableCell>
+                </TableRow>
+              )}
+              {(queries?.top_parents ?? []).map((p) => (
+                <TableRow key={p.parent}>
+                  <TableCell className="font-mono text-xs">{p.parent}</TableCell>
+                  <TableCell className="tnum text-right text-xs">{p.queries}</TableCell>
+                  <TableCell className="tnum text-right text-xs">{p.nxdomain}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
 
       <Card className="mt-6">
         <CardHeader className="flex-row items-center gap-2 pb-3">

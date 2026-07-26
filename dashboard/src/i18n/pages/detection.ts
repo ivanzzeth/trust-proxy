@@ -33,6 +33,13 @@ export default {
     requireWarm: 'Wait for the Permit index before disposing',
     requireWarmHint:
       'The Permit index is built asynchronously and fetches remote rule sets. Until it lands, every rule-set-derived Permit reads as "not permitted" — disposing in that window bans destinations you had approved.',
+    queriesTitle: 'DNS queries',
+    queriesHint:
+      'What the resolver was asked for. A DGA sweep is mostly NXDOMAIN and a tunnel encodes payload into names — neither ever becomes a connection, so this is the only view where they show up. Populated in TUN mode, or whenever clients resolve through this gateway.',
+    queriesTotal: 'Queries',
+    queriesEmpty: 'No query activity recorded yet.',
+    colParent: 'Parent domain',
+    colQueries: 'Queries',
     quarantineTitle: 'Quarantine (blocked by the gateway)',
     quarantineHint:
       'Separate from the Deny list on purpose: Deny is your policy and lives in the posture slot, so switching Strict/Split replaces it. A defensive block must not disappear with an unrelated policy switch.',
@@ -72,6 +79,13 @@ export default {
     requireWarm: '等 Permit 索引就绪后再处置',
     requireWarmHint:
       'Permit 索引是异步构建的，还要拉取远端规则集。在它就绪之前，所有来自规则集的 Permit 都读作「未许可」——此时处置会把你其实已批准的目的地封掉。',
+    queriesTitle: 'DNS 查询',
+    queriesHint:
+      '解析器被问了什么。DGA 扫描绝大多数是 NXDOMAIN，隧道把载荷编码进域名——两者都不会变成连接，只有在这里才看得见。TUN 模式下、或客户端用本网关解析时才有数据。',
+    queriesTotal: '查询数',
+    queriesEmpty: '暂无查询活动。',
+    colParent: '父域名',
+    colQueries: '查询数',
     quarantineTitle: '隔离区（网关自行封禁）',
     quarantineHint:
       '刻意与 Deny 列表分开：Deny 是你的策略、存在 posture 槽里，切 Strict/Split 会整份替换。防御性封禁不该因为一次无关的策略切换就消失。',

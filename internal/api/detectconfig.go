@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"net/http"
+	"strconv"
 
 	"github.com/ivanzzeth/trust-proxy/internal/detectcfg"
 	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
@@ -48,6 +50,28 @@ func (s *Server) handleSetDetectionConfig(w http.ResponseWriter, r *http.Request
 		s.detApplier.ApplyDetectionConfig(cfg)
 	}
 	writeJSON(w, http.StatusOK, cfg)
+}
+
+// QueryStatsProvider exposes the engine's query-level counters.
+type QueryStatsProvider interface {
+	QueryStats(top int) detect.QueryStats
+}
+
+// handleDNSQueryStats reports what the resolver has been asked for: totals,
+// NXDOMAIN share and the busiest parents. Query-level activity is the only place
+// a DGA sweep or a DNS tunnel is visible — neither becomes a connection.
+func (s *Server) handleDNSQueryStats(w http.ResponseWriter, r *http.Request) {
+	if s.queryStats == nil {
+		writeErr(w, http.StatusServiceUnavailable, "query stats not available")
+		return
+	}
+	top := 10
+	if v := r.URL.Query().Get("top"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 200 {
+			top = n
+		}
+	}
+	writeJSON(w, http.StatusOK, s.queryStats.QueryStats(top))
 }
 
 // handleListQuarantine reports what the gateway blocked by itself. Kept separate

@@ -34,6 +34,8 @@ var detectGetCmd = &cobra.Command{
 				cfg.TunnelMinLabelLen, cfg.TunnelMinEntropy, cfg.SubdomainAlertAt)
 			fmt.Printf("exfil:    upload>=%s  ratio>=%.1f  new-dest-window=%dh\n",
 				humanBytes(cfg.ExfilUploadBytes), cfg.ExfilMinRatio, cfg.ExfilNewDestHours)
+			fmt.Printf("dns:      window=%ds  nxdomain-burst=%d  parent-rate=%d  odd-type=%d\n",
+				cfg.QueryWindowSec, cfg.QueryNXBurst, cfg.QueryParentRate, cfg.QueryOddTypeAt)
 			fmt.Printf("disposal: auto-block=%s  require-warm-permit=%s\n",
 				yesNo(cfg.AutoBlock), yesNo(cfg.RequireWarmPermit))
 		})
@@ -57,6 +59,10 @@ var (
 	detExfilBytes     int64
 	detExfilRatio     float64
 	detExfilNewHours  int
+	detQueryWindow    int
+	detQueryNX        int
+	detQueryRate      int
+	detQueryOddAt     int
 	detAutoBlock      bool
 	detRequireWarm    bool
 	detectSettingsSet = map[string]func(*apitypes.DetectionConfig){}
@@ -182,6 +188,10 @@ func init() {
 	f.Int64Var(&detExfilBytes, "exfil-upload-bytes", 10<<20, "upload size that makes a connection interesting")
 	f.Float64Var(&detExfilRatio, "exfil-min-ratio", 4, "upload/download ratio counting as exfil-shaped (0 = ignore)")
 	f.IntVar(&detExfilNewHours, "exfil-new-dest-hours", 24, "a destination unseen this long counts as new (0 = ignore)")
+	f.IntVar(&detQueryWindow, "query-window", 300, "window for query-level counting (seconds)")
+	f.IntVar(&detQueryNX, "query-nxdomain-burst", 30, "NXDOMAIN answers per client per window (0 = ignore)")
+	f.IntVar(&detQueryRate, "query-parent-rate", 300, "queries under one parent per window (0 = ignore)")
+	f.IntVar(&detQueryOddAt, "query-odd-type-at", 20, "TXT/NULL/ANY queries under one parent (0 = ignore)")
 	f.BoolVar(&detAutoBlock, "auto-block", true, "drop and quarantine on high-confidence findings")
 	f.BoolVar(&detRequireWarm, "require-warm-permit", true, "hold disposal until the Permit index is built")
 
@@ -201,6 +211,10 @@ func init() {
 	detectSettingsSet["exfil-upload-bytes"] = func(c *apitypes.DetectionConfig) { c.ExfilUploadBytes = detExfilBytes }
 	detectSettingsSet["exfil-min-ratio"] = func(c *apitypes.DetectionConfig) { c.ExfilMinRatio = detExfilRatio }
 	detectSettingsSet["exfil-new-dest-hours"] = func(c *apitypes.DetectionConfig) { c.ExfilNewDestHours = detExfilNewHours }
+	detectSettingsSet["query-window"] = func(c *apitypes.DetectionConfig) { c.QueryWindowSec = detQueryWindow }
+	detectSettingsSet["query-nxdomain-burst"] = func(c *apitypes.DetectionConfig) { c.QueryNXBurst = detQueryNX }
+	detectSettingsSet["query-parent-rate"] = func(c *apitypes.DetectionConfig) { c.QueryParentRate = detQueryRate }
+	detectSettingsSet["query-odd-type-at"] = func(c *apitypes.DetectionConfig) { c.QueryOddTypeAt = detQueryOddAt }
 	detectSettingsSet["auto-block"] = func(c *apitypes.DetectionConfig) { c.AutoBlock = detAutoBlock }
 	detectSettingsSet["require-warm-permit"] = func(c *apitypes.DetectionConfig) { c.RequireWarmPermit = detRequireWarm }
 

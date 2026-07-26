@@ -13,6 +13,7 @@ import (
 	"time"
 
 	box "github.com/sagernet/sing-box"
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/experimental/deprecated"
 	"github.com/sagernet/sing-box/include"
 	"github.com/sagernet/sing-box/log"
@@ -643,7 +644,14 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 		return nil, err
 	}
 	if os.Getenv("TP_NO_DETECTOR") == "" {
-		instance.Router().AppendTracker(newDetector(m.engine))
+		det := newDetector(m.engine)
+		instance.Router().AppendTracker(det)
+		// The same detector also watches the resolver: queries that never become
+		// connections (NXDOMAIN sweeps, TXT tunnels) are invisible to a connection
+		// tracker. box.New registers the DNS router into the context we passed.
+		if dnsRouter := service.FromContext[adapter.DNSRouter](ctx); dnsRouter != nil {
+			dnsRouter.AppendQueryTracker(det)
+		}
 	}
 	return instance, nil
 }

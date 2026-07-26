@@ -445,6 +445,7 @@ func runServe() error {
 		BLApplier:    mgr,
 		Directlist:   dlStore,
 		DLApplier:    mgr,
+		QueryStats:   engine,
 		Detection:    detCfgStore,
 		DetApplier:   detectApplier{engine},
 		Quarantine:   quarStore,

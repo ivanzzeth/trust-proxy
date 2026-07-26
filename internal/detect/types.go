@@ -10,6 +10,10 @@ const (
 	KindExfil  Kind = "exfil"
 	KindBeacon Kind = "beacon"
 	KindDGA    Kind = "dga"
+	// KindDNS covers query-level findings: NXDOMAIN sweeps, payload-carrying
+	// record types, tunnel-rate parents. Distinct from KindDGA, which scores the
+	// shape of a single name.
+	KindDNS Kind = "dns"
 )
 
 // Action is how the system disposed of the finding.

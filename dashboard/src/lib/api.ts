@@ -324,6 +324,16 @@ export interface DetectionConfig {
 
 // What the gateway blocked by itself. Distinct from the deny list: policy lives
 // in the posture slot and gets replaced wholesale, defensive blocks must not.
+// Query-level DNS activity. A DGA sweep is mostly NXDOMAIN and a tunnel encodes
+// payload into names, so neither appears in the connection list at all.
+export interface DNSQueryStats {
+  total: number;
+  nxdomain: number;
+  odd_type: number;
+  tracked_windows: number;
+  top_parents: { parent: string; queries: number; nxdomain: number }[];
+}
+
 export interface QuarantineEntry {
   value: string;
   is_ip: boolean;
@@ -502,6 +512,7 @@ export const api = {
   effectiveRules: () => get<RuleView[]>('/effective-rules'),
   detectionConfig: () => get<DetectionConfig>('/detection-config'),
   setDetectionConfig: (c: DetectionConfig) => put<DetectionConfig>('/detection-config', c),
+  dnsQueryStats: (top = 10) => get<DNSQueryStats>(`/dns-queries/stats?top=${top}`),
   quarantine: () => get<QuarantineEntry[]>('/quarantine'),
   releaseQuarantine: (value: string) => del<QuarantineEntry[]>('/quarantine', { value }),
   clearQuarantine: () => del<QuarantineEntry[]>('/quarantine', { all: true }),

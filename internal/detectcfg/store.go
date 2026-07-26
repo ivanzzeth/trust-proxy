@@ -37,6 +37,11 @@ func Defaults() apitypes.DetectionConfig {
 		ExfilMinRatio:     4,
 		ExfilNewDestHours: 24,
 
+		QueryWindowSec:  300,
+		QueryNXBurst:    30,
+		QueryParentRate: 300,
+		QueryOddTypeAt:  20,
+
 		AutoBlock:         true,
 		RequireWarmPermit: true,
 	}
@@ -83,6 +88,9 @@ func WithDefaults(c apitypes.DetectionConfig) apitypes.DetectionConfig {
 	if c.ExfilUploadBytes <= 0 {
 		c.ExfilUploadBytes = d.ExfilUploadBytes
 	}
+	if c.QueryWindowSec <= 0 {
+		c.QueryWindowSec = d.QueryWindowSec
+	}
 	// ExfilMinRatio / ExfilNewDestHours are deliberately not defaulted from zero:
 	// 0 means "ignore this signal", which is a legitimate choice.
 	return c
@@ -117,6 +125,12 @@ func Validate(c apitypes.DetectionConfig) error {
 	}
 	if c.ExfilMinRatio < 0 || c.ExfilNewDestHours < 0 {
 		return fmt.Errorf("exfil_min_ratio and exfil_new_dest_hours must be >= 0")
+	}
+	if c.QueryWindowSec < 10 {
+		return fmt.Errorf("query_window_s must be >= 10 (a shorter window can't establish a rate)")
+	}
+	if c.QueryNXBurst < 0 || c.QueryParentRate < 0 || c.QueryOddTypeAt < 0 {
+		return fmt.Errorf("query thresholds must be >= 0 (0 disables that signal)")
 	}
 	return nil
 }

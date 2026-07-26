@@ -63,6 +63,17 @@ type Engine struct {
 	exfilNewDestHours int
 	seen              map[string]time.Time
 
+	// query-level observation (see query.go)
+	queryWindowSec  int
+	queryNXBurst    int
+	queryParentRate int
+	queryOddTypeAt  int
+	queryTotal      int64
+	queryNX         int64
+	queryOdd        int64
+	nxWindows       map[string]*queryWindow
+	parentWindows   map[string]*queryWindow
+
 	// disposalReady gates auto-ban: nil = always ready. See RequireWarmPermit.
 	disposalReady func() bool
 
@@ -84,6 +95,11 @@ func (e *Engine) SetOnDetection(fn func(Detection)) { e.onDetection = fn }
 func (e *Engine) SetTrustedDest(fn func(host, destination string) bool) {
 	e.trustedDest = fn
 }
+
+// EmitDetection publishes a finding produced outside Track/finalize (the DNS
+// query path). Keeps the sink in one place so persistence and the console see
+// query-level findings exactly like connection-level ones.
+func (e *Engine) EmitDetection(d Detection) { e.fireDetection(d) }
 
 // SetDisposalReady registers a predicate consulted before auto-ban: false means
 // "the policy picture is not complete yet, do not dispose". Alerts are never
@@ -123,6 +139,10 @@ func (e *Engine) ApplyConfig(c apitypes.DetectionConfig) {
 	e.subdomainAlertAt = c.SubdomainAlertAt
 	e.exfilMinRatio = c.ExfilMinRatio
 	e.exfilNewDestHours = c.ExfilNewDestHours
+	e.queryWindowSec = c.QueryWindowSec
+	e.queryNXBurst = c.QueryNXBurst
+	e.queryParentRate = c.QueryParentRate
+	e.queryOddTypeAt = c.QueryOddTypeAt
 	e.mu.Unlock()
 	e.uploadAlertBytes.Store(c.ExfilUploadBytes)
 	e.autoBlock.Store(c.AutoBlock)
@@ -156,6 +176,8 @@ func New(capacity int) *Engine {
 		dgaEnabled:      true,
 		dnsParents:      map[string]*parentState{},
 		seen:            map[string]time.Time{},
+		nxWindows:       map[string]*queryWindow{},
+		parentWindows:   map[string]*queryWindow{},
 	}
 	def := defaultTunables()
 	e.beaconReAlertFactor = def.beaconReAlertFactor
@@ -166,6 +188,10 @@ func New(capacity int) *Engine {
 	e.subdomainAlertAt = def.subdomainAlertAt
 	e.exfilMinRatio = def.exfilMinRatio
 	e.exfilNewDestHours = def.exfilNewDestHours
+	e.queryWindowSec = def.queryWindowSec
+	e.queryNXBurst = def.queryNXBurst
+	e.queryParentRate = def.queryParentRate
+	e.queryOddTypeAt = def.queryOddTypeAt
 	e.uploadAlertBytes.Store(10 << 20) // 10 MiB upload -> exfil alert
 	return e
 }

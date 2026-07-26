@@ -285,6 +285,44 @@ var (
 	dnsStrategy     string
 )
 
+var dnsQueriesTop int
+
+var dnsQueriesCmd = &cobra.Command{
+	Use:   "queries",
+	Short: "Query-level activity: totals, NXDOMAIN share, busiest parents",
+	Long: "What the resolver is being asked for. A DGA sweep is mostly NXDOMAIN and a\n" +
+		"DNS tunnel encodes payload into names, so neither shows up as a connection —\n" +
+		"this is the only view where they are visible.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		st, err := sdk().DNSQueryStats(dnsQueriesTop)
+		if err != nil {
+			return err
+		}
+		return out(st, func() {
+			total, _ := st["total"].(float64)
+			nx, _ := st["nxdomain"].(float64)
+			odd, _ := st["odd_type"].(float64)
+			share := 0.0
+			if total > 0 {
+				share = nx / total * 100
+			}
+			fmt.Printf("queries: %.0f   nxdomain: %.0f (%.1f%%)   TXT/NULL/ANY: %.0f\n", total, nx, share, odd)
+			parents, _ := st["top_parents"].([]any)
+			if len(parents) == 0 {
+				fmt.Println("(no query activity yet — the resolver sees queries only in TUN mode or when clients use our DNS)")
+				return
+			}
+			fmt.Printf("%-44s %-10s %s\n", "PARENT", "QUERIES", "NXDOMAIN")
+			for _, p := range parents {
+				m, _ := p.(map[string]any)
+				q, _ := m["queries"].(float64)
+				n, _ := m["nxdomain"].(float64)
+				fmt.Printf("%-44s %-10.0f %.0f\n", truncate(str(m["parent"]), 44), q, n)
+			}
+		})
+	},
+}
+
 var dnsSetCmd = &cobra.Command{
 	Use:   "set",
 	Short: "Update the resolver policy (whole doc with -f, or patch single knobs)",
@@ -652,7 +690,8 @@ func init() {
 	routingCmd.AddCommand(routingGetCmd, routingSetCmd)
 	postureCmd.AddCommand(postureGetCmd, postureSetCmd)
 	finalCmd.AddCommand(finalGetCmd, finalSetCmd)
-	dnsCmd.AddCommand(dnsGetCmd, dnsSetCmd)
+	dnsQueriesCmd.Flags().IntVar(&dnsQueriesTop, "top", 10, "how many parent domains to show")
+	dnsCmd.AddCommand(dnsGetCmd, dnsSetCmd, dnsQueriesCmd)
 	tunCmd.AddCommand(tunGetCmd, tunSetCmd)
 	inboundCmd.AddCommand(inboundGetCmd, inboundSetCmd)
 	groupsCmd.AddCommand(groupsGetCmd, groupsSetCmd)

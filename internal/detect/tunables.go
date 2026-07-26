@@ -16,6 +16,10 @@ type tunables struct {
 	subdomainAlertAt    int
 	exfilMinRatio       float64
 	exfilNewDestHours   int
+	queryWindowSec      int
+	queryNXBurst        int
+	queryParentRate     int
+	queryOddTypeAt      int
 }
 
 func defaultTunables() tunables {
@@ -28,6 +32,10 @@ func defaultTunables() tunables {
 		subdomainAlertAt:    40,
 		exfilMinRatio:       4,
 		exfilNewDestHours:   24,
+		queryWindowSec:      300,
+		queryNXBurst:        30,
+		queryParentRate:     300,
+		queryOddTypeAt:      20,
 	}
 }
 
@@ -72,5 +80,9 @@ func withEngineDefaults(c apitypes.DetectionConfig) apitypes.DetectionConfig {
 	if c.ExfilUploadBytes <= 0 {
 		c.ExfilUploadBytes = 10 << 20
 	}
+	if c.QueryWindowSec <= 0 {
+		c.QueryWindowSec = d.queryWindowSec
+	}
+	// The three query thresholds keep 0 as "ignore this signal".
 	return c
 }
