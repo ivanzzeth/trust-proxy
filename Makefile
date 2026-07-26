@@ -14,7 +14,7 @@ TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
-.PHONY: run build build-embed tidy dashboard dashboard-dev dashboard-test deps clean e2e redeploy desktop desktop-dev desktop-sidecar
+.PHONY: run build build-embed tidy e2e-fleet e2e-macos dashboard dashboard-dev dashboard-test deps clean e2e redeploy desktop desktop-dev desktop-sidecar
 
 # Redeploy defaults (override: make redeploy MODE=manual)
 DATA_DIR  ?= $(HOME)/.trust-proxy
@@ -46,6 +46,19 @@ redeploy: build-embed
 
 tidy:
 	go mod tidy
+
+## macOS e2e in a tart VM: the launchd service lifecycle and TUN capture with its
+## dead-man's switch — the two things that need a real macOS host and root, and
+## that must never be tried on the developer's own machine. Skips when tart, the
+## VM or sshpass are missing (TP_TART_VM overrides the VM name).
+e2e-macos:
+	go test -tags tart_e2e -run 'TestMacOS' -v -timeout 15m ./test/
+
+## Multi-gateway e2e in containers: origin + gateway + client, no internet needed.
+## Verifies the shape the feature exists for — a remote gateway holds the policy
+## and a local machine egresses through it with its own account — and cleans up.
+e2e-fleet:
+	go test -tags docker_e2e -run TestFleetGatewayAsExit -v -timeout 10m ./test/
 
 ## Run the end-to-end proxy protocol test (self-hosted server <-> client tunnel)
 e2e:

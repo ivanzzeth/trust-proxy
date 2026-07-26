@@ -84,6 +84,10 @@ type Manager struct {
 	inbound   apitypes.InboundAuth
 	tun       apitypes.TUNConfig
 	endpoints []apitypes.Endpoint
+	// gwExits are registered gateways used as egress: from the data plane's point
+	// of view just more outbound nodes, kept separate from m.nodes so applying a
+	// subscription cannot drop them.
+	gwExits   []apitypes.Node
 	mgmtPorts []int
 	final     string // catch-all egress when ACL gate is open (default proxy)
 	posture   string // strict|split — Split skips L3 permit gate (default-allow)
@@ -117,6 +121,22 @@ func (m *Manager) SetInitialEndpoints(eps []apitypes.Endpoint) {
 	m.mu.Lock()
 	m.endpoints = eps
 	m.mu.Unlock()
+}
+
+// SetInitialGatewayExits sets gateway-as-exit outbounds used by the first Start().
+func (m *Manager) SetInitialGatewayExits(exits []apitypes.Node) {
+	m.mu.Lock()
+	m.gwExits = exits
+	m.mu.Unlock()
+}
+
+// SetGatewayExits swaps the gateway exits and hot-reloads (reverts on failure).
+func (m *Manager) SetGatewayExits(exits []apitypes.Node) error {
+	return m.setAndRebuild("gateway exits", func() func() {
+		prev := m.gwExits
+		m.gwExits = exits
+		return func() { m.gwExits = prev }
+	})
 }
 
 // SetEndpoints sets the exit endpoints and hot-reloads (reverts on failure).
@@ -601,6 +621,14 @@ func (m *Manager) rebuild() error {
 	m.mu.Lock()
 	nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture :=
 		m.nodes, m.wl, m.bl, m.quar, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts, m.final, m.posture
+	// Gateway exits ride along as nodes, so the proxy group, select, delay checks
+	// and `node` rule targets need no special case for them.
+	if len(m.gwExits) > 0 {
+		merged := make([]apitypes.Node, 0, len(nodes)+len(m.gwExits))
+		merged = append(merged, nodes...)
+		merged = append(merged, m.gwExits...)
+		nodes = merged
+	}
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)

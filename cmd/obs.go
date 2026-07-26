@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -202,12 +203,106 @@ var historyStatsCmd = &cobra.Command{
 
 var nodeCmd = &cobra.Command{
 	Use:   "node",
-	Short: "Registered probes (this instance acting as the brain)",
+	Short: "Registered gateways: administer them, or use one as this machine's exit",
+}
+
+var (
+	nodeExitHost string
+	nodeExitPort int
+	nodeExitUser string
+	nodeExitPass string
+	nodeMode     string
+)
+
+// `node exit` is the CLI half of "use that gateway as my exit": it becomes a
+// socks outbound in the proxy group, so afterwards `proxies select` picks it like
+// any other node.
+var nodeExitCmd = &cobra.Command{
+	Use:   "exit <id|name>",
+	Short: "Use a registered gateway as this machine's exit (--off to stop)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, err := resolveGateway(args[0])
+		if err != nil {
+			return err
+		}
+		req := map[string]any{"as_exit": !nodeExitOff}
+		if nodeExitHost != "" {
+			req["proxy_host"] = nodeExitHost
+		}
+		if nodeExitPort > 0 {
+			req["proxy_port"] = nodeExitPort
+		}
+		if nodeExitUser != "" {
+			req["proxy_user"] = nodeExitUser
+		}
+		if nodeExitPass != "" {
+			req["proxy_pass"] = nodeExitPass
+		}
+		n, err := sdk().PatchNode(id, req)
+		if err != nil {
+			return err
+		}
+		return out(n, func() {
+			if nodeExitOff {
+				fmt.Printf("✓ %s is no longer an exit\n", str(n["name"]))
+				return
+			}
+			fmt.Printf("✓ %s is now an exit (%s:%v as %s)\n  select it with: trust-proxy proxies select proxy gw-%s\n",
+				str(n["name"]), str(n["proxy_host"]), n["proxy_port"], str(n["proxy_user"]), str(n["name"]))
+		})
+	},
+}
+
+var nodeExitOff bool
+
+var nodeToggleCmd = &cobra.Command{
+	Use:   "toggle <id|name>",
+	Short: "Enable or disable a gateway entry (--off to disable)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		id, err := resolveGateway(args[0])
+		if err != nil {
+			return err
+		}
+		n, err := sdk().PatchNode(id, map[string]any{"enabled": !nodeExitOff})
+		if err != nil {
+			return err
+		}
+		return out(n, func() { fmt.Printf("✓ %s enabled=%v\n", str(n["name"]), n["enabled"]) })
+	},
+}
+
+var nodeModeCmd = &cobra.Command{
+	Use:   "mode <gateway|client>",
+	Short: "Is this machine a gateway (runs a data plane) or a client (console only)?",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		n, err := sdk().PatchNode("local", map[string]any{"mode": args[0]})
+		if err != nil {
+			return err
+		}
+		return out(n, func() { fmt.Printf("✓ this machine is now in %s mode\n", str(n["mode"])) })
+	},
+}
+
+// resolveGateway accepts an id or a name.
+func resolveGateway(ref string) (string, error) {
+	list, err := sdk().Nodes()
+	if err != nil {
+		return "", err
+	}
+	for _, n := range list {
+		if str(n["id"]) == ref || strings.EqualFold(str(n["name"]), ref) {
+			return str(n["id"]), nil
+		}
+	}
+	return "", fmt.Errorf("no such gateway %q", ref)
 }
 
 var nodeLsCmd = &cobra.Command{
 	Use:   "ls",
-	Short: "List probes",
+	Short: "List gateways (including this machine)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		nodes, err := sdk().Nodes()
 		if err != nil {
@@ -279,5 +374,12 @@ func init() {
 	profileCmd.AddCommand(profileLsCmd, profileSaveCmd, profileActivateCmd, profileRmCmd)
 	detectionsCmd.AddCommand(detectionsLsCmd, detectionsStatsCmd)
 	historyCmd.AddCommand(historyLsCmd, historyStatsCmd)
-	nodeCmd.AddCommand(nodeLsCmd, nodeAddCmd, nodeRmCmd)
+	f := nodeExitCmd.Flags()
+	f.StringVar(&nodeExitHost, "host", "", "proxy host to dial (default: the gateway URL's host)")
+	f.IntVar(&nodeExitPort, "port", 0, "proxy port on that gateway (its mixed inbound, default 21584)")
+	f.StringVar(&nodeExitUser, "user", "", "your account on that gateway")
+	f.StringVar(&nodeExitPass, "password", "", "that account's proxy password")
+	f.BoolVar(&nodeExitOff, "off", false, "stop using it as an exit")
+	nodeToggleCmd.Flags().BoolVar(&nodeExitOff, "off", false, "disable instead of enable")
+	nodeCmd.AddCommand(nodeLsCmd, nodeAddCmd, nodeRmCmd, nodeExitCmd, nodeToggleCmd, nodeModeCmd)
 }

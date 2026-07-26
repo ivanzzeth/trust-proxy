@@ -5,15 +5,66 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"strings"
+
+	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 )
 
 func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
 	if s.nodes == nil {
-		writeJSON(w, http.StatusOK, []any{})
+		writeArray(w, http.StatusOK, []nodes.Public{})
 		return
 	}
-	writeJSON(w, http.StatusOK, s.nodes.List())
+	// The local gateway is listed too, so the console shows one uniform list and a
+	// console-only user can point at remote gateways without "this machine" being a
+	// special case somewhere else in the UI.
+	s.nodes.EnsureLocal(localGatewayName())
+	writeArray(w, http.StatusOK, s.nodes.List())
+}
+
+// handlePatchNode edits a gateway entry: enable/disable, use-as-exit and the
+// credential for it, or the local entry's mode.
+//
+// Changing anything that affects egress re-derives the exit outbounds and
+// hot-reloads them — a switch that only takes effect at the next restart is a
+// switch people do not trust.
+func (s *Server) handlePatchNode(w http.ResponseWriter, r *http.Request) {
+	if s.nodes == nil {
+		writeErr(w, http.StatusServiceUnavailable, "node registry not available")
+		return
+	}
+	var req nodes.PatchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	out, err := s.nodes.Patch(r.PathValue("id"), req)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := s.syncGatewayExits(); err != nil {
+		writeErr(w, http.StatusBadGateway, "apply gateway exits: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// syncGatewayExits pushes the derived exit outbounds to the data plane.
+func (s *Server) syncGatewayExits() error {
+	if s.gwApplier == nil || s.nodes == nil {
+		return nil
+	}
+	return s.gwApplier.SetGatewayExits(s.nodes.ExitNodes())
+}
+
+// localGatewayName is what the self-entry is called until somebody renames it.
+func localGatewayName() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "this machine"
 }
 
 func (s *Server) handleAddNode(w http.ResponseWriter, r *http.Request) {

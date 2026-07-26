@@ -402,6 +402,10 @@ func runServe() error {
 	mgr.SetInitialInbound(apitypes.InboundAuth{Users: userStore.ProxyCredentials()})
 	mgr.SetInitialTUN(tunStore.Get())
 	mgr.SetInitialEndpoints(epStore.All())
+	// Gateways registered as exits are outbound nodes to the data plane; feeding
+	// them before the first Start() means an exit survives a restart without
+	// waiting for the console to touch anything.
+	mgr.SetInitialGatewayExits(nodesStore.ExitNodes())
 	// In TUN mode the gateway captures ALL of this machine's outbound traffic,
 	// including this store's OWN subscription-fetch HTTP client — which has
 	// nothing to do with sing-box's internal dialer. Without an explicit
@@ -524,6 +528,7 @@ func runServe() error {
 		History:      histStore,
 		Detections:   detStore,
 		Nodes:        nodesStore,
+		GWApplier:    mgr,
 		Token:        serveAPIToken,
 		Clash:        clash.New(serveClashAddr, secret),
 		ConsoleDir:   serveConsoleDir,

@@ -27,25 +27,26 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	if host == "" {
 		host = q.Get("host") // back-compat
 	}
-	// ?page=1 returns {items,total,limit,offset}; bare array kept for old clients
-	// that only pass host/limit (CLI / early SDK).
-	if q.Get("page") == "1" || q.Has("offset") {
-		items, total := s.history.RecentPage(limit, offset, host)
-		if scope := s.scopeUser(r); scope != "" {
-			// Filtering after the page read costs a shorter page for a client, which
-			// is the honest trade: the alternative is pushing an identity into the
-			// store's read path, and the store must not decide who may see what.
-			items = scopeHistory(items, scope)
-			total = len(items)
-		}
-		if limit <= 0 || limit > 2000 {
-			limit = 50
-		}
-		if offset < 0 {
-			offset = 0
-		}
-		writeJSON(w, http.StatusOK, history.Page{Items: items, Total: total, Limit: limit, Offset: offset})
-		return
+	// One shape, always: {items,total,limit,offset}.
+	//
+	// This used to return a bare array unless ?page=1 was passed, and the SDK
+	// decoded into a map — so `history ls` failed with "cannot unmarshal array into
+	// map" against its own backend. An endpoint with two shapes is a trap for every
+	// client, and the docker e2e caught this one only because it asserts on real
+	// output.
+	items, total := s.history.RecentPage(limit, offset, host)
+	if scope := s.scopeUser(r); scope != "" {
+		// Filtering after the page read costs a shorter page for a client, which is
+		// the honest trade: the alternative is pushing an identity into the store's
+		// read path, and the store must not decide who may see what.
+		items = scopeHistory(items, scope)
+		total = len(items)
 	}
-	writeJSON(w, http.StatusOK, s.history.Recent(limit, host))
+	if limit <= 0 || limit > 2000 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	writeJSON(w, http.StatusOK, history.Page{Items: items, Total: total, Limit: limit, Offset: offset})
 }

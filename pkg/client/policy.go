@@ -502,6 +502,14 @@ func (c *Client) AddNode(name, apiURL, token string) (map[string]any, error) {
 	return out, err
 }
 
+// PatchNode edits a registered gateway: enable/disable, use-as-exit plus the
+// credential for it, or the local entry's mode. Only the fields set are sent.
+func (c *Client) PatchNode(id string, req map[string]any) (map[string]any, error) {
+	var out map[string]any
+	err := c.do(http.MethodPatch, "/api/nodes/"+url.PathEscape(id), req, &out)
+	return out, err
+}
+
 // DeleteNode unregisters a probe.
 func (c *Client) DeleteNode(id string) error {
 	return c.do(http.MethodDelete, "/api/nodes/"+url.PathEscape(id), nil, nil)
