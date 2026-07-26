@@ -249,6 +249,8 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("POST /api/autoblock", s.handleAutoBlock)
 	mux.HandleFunc("GET /api/subscriptions", s.handleListSubs)
 	mux.HandleFunc("POST /api/subscriptions", s.handleAddSub)
+	mux.HandleFunc("GET /api/proxy-gen/protocols", s.handleProxyProtocols)
+	mux.HandleFunc("POST /api/proxy-gen", s.handleProxyGen)
 	mux.HandleFunc("DELETE /api/subscriptions/{id}", s.handleDeleteSub)
 	mux.HandleFunc("POST /api/subscriptions/{id}/refresh", s.handleRefreshSub)
 	mux.HandleFunc("POST /api/subscriptions/{id}/apply", s.handleApplySub)

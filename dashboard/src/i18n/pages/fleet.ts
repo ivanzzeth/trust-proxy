@@ -1,6 +1,6 @@
 export default {
   en: {
-    title: 'Fleet',
+    title: 'Gateways',
     description:
       "Manage remote trust-proxy gateways. The brain reverse-proxies to each (token stays server-side); switch which one you're viewing from the top bar.",
     addGatewayTitle: 'Add gateway',
@@ -10,14 +10,14 @@ export default {
     remoteHintPre: 'On the remote gateway run ',
     remoteHintPost: '.',
     gatewaysTitle: 'Gateways',
-    emptyText: 'No remote gateways. This console controls the local one.',
+    emptyText: 'No remote gateways registered. This console controls the local gateway only.',
     modeLabel: 'mode: {{mode}}',
     unreachableBadge: 'unreachable',
     viewButton: 'View',
     viewingToast: 'Viewing {{name}} — switch back from the top bar',
   },
   zh: {
-    title: '节点集群',
+    title: '多网关',
     description: '管理远程 trust-proxy 网关。大脑反向代理到各网关（令牌留在服务端），可从顶栏切换当前查看的网关。',
     addGatewayTitle: '添加网关',
     namePlaceholder: '名称',
@@ -26,7 +26,7 @@ export default {
     remoteHintPre: '在远程网关上运行 ',
     remoteHintPost: '。',
     gatewaysTitle: '网关列表',
-    emptyText: '暂无远程网关。当前控制台管理的是本地网关。',
+    emptyText: '尚未注册远程网关。当前控制台只管理本机这一台。',
     modeLabel: '模式：{{mode}}',
     unreachableBadge: '不可达',
     viewButton: '查看',

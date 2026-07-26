@@ -446,6 +446,22 @@ export interface TUNConfig {
   exclude_process?: string[];
 }
 
+export interface ProxyGenRequest {
+  type: string;
+  server: string;
+  port?: number;
+  sni?: string;
+  name?: string;
+}
+
+export interface ProxyGenResult {
+  server: Record<string, unknown>; // sing-box server config
+  client: Record<string, unknown>; // Clash node dict, importable as-is
+  share?: string;
+  gen_command: string;
+  install_script: string;
+}
+
 export const api = {
   status: () => get<Status>('/status'),
   setMode: (mode: string, guardSeconds?: number) =>
@@ -510,6 +526,12 @@ export const api = {
   setPackEnabled: (name: string, enabled: boolean) =>
     patch<CustomRule[]>(`/customrules/packs/${encodeURIComponent(name)}`, { enabled }),
   delPack: (name: string) => del<CustomRule[]>(`/customrules/packs/${encodeURIComponent(name)}`),
+
+  // Self-hosted exit: the gateway mints the server config and the matching
+  // client node in one call, so the keys can't drift the way they do when you
+  // run `proxy gen` on the exit host and paste half of it back.
+  proxyProtocols: () => get<string[]>('/proxy-gen/protocols'),
+  proxyGen: (req: ProxyGenRequest) => post<ProxyGenResult>('/proxy-gen', req),
 
   subs: () => get<Subscription[]>('/subscriptions'),
   addSub: (name: string, url: string, userAgent?: string, via?: string) =>

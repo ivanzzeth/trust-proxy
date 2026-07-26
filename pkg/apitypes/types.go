@@ -466,6 +466,26 @@ type EndpointPublic struct {
 	AcceptRoutes bool     `json:"accept_routes,omitempty"`
 }
 
+// ProxyGenRequest asks for a one-click self-hosted exit: a server config plus
+// the matching client node. Type is one of proxygen.Protocols.
+type ProxyGenRequest struct {
+	Type   string `json:"type"`
+	Server string `json:"server"`         // address the client dials (required)
+	Port   int    `json:"port,omitempty"` // default 443
+	SNI    string `json:"sni,omitempty"`  // TLS/Reality SNI
+	Name   string `json:"name,omitempty"` // node name
+}
+
+// ProxyGenResult is the generated pair plus the commands that deploy it. Both
+// halves come from one generation: the keys in Server are the keys in Client.
+type ProxyGenResult struct {
+	Server        map[string]any `json:"server"`         // sing-box server config
+	Client        map[string]any `json:"client"`         // Clash node dict, importable as-is
+	Share         string         `json:"share,omitempty"`
+	GenCommand    string         `json:"gen_command"`    // the equivalent CLI call
+	InstallScript string         `json:"install_script"` // paste on the exit host
+}
+
 // ErrorResponse is the standard error envelope.
 type ErrorResponse struct {
 	Error string `json:"error"`

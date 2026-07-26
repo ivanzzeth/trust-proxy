@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 
 import { api } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
+import { ExitGenerator } from '@/components/exit-generator';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
@@ -34,7 +35,11 @@ export default function Subscriptions() {
 
   return (
     <div>
-      <PageHeader title={t('pages.subscriptions.title')} description={t('pages.subscriptions.desc')} />
+      <PageHeader
+        title={t('pages.subscriptions.title')}
+        description={t('pages.subscriptions.desc')}
+        actions={<ExitGenerator onAdded={invalidate} />}
+      />
 
       <div className="grid gap-4 lg:grid-cols-5">
         <Card className="lg:col-span-2">
@@ -132,7 +137,9 @@ export default function Subscriptions() {
         </Card>
       </div>
       <p className="mt-3 flex items-center gap-1.5 text-xs text-muted-foreground">
-        <Download className="size-3.5" /> {t('pages.subscriptions.tipPrefix')} <code className="tnum">trust-proxy proxy gen</code>{t('pages.subscriptions.tipSuffix')}
+        <Download className="size-3.5" /> {t('pages.subscriptions.tipPrefix')}
+        <code className="tnum">trust-proxy proxy gen --json</code>
+        {t('pages.subscriptions.tipSuffix')}
       </p>
     </div>
   );

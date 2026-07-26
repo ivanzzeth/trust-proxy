@@ -266,3 +266,42 @@ func TestErrorSurfacing(t *testing.T) {
 		t.Fatalf("error = %v, want the backend message", err)
 	}
 }
+
+// Self-hosted exit generation: the CLI and the console must both reach the same
+// endpoint, and the request has to carry every field or the server silently
+// generates something else (e.g. port 443 when 8443 was asked for).
+func TestGenerateProxy(t *testing.T) {
+	c, seen := fakeAPI(t, `{"server":{"inbounds":[]},"client":{"name":"tokyo"},"share":"ss://x","gen_command":"trust-proxy proxy gen","install_script":"cat > server.json"}`)
+	res, err := c.GenerateProxy(apitypes.ProxyGenRequest{Type: "vless-reality", Server: "203.0.113.9", Port: 8443, SNI: "www.microsoft.com", Name: "tokyo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := last(t, seen)
+	if got.method != http.MethodPost || got.path != "/api/proxy-gen" {
+		t.Fatalf("%s %s, want POST /api/proxy-gen", got.method, got.path)
+	}
+	var sent apitypes.ProxyGenRequest
+	if err := json.Unmarshal([]byte(got.body), &sent); err != nil {
+		t.Fatalf("body is not a ProxyGenRequest: %s", got.body)
+	}
+	if sent.Type != "vless-reality" || sent.Server != "203.0.113.9" || sent.Port != 8443 || sent.SNI != "www.microsoft.com" || sent.Name != "tokyo" {
+		t.Fatalf("request lost fields: %+v", sent)
+	}
+	if res.Client["name"] != "tokyo" || res.InstallScript == "" || res.GenCommand == "" {
+		t.Fatalf("result not decoded: %+v", res)
+	}
+}
+
+func TestProxyProtocolsUnwrapsABareArray(t *testing.T) {
+	c, seen := fakeAPI(t, `["shadowsocks","trojan"]`)
+	got, err := c.ProxyProtocols()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0] != "shadowsocks" {
+		t.Fatalf("protocols = %v", got)
+	}
+	if p := last(t, seen).path; p != "/api/proxy-gen/protocols" {
+		t.Fatalf("path %s", p)
+	}
+}

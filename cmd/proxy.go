@@ -20,6 +20,7 @@ import (
 	"github.com/sagernet/sing/service"
 
 	"github.com/ivanzzeth/trust-proxy/internal/proxygen"
+	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
 var proxyCmd = &cobra.Command{
@@ -83,14 +84,27 @@ var (
 	genOut    string
 )
 
+// gen runs locally rather than through the SDK: an exit node is generated on
+// laptops and jump hosts where no gateway is running, so requiring a daemon
+// would be backwards. /api/proxy-gen exists for the console and wraps the same
+// proxygen package, so the two surfaces cannot drift.
 var proxyGenCmd = &cobra.Command{
 	Use:   "gen",
 	Short: "One-click generate a server config + client node for any protocol",
 	Long:  "Supported --type: " + strings.Join(proxygen.Protocols, " | "),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		res, err := proxygen.Generate(proxygen.Options{Type: genType, Server: genServer, Port: genPort, SNI: genSNI, Name: genName})
+		opts := proxygen.Options{Type: genType, Server: genServer, Port: genPort, SNI: genSNI, Name: genName}
+		res, err := proxygen.Generate(opts)
 		if err != nil {
 			return err
+		}
+		if jsonOut {
+			// Same shape as POST /api/proxy-gen, so a script can consume either.
+			return emit(apitypes.ProxyGenResult{
+				Server: res.Server, Client: res.Client, Share: res.Share,
+				GenCommand:    proxygen.GenCommand(opts),
+				InstallScript: proxygen.InstallScript(res.Server, genOut),
+			})
 		}
 		srvJSON, _ := json.MarshalIndent(res.Server, "", "  ")
 		if genOut != "" {
@@ -100,9 +114,12 @@ var proxyGenCmd = &cobra.Command{
 			fmt.Printf("✓ server config -> %s\n  run it:  trust-proxy proxy run -c %s\n\n", genOut, genOut)
 		} else {
 			fmt.Printf("=== server config (trust-proxy proxy run -c <file>) ===\n%s\n\n", srvJSON)
+			// Generating twice would mint a second keypair, so hand over the config
+			// rather than telling people to re-run gen on the exit host.
+			fmt.Printf("=== deploy on the exit host (paste as-is) ===\n%s\n\n", proxygen.InstallScript(res.Server, genOut))
 		}
 		clashJSON, _ := json.MarshalIndent(res.Client, "", "  ")
-		fmt.Printf("=== client node — paste into trust-proxy (订阅→手动/粘贴) ===\n%s\n", clashJSON)
+		fmt.Printf("=== client node — paste into trust-proxy (Nodes → Paste, or the console's Self-hosted exit dialog) ===\n%s\n", clashJSON)
 		if res.Share != "" {
 			fmt.Printf("\n=== client share link ===\n%s\n", res.Share)
 		}
@@ -153,5 +170,8 @@ func init() {
 	f.StringVar(&genSNI, "sni", "", "TLS/Reality SNI (default www.microsoft.com)")
 	f.StringVar(&genName, "name", "", "node name")
 	f.StringVar(&genOut, "out", "", "write server config to file (default stdout)")
+	// gen talks to no backend, so it takes --json alone rather than the shared
+	// client flags: an --api-addr here would imply a daemon it never contacts.
+	f.BoolVar(&jsonOut, "json", false, "print the raw JSON response instead of a table")
 	proxyCmd.AddCommand(proxyRunCmd, proxyGenCmd, proxyStopCmd)
 }

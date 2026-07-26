@@ -521,6 +521,24 @@ func (c *Client) DeleteNode(id string) error {
 	return c.do(http.MethodDelete, "/api/nodes/"+url.PathEscape(id), nil, nil)
 }
 
+// ---- self-hosted exit generation ----------------------------------------
+
+// ProxyProtocols lists the protocols GenerateProxy can build a server for.
+func (c *Client) ProxyProtocols() ([]string, error) {
+	var out []string
+	err := c.do(http.MethodGet, "/api/proxy-gen/protocols", nil, &out)
+	return out, err
+}
+
+// GenerateProxy mints a self-hosted exit: a sing-box server config, the matching
+// client node, and the commands that deploy them. Nothing is stored server-side;
+// the response carries fresh secrets.
+func (c *Client) GenerateProxy(req apitypes.ProxyGenRequest) (apitypes.ProxyGenResult, error) {
+	var out apitypes.ProxyGenResult
+	err := c.do(http.MethodPost, "/api/proxy-gen", req, &out)
+	return out, err
+}
+
 // ValidListKind maps a CLI-friendly name to a list store.
 func ValidListKind(name string) (listKind, error) {
 	switch name {

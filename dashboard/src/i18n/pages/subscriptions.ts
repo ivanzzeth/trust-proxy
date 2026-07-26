@@ -20,8 +20,8 @@ export default {
     pasted: 'pasted',
     apply: 'Apply',
     applySuccess: 'Applied — traffic now exits via these nodes',
-    tipPrefix: 'Tip: generate a self-hosted exit with',
-    tipSuffix: ', then paste the client node here.',
+    tipPrefix: 'Prefer a terminal? “Self-hosted exit” above does the same as',
+    tipSuffix: ' — one call, both halves.',
   },
   zh: {
     title: '节点',
@@ -44,7 +44,7 @@ export default {
     pasted: '粘贴导入',
     apply: '应用',
     applySuccess: '已应用 — 流量现在经由这些节点出网',
-    tipPrefix: '提示：用',
-    tipSuffix: '生成自建出口，然后把客户端节点粘贴到这里。',
+    tipPrefix: '想用命令行？上方「自建出口」等价于',
+    tipSuffix: ' —— 一次生成服务端与客户端两半。',
   },
 };

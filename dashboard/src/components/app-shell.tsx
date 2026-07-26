@@ -6,6 +6,7 @@ import {
   AlertTriangle,
   ArrowDownUp,
   Cable,
+  Github,
   Globe,
   History as HistoryIcon,
   Layers,
@@ -515,9 +516,20 @@ export function AppShell() {
               <ScrollText className="size-3.5" />
               {st ? t('top.intel', { domains: st.threats.domains, ips: st.threats.ips }) : '—'}
             </span>
-            <button onClick={toggle} className="grid size-6 place-items-center rounded hover:bg-accent cursor-pointer">
-              {dark ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
-            </button>
+            <span className="flex items-center gap-0.5">
+              <a
+                href="https://github.com/ivanzzeth/trust-proxy"
+                target="_blank"
+                rel="noreferrer noopener"
+                title="GitHub"
+                className="grid size-6 place-items-center rounded hover:bg-accent hover:text-foreground"
+              >
+                <Github className="size-3.5" />
+              </a>
+              <button onClick={toggle} className="grid size-6 place-items-center rounded hover:bg-accent cursor-pointer">
+                {dark ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
+              </button>
+            </span>
           </div>
         </div>
       </aside>
