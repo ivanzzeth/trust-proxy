@@ -91,6 +91,23 @@ func TestLinuxSystemdServiceLifecycle(t *testing.T) {
 	if links := c.exec("ip -o link show"); !strings.Contains(links, "tun") {
 		t.Fatalf("TUN mode is active but no tun interface exists:\n%s", links)
 	}
+	// An interface existing is not the claim — capture is. So: reach for a
+	// non-local address and require that it entered through tun and was refused by
+	// default-deny.
+	//
+	// Non-local matters. A destination on the container's own subnet leaves via the
+	// attached link route, below sing-box's policy rules, and never touches the
+	// tunnel — measured, and exactly the trap the fleet test documents. Asserting
+	// on such an address would pass whether or not TUN worked at all.
+	c.exec("curl -s -m 5 -o /dev/null http://203.0.113.7/ || true")
+	time.Sleep(2 * time.Second)
+	log := c.exec("grep 203.0.113.7 /var/lib/trust-proxy/serve.log || true")
+	if !strings.Contains(log, "inbound/tun") {
+		t.Fatalf("a non-local connection was not captured by tun:\n%s", log)
+	}
+	if !strings.Contains(log, "blocked") {
+		t.Fatalf("TUN captured the connection but default-deny did not refuse it:\n%s", log)
+	}
 
 	// ---- uninstall leaves nothing behind ----------------------------------
 	c.exec("trust-proxy service uninstall")

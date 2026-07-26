@@ -85,14 +85,18 @@ dashboard:
 dashboard-dev:
 	cd dashboard && corepack pnpm dev
 
-## --- desktop shell (macOS slice) ---------------------------------------------
+## --- desktop shell (macOS / Linux / Windows) ---------------------------------
 ## The sidecar MUST be the embed_ui build: inside a .app there is no
 ## dashboard/dist on disk to serve the console from.
 DESKTOP_TRIPLE ?= $(shell rustc -vV | sed -n 's/^host: //p')
+## Tauri matches the sidecar by "<name>-<triple>", keeping the host's executable
+## suffix — so a Windows build must be trust-proxy-<triple>.exe or the bundle ends
+## up with no gateway in it.
+DESKTOP_EXE ?= $(if $(findstring windows,$(DESKTOP_TRIPLE)),.exe,)
 
 desktop-sidecar: build-embed
 	mkdir -p desktop/src-tauri/binaries
-	cp trust-proxy desktop/src-tauri/binaries/trust-proxy-$(DESKTOP_TRIPLE)
+	cp trust-proxy$(DESKTOP_EXE) desktop/src-tauri/binaries/trust-proxy-$(DESKTOP_TRIPLE)$(DESKTOP_EXE)
 
 ## Build Trust Proxy.app (+ dmg) with the gateway bundled as a sidecar.
 ## Ad-hoc signs by default ("-"): without it Tauri leaves the bundle unsealed and

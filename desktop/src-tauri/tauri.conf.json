@@ -24,13 +24,33 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
-    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
-    "externalBin": ["binaries/trust-proxy"],
+    "targets": "all",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns"
+    ],
+    "externalBin": [
+      "binaries/trust-proxy"
+    ],
     "macOS": {
       "minimumSystemVersion": "12.0"
     },
     "copyright": "GPL-3.0-or-later. Bundles sing-box (GPL-3.0); corresponding source at https://github.com/ivanzzeth/trust-proxy",
-    "licenseFile": "../../LICENSE"
+    "licenseFile": "../../LICENSE",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0"
+        ]
+      }
+    },
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
   }
 }

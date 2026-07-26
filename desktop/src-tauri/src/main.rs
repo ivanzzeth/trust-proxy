@@ -345,8 +345,17 @@ fn data_dir() -> PathBuf {
         return PathBuf::from(dir);
     }
     // Same location the CLI uses, on purpose: the desktop app and `trust-proxy`
-    // in a terminal must see one gateway with one set of policy.
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    // in a terminal must see one gateway with one set of policy. The rule lives in
+    // internal/paths on the Go side; this mirrors it, and the mirror is asserted
+    // against the CLI at runtime (see status()).
+    if cfg!(target_os = "windows") {
+        if let Ok(base) = std::env::var("LOCALAPPDATA") {
+            return Path::new(&base).join("trust-proxy");
+        }
+    }
+    let home = std::env::var("HOME")
+        .or_else(|_| std::env::var("USERPROFILE"))
+        .unwrap_or_else(|_| ".".into());
     Path::new(&home).join(".trust-proxy")
 }
 
@@ -355,22 +364,31 @@ fn gateway_binary(app: &AppHandle) -> PathBuf {
     if let Ok(p) = std::env::var("TP_BINARY") {
         return PathBuf::from(p);
     }
-    // Tauri renames externalBin to the plain name inside the bundle's MacOS dir.
+    // Tauri strips the target triple from an externalBin, but *where* the result
+    // lands differs per platform: next to the executable on Linux/Windows, in the
+    // bundle's MacOS/ directory on macOS (a sibling of Resources/). Try both
+    // rather than encoding one layout.
+    let exe_name = if cfg!(target_os = "windows") {
+        "trust-proxy.exe"
+    } else {
+        "trust-proxy"
+    };
     if let Ok(dir) = app.path().resource_dir() {
-        let candidate = dir.join("../MacOS/trust-proxy");
-        if let Ok(canon) = candidate.canonicalize() {
-            return canon;
+        for candidate in [dir.join(format!("../MacOS/{exe_name}")), dir.join(exe_name)] {
+            if let Ok(canon) = candidate.canonicalize() {
+                return canon;
+            }
         }
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let side = dir.join("trust-proxy");
+            let side = dir.join(exe_name);
             if side.exists() {
                 return side;
             }
         }
     }
-    PathBuf::from("trust-proxy")
+    PathBuf::from(exe_name)
 }
 
 fn service_state(binary: &Path) -> (bool, bool) {
@@ -442,7 +460,13 @@ fn uninstall_service(rt: State<Runtime>) -> Result<String, String> {
     admin(&cmd)
 }
 
-/// admin runs one shell command with an authorization prompt (macOS).
+/// admin runs one shell command with an authorization prompt.
+///
+/// One shell, one elevation *mechanism per OS*: the same CLI command in all
+/// cases, so what gets installed never depends on which shell asked. The shell
+/// itself is never root — it asks the platform to run the CLI as root and reads
+/// back the CLI's own JSON.
+#[cfg(target_os = "macos")]
 fn admin(cmd: &str) -> Result<String, String> {
     let script = format!(
         "do shell script {} with administrator privileges",
@@ -458,10 +482,110 @@ fn admin(cmd: &str) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Linux: pkexec is the desktop-native prompt (polkit), and it exists on every
+/// desktop that has a graphical sudo at all. `sudo` is deliberately not a
+/// fallback: from a GUI it has no terminal to ask on, so it would either fail
+/// silently or, on a passwordless-sudo box, elevate with no prompt at all.
+#[cfg(target_os = "linux")]
+fn admin(cmd: &str) -> Result<String, String> {
+    if which("pkexec").is_none() {
+        return Err(format!(
+            "no pkexec (polkit) on this system — run this in a terminal instead:\n  sudo {cmd}"
+        ));
+    }
+    let argv = pkexec_argv(cmd);
+    let out = Command::new(&argv[0])
+        .args(&argv[1..])
+        .output()
+        .map_err(|e| format!("pkexec: {e}"))?;
+    if !out.status.success() {
+        // 126/127 are pkexec's own "not authorized" / "could not be executed".
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let msg = match out.status.code() {
+            Some(126) => "authorization was declined".to_string(),
+            Some(127) => format!("pkexec could not run it: {stderr}"),
+            _ if stderr.is_empty() => "the command failed".to_string(),
+            _ => stderr,
+        };
+        return Err(msg);
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Windows: UAC. Elevation happens through the shell's "runas" verb, which
+/// cannot return the child's output — so the CLI is asked to write its JSON to a
+/// file, and that is read back once the elevated process exits.
+#[cfg(target_os = "windows")]
+fn admin(cmd: &str) -> Result<String, String> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out_file = std::env::temp_dir().join(format!("trust-proxy-admin-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&out_file);
+    let ps = runas_script(cmd, &out_file);
+    let status = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &ps])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status()
+        .map_err(|e| format!("powershell: {e}"))?;
+    let body = std::fs::read_to_string(&out_file).unwrap_or_default();
+    let _ = std::fs::remove_file(&out_file);
+    if !status.success() {
+        // The CLI's own {"error": …} is far more useful than an exit code, so it
+        // wins when it made it to the file.
+        if body.contains("\"error\"") {
+            return Err(body.trim().to_string());
+        }
+        return Err(match status.code() {
+            Some(1223) => "the elevation prompt was declined".to_string(), // ERROR_CANCELLED
+            Some(c) => format!("the command failed (exit {c})"),
+            None => "the command failed".to_string(),
+        });
+    }
+    Ok(body.trim().to_string())
+}
+
+/// pkexec runs a *program*, not a shell line, so the command goes to sh rather
+/// than being re-split here — re-splitting is how a data directory with a space
+/// in it turns into two arguments.
+fn pkexec_argv(cmd: &str) -> Vec<String> {
+    vec![
+        "pkexec".to_string(),
+        "/bin/sh".to_string(),
+        "-c".to_string(),
+        cmd.to_string(),
+    ]
+}
+
+/// runas_script asks the Windows shell for elevation (the "runas" verb, i.e. the
+/// UAC prompt). That verb cannot hand back the child's stdout across the
+/// privilege boundary, so the CLI's JSON is redirected to a file we read after.
+fn runas_script(cmd: &str, out_file: &Path) -> String {
+    format!(
+        "$p = Start-Process -FilePath cmd.exe -ArgumentList '/c',{} -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
+        powershell_string(&format!("{cmd} > \"{}\"", out_file.display()))
+    )
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn which(program: &str) -> Option<std::path::PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join(program))
+            .find(|p| p.is_file())
+    })
+}
+
+fn powershell_string(s: &str) -> String {
+    // PowerShell single-quoted strings escape a quote by doubling it, and
+    // interpolate nothing — which is what we want for a path.
+    format!("'{}'", s.replace('\'', "''"))
+}
+
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn applescript_string(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', r"\\").replace('"', "\\\""))
 }
@@ -475,6 +599,41 @@ mod tests {
         assert_eq!(shell_quote("/Users/a b/x"), "'/Users/a b/x'");
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
         assert_eq!(applescript_string(r#"say "hi""#), r#""say \"hi\"""#);
+    }
+
+    // Elevation is per-OS but the command must be identical, and it must survive a
+    // path with a space — which is the normal case on a desktop.
+    #[test]
+    fn elevation_passes_one_unsplit_command() {
+        let cmd = "'/Applications/Trust Proxy.app/tp' service install --data '/Users/a b/.trust-proxy'";
+        let argv = pkexec_argv(cmd);
+        assert_eq!(argv[0], "pkexec");
+        // sh -c takes the whole line as ONE argument; splitting it would install
+        // against the wrong data dir instead of failing loudly.
+        assert_eq!(argv.len(), 4);
+        assert_eq!(argv[3], cmd);
+
+        let script = runas_script(cmd, Path::new(r"C:\Temp\a b\o.json"));
+        assert!(script.contains("-Verb RunAs"), "{script}");
+        assert!(
+            script.contains("-Wait"),
+            "without -Wait the result file is read before it exists: {script}"
+        );
+        assert!(script.contains(r"C:\Temp\a b\o.json"), "{script}");
+    }
+
+    #[test]
+    fn powershell_quoting_closes_the_injection_hole() {
+        // A single quote must not end the string and start code; single-quoted
+        // PowerShell strings also interpolate nothing, which is what a path wants.
+        assert_eq!(powershell_string("it's"), "'it''s'");
+        assert_eq!(powershell_string("$env:PATH"), "'$env:PATH'");
+    }
+
+    #[test]
+    fn which_finds_a_program_on_the_path_and_not_a_made_up_one() {
+        assert!(which("sh").is_some());
+        assert!(which("definitely-not-a-real-program-xyz").is_none());
     }
 
     #[test]
