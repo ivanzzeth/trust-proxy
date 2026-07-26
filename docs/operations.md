@@ -10,6 +10,24 @@
 
 **从旧版升级**：若当前目录存在老路径 `configs/config.json`，首启会**以它为种子**（打印 `seeded … from configs/config.json`），你在仓库里的改动跟着迁移，不会被内置默认悄悄取代。
 
+## 从旧端口 / 旧进程升级
+
+端口在这一轮换过（9095/9096/9090 → **21584/21585/21586**，见 README「端口」），配置的默认位置也从仓库相对路径挪进了数据目录。所以一台跑着旧构建的机器要这么过渡：
+
+```bash
+# 1. 停掉旧的（pid 文件在数据目录里；旧实例是 sudo 起的就得 sudo 停）
+sudo ./trust-proxy proxy stop --pid ~/.trust-proxy/serve.pid
+
+# 2a. 继续用 CLI daemon：不再需要 -c，首启会把默认配置种进 <data>/config.json
+sudo ./trust-proxy serve --daemon --mode tun         # 控制台 http://127.0.0.1:21585/
+
+# 2b. 或者交给系统服务 + 桌面 app（推荐 TUN 场景）
+sudo ./trust-proxy service install --mode tun -y     # 会问要不要把 ~/.trust-proxy 拷到机器级目录
+open "/Applications/Trust Proxy.app"                 # 壳探到已有网关就贴附，不会再起一个
+```
+
+**别混着跑 sudo 与非 sudo**：`~/.trust-proxy` 会变成 root 属主，之后以自己的身份启动（桌面 app 直接拉 sidecar 就是这种）会在 `cache.db` 上锁失败或干脆写不进去。要么全程 sudo（走系统服务），要么 `sudo chown -R "$USER" ~/.trust-proxy` 之后一直非 root（那就用不了 TUN）。
+
 ## 账号与权限
 
 **一份人员名单，两种密码。** 控制台登录和代理出网是同一个账号的两种用途，不是两套用户系统：
