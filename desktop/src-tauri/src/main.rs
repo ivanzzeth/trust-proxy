@@ -171,8 +171,15 @@ fn start_gateway(app: AppHandle) {
                     let why = last_error_line(&log)
                         .map(|l| format!(": {l}"))
                         .unwrap_or_else(|| format!(". See {}", log.display()));
+                    // A quarantined, un-notarized bundle is the other first-run
+                    // failure, and its symptom is a silent SIGKILL of the sidecar
+                    // with nothing in the log at all — measured on macOS 26, where
+                    // approving the *app* does not extend to the binary it spawns.
+                    // Guessing from "signal: 9" is not something a user should have
+                    // to do, so name it and give the one command that fixes it.
+                    let hint = quarantine_hint(&rt.binary, exit.code().is_none());
                     set(&app, |s| {
-                        s.error = Some(format!("the gateway exited immediately ({exit}){why}"))
+                        s.error = Some(format!("the gateway exited immediately ({exit}){why}{hint}"))
                     });
                     return;
                 }
@@ -274,6 +281,41 @@ fn show_console(app: &AppHandle, api: &str) {
             let _ = WebviewWindow::navigate(&window, parsed);
         }
     }
+}
+
+/// quarantine_hint explains a Gatekeeper kill, when that is what happened.
+///
+/// killed_by_signal narrows it: an ordinary bad-config exit has a status code, a
+/// Gatekeeper kill is SIGKILL with an empty log. The attribute is checked on the
+/// enclosing .app, since that is where a browser puts it.
+fn quarantine_hint(binary: &Path, killed_by_signal: bool) -> String {
+    if !killed_by_signal {
+        return String::new();
+    }
+    let bundle = binary
+        .ancestors()
+        .find(|p| p.extension().map(|e| e == "app").unwrap_or(false))
+        .unwrap_or(binary);
+    if !is_quarantined(bundle) {
+        return String::new();
+    }
+    format!(
+        "\n\nThis copy is still quarantined (it was downloaded, and this build is \
+         not notarized), so macOS killed the gateway. Clear it once:\n\n    \
+         xattr -dr com.apple.quarantine {}\n\nor allow the app under System \
+         Settings → Privacy & Security.",
+        shell_quote(&bundle.display().to_string())
+    )
+}
+
+fn is_quarantined(path: &Path) -> bool {
+    Command::new("xattr")
+        .arg("-p")
+        .arg("com.apple.quarantine")
+        .arg(path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// last_error_line returns the most recent error the gateway logged, with the
@@ -487,6 +529,33 @@ mod tests {
         assert!(got.contains("address already in use"), "got {got}");
         assert!(!got.contains('\u{1b}'), "ANSI escapes leaked into the UI: {got}");
         assert!(last_error_line(&dir.join("missing.log")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn quarantine_hint_only_fires_for_a_signal_kill_on_a_quarantined_bundle() {
+        let dir = std::env::temp_dir().join(format!("tp-q-{}", std::process::id()));
+        let bundle = dir.join("Trust Proxy.app");
+        let bin = bundle.join("Contents/MacOS/trust-proxy");
+        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
+
+        // Not quarantined: no hint, whatever the exit shape.
+        assert_eq!(quarantine_hint(&bin, true), "");
+
+        let marked = Command::new("xattr")
+            .args(["-w", "com.apple.quarantine", "0083;0;test;"])
+            .arg(&bundle)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if marked {
+            // A plain non-zero exit is a config problem, not Gatekeeper.
+            assert_eq!(quarantine_hint(&bin, false), "");
+            let hint = quarantine_hint(&bin, true);
+            assert!(hint.contains("xattr -dr com.apple.quarantine"), "got {hint}");
+            assert!(hint.contains("Trust Proxy.app"), "hint must name the bundle: {hint}");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

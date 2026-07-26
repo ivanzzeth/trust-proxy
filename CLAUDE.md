@@ -143,7 +143,13 @@ UI 就是网关自己在 `:9096` serve 的那个控制台（故 sidecar **必须
 任意半装状态都能收干净且幂等；install **不会顺手打开 TUN**（`--mode` 不给就不写）；`RunAtLoad`+`KeepAlive`（kill -9 后自愈）。
 plist 里所有路径必须绝对（launchd 不解析相对路径，否则每次开机静默失败）。
 
-构建：`make desktop`（→ `.app` + `.dmg`，先 `make build-embed` 再 bundle）/ `make desktop-dev`。首启把内置默认配置写进
+构建：`make desktop`（→ `.app` + `.dmg`，先 `make build-embed` 再 bundle）/ `make desktop-dev`。
+**默认 ad-hoc 签名**（`APPLE_SIGNING_IDENTITY ?= -`）：Apple Silicon 上没签名的 Mach-O 压根跑不起来，而不给 identity
+时 Tauri 不封印 bundle、`spctl` 连评估都做不了（`code has no resources…`）；ad-hoc 后是
+`flags=0x10002(adhoc,runtime)` + Sealed Resources，hardened runtime 已开，换真证书不改流程。签名/公证全流程与
+**未签名分发怎么让别人打开**见 `docs/release-macos.md`。**实测差异**：隔离标记下命令行跑 sidecar，
+macOS 15.7.7 正常、**macOS 26.4.1 直接 SIGKILL（exit 137）且日志为空**——批准 app 不顺延到它启动的二进制，
+故壳自查隔离标记并把 `xattr -dr com.apple.quarantine <bundle>` 连路径打到界面上（`quarantine_hint`）。首启把内置默认配置写进
 `<data>/config.json`，**已存在则绝不覆盖**（那是用户的东西）。启动失败时把网关日志里的最后一条错误**原样引到界面上**
 （最常见的就是 17070 被别的代理占了，说清楚十秒能修，指一个日志路径不能）。
 

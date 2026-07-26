@@ -87,9 +87,16 @@ desktop-sidecar: build-embed
 	mkdir -p desktop/src-tauri/binaries
 	cp trust-proxy desktop/src-tauri/binaries/trust-proxy-$(DESKTOP_TRIPLE)
 
-## Build Trust Proxy.app (+ dmg) with the gateway bundled as a sidecar
+## Build Trust Proxy.app (+ dmg) with the gateway bundled as a sidecar.
+## Ad-hoc signs by default ("-"): without it Tauri leaves the bundle unsealed and
+## even `spctl` cannot assess it ("code has no resources but signature indicates
+## they must be present"). Ad-hoc is not notarization — Gatekeeper still asks the
+## user once — but it makes the bundle well-formed. Set APPLE_SIGNING_IDENTITY to
+## a real "Developer ID Application: …" to sign for distribution.
+APPLE_SIGNING_IDENTITY ?= -
+
 desktop: desktop-sidecar
-	cd desktop && corepack pnpm install && corepack pnpm build
+	cd desktop && corepack pnpm install && APPLE_SIGNING_IDENTITY="$(APPLE_SIGNING_IDENTITY)" corepack pnpm build
 
 ## Run the shell against a dev build (attaches to a running gateway if there is one)
 desktop-dev: desktop-sidecar
