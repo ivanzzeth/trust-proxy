@@ -32,7 +32,7 @@ var (
 
 var serviceCmd = &cobra.Command{
 	Use:   "service",
-	Short: "Install the gateway as a system service (macOS launchd; needs root)",
+	Short: "Install the gateway as a system service (launchd on macOS, systemd on Linux; needs root)",
 	Long: "A system service owns the data plane instead of a desktop app: TUN gets the\n" +
 		"privileges it needs, and closing a window does not drop everyone's policy.\n" +
 		"`service uninstall` is the escape hatch and works from any state.",
@@ -40,7 +40,7 @@ var serviceCmd = &cobra.Command{
 
 var serviceInstallCmd = &cobra.Command{
 	Use:   "install",
-	Short: "Write and load the LaunchDaemon (root)",
+	Short: "Write and load the system service (root)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		c, err := serviceConfig()
 		if err != nil {
@@ -58,12 +58,12 @@ var serviceInstallCmd = &cobra.Command{
 			return err
 		}
 		installed, running, detail := service.Status()
-		program := service.ProgramFromPlist()
+		program := service.Program()
 		return out(map[string]any{
 			"installed": installed, "running": running, "detail": detail,
-			"plist": service.PlistPath, "program": program,
+			"file": service.File(), "program": program,
 		}, func() {
-			fmt.Printf("✓ installed %s\n", service.PlistPath)
+			fmt.Printf("✓ installed %s\n", service.File())
 			fmt.Printf("  program: %s\n", program)
 			fmt.Printf("  serve -c %s --data %s --api-addr %s", c.ConfigPath, c.DataDir, c.APIAddr)
 			if c.Mode != "" {
@@ -77,13 +77,13 @@ var serviceInstallCmd = &cobra.Command{
 
 var serviceUninstallCmd = &cobra.Command{
 	Use:   "uninstall",
-	Short: "Stop and remove the LaunchDaemon (root)",
+	Short: "Stop and remove the system service (root)",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := service.Uninstall(); err != nil {
 			return err
 		}
 		return out(map[string]any{"installed": false}, func() {
-			fmt.Println("✓ removed", service.PlistPath)
+			fmt.Println("✓ removed", service.File())
 		})
 	},
 }
@@ -93,15 +93,15 @@ var serviceStatusCmd = &cobra.Command{
 	Short: "Is the system service installed and running?",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		installed, running, detail := service.Status()
-		program := service.ProgramFromPlist()
+		program := service.Program()
 		missing := service.BinaryMissing(program)
 		return out(map[string]any{
 			"platform": runtime.GOOS, "installed": installed, "running": running,
-			"detail": detail, "plist": service.PlistPath,
+			"detail": detail, "file": service.File(),
 			"program": program, "program_missing": missing,
 		}, func() {
 			fmt.Printf("%-11s %s\n", "platform:", runtime.GOOS)
-			fmt.Printf("%-11s %v (%s)\n", "installed:", installed, service.PlistPath)
+			fmt.Printf("%-11s %v (%s)\n", "installed:", installed, service.File())
 			fmt.Printf("%-11s %v %s\n", "running:", running, detail)
 			if program != "" {
 				fmt.Printf("%-11s %s\n", "program:", program)
@@ -109,7 +109,7 @@ var serviceStatusCmd = &cobra.Command{
 			if missing {
 				// The exact state the managed copy exists to prevent: say it out
 				// loud, because launchd will keep retrying it silently forever.
-				fmt.Printf("\n⚠ the program is gone — launchd will retry it at every boot.\n")
+				fmt.Printf("\n⚠ the program is gone — the service manager will retry it at every boot.\n")
 				fmt.Printf("  fix: sudo trust-proxy service uninstall && sudo trust-proxy service install …\n")
 			}
 		})

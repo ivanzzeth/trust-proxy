@@ -18,7 +18,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"github.com/ivanzzeth/trust-proxy/internal/paths"
 )
 
 // Label is the launchd job label. Also the plist basename.
@@ -41,7 +44,7 @@ var PlistPath = "/Library/LaunchDaemons/" + Label + ".plist"
 // something else rather than typed by a human.
 //
 // A var, not a const, only so tests can redirect it away from a root-owned path.
-var ManagedBinary = "/usr/local/libexec/trust-proxy"
+var ManagedBinary = paths.ManagedBinary()
 
 // Config describes the daemon to install.
 type Config struct {
@@ -116,9 +119,40 @@ func (c Config) validate() error {
 	return nil
 }
 
-// Installed reports whether our plist is present.
+// File is the path of the service definition on this OS: a launchd plist, a
+// systemd unit, or empty where we have no implementation. Callers (the CLI, the
+// desktop shell) should print this rather than assuming a plist.
+func File() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return PlistPath
+	case "linux":
+		return UnitPath
+	default:
+		return ""
+	}
+}
+
+// Program is what the installed service will actually exec, read back from the
+// service definition — so status can notice a stale path.
+func Program() string {
+	switch runtime.GOOS {
+	case "darwin":
+		return ProgramFromPlist()
+	case "linux":
+		return ProgramFromUnit()
+	default:
+		return ""
+	}
+}
+
+// Installed reports whether our service definition is present.
 func Installed() bool {
-	_, err := os.Stat(PlistPath)
+	f := File()
+	if f == "" {
+		return false
+	}
+	_, err := os.Stat(f)
 	return err == nil
 }
 
