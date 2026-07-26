@@ -153,15 +153,15 @@ func TestThreatMatch_StaticAndFeed(t *testing.T) {
 func TestSetFeedThreats_Replaces(t *testing.T) {
 	e := New(100)
 	e.SetFeedThreats([]string{"a.example"}, nil)
-	if ev := e.Track("tcp", "a.example", "1.1.1.1:1", "x", "", "", ""); ev.Level != "alert" {
+	if ev := e.Track("tcp", "a.example", "203.0.113.5:1", "x", "", "", ""); ev.Level != "alert" {
 		t.Fatal("a.example should alert after first feed load")
 	}
 	// A refresh with a different set must drop the stale indicator.
 	e.SetFeedThreats([]string{"b.example"}, nil)
-	if ev := e.Track("tcp", "a.example", "1.1.1.1:1", "x", "", "", ""); ev.Level == "alert" {
+	if ev := e.Track("tcp", "a.example", "203.0.113.5:1", "x", "", "", ""); ev.Level == "alert" {
 		t.Fatal("a.example must no longer alert after feed replace")
 	}
-	if ev := e.Track("tcp", "b.example", "1.1.1.1:1", "x", "", "", ""); ev.Level != "alert" {
+	if ev := e.Track("tcp", "b.example", "203.0.113.5:1", "x", "", "", ""); ev.Level != "alert" {
 		t.Fatal("b.example should alert after feed replace")
 	}
 }
@@ -169,7 +169,7 @@ func TestSetFeedThreats_Replaces(t *testing.T) {
 func TestLargeUploadAlert(t *testing.T) {
 	e := New(100)
 	e.SetUploadAlert(1024)
-	ev := e.Track("tcp", "ok.example", "1.1.1.1:443", "x", "", "", "direct")
+	ev := e.Track("tcp", "ok.example", "203.0.113.5:443", "x", "", "", "direct")
 	if ev.Level == "alert" {
 		t.Fatal("should not alert before upload")
 	}
@@ -228,13 +228,13 @@ func TestLargeUpload_NonWhitelistAutoBan(t *testing.T) {
 		bannedDomain, bannedIP, bannedReason = domain, ip, reason
 	})
 
-	ev := e.Track("tcp", "evil.example", "9.9.9.9:443", "x", "", "", "proxy/proxy")
+	ev := e.Track("tcp", "evil.example", "203.0.113.9:443", "x", "", "", "proxy/proxy")
 	ev.Upload = 2048
 	e.finalize(ev)
 	if !ev.Block {
 		t.Fatal("non-whitelist large upload must Block when auto-block on")
 	}
-	if bannedDomain != "evil.example" || bannedIP != "9.9.9.9" {
+	if bannedDomain != "evil.example" || bannedIP != "203.0.113.9" {
 		t.Fatalf("ban sink got domain=%q ip=%q", bannedDomain, bannedIP)
 	}
 	if bannedReason == "" {
@@ -300,7 +300,7 @@ func TestThreatIntel_BanFromEvent(t *testing.T) {
 
 func TestRestoreEvents_RoundTrip(t *testing.T) {
 	e := New(100)
-	e.Track("tcp", "a.example", "1.1.1.1:1", "x", "", "", "")
+	e.Track("tcp", "a.example", "203.0.113.5:1", "x", "", "", "")
 	e.Track("tcp", "b.example", "2.2.2.2:2", "y", "", "", "")
 	snap := e.Events() // newest-first
 

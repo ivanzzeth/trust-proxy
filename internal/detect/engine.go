@@ -7,6 +7,7 @@ package detect
 import (
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -73,6 +74,13 @@ type Engine struct {
 	queryOdd        int64
 	nxWindows       map[string]*queryWindow
 	parentWindows   map[string]*queryWindow
+
+	dnsBypassEnabled bool
+	echDomains       map[string]int
+	echTotal         int64
+
+	// isOnLink answers "is this address really on a local subnet" (netwatch).
+	isOnLink func(netip.Addr) bool
 
 	// disposalReady gates auto-ban: nil = always ready. See RequireWarmPermit.
 	disposalReady func() bool
@@ -143,6 +151,7 @@ func (e *Engine) ApplyConfig(c apitypes.DetectionConfig) {
 	e.queryNXBurst = c.QueryNXBurst
 	e.queryParentRate = c.QueryParentRate
 	e.queryOddTypeAt = c.QueryOddTypeAt
+	e.dnsBypassEnabled = c.DNSBypassDetect
 	e.mu.Unlock()
 	e.uploadAlertBytes.Store(c.ExfilUploadBytes)
 	e.autoBlock.Store(c.AutoBlock)
@@ -160,24 +169,25 @@ func New(capacity int) *Engine {
 		capacity = 1000
 	}
 	e := &Engine{
-		cap:             capacity,
-		threatDomains:   map[string]struct{}{},
-		threatIPs:       map[string]struct{}{},
-		feedDomains:     map[string]struct{}{},
-		feedIPs:         map[string]struct{}{},
-		now:             time.Now,
-		beaconEnabled:   true,
-		beaconMinSample: 6, // >=5 intervals
-		beaconCV:        0.25,
-		beaconMinIntvl:  5 * time.Second,
-		beaconMaxIntvl:  2 * time.Hour,
-		beaconReAlert:   10 * time.Minute,
-		beacons:         map[string]*beaconState{},
-		dgaEnabled:      true,
-		dnsParents:      map[string]*parentState{},
-		seen:            map[string]time.Time{},
-		nxWindows:       map[string]*queryWindow{},
-		parentWindows:   map[string]*queryWindow{},
+		cap:              capacity,
+		threatDomains:    map[string]struct{}{},
+		threatIPs:        map[string]struct{}{},
+		feedDomains:      map[string]struct{}{},
+		feedIPs:          map[string]struct{}{},
+		now:              time.Now,
+		beaconEnabled:    true,
+		beaconMinSample:  6, // >=5 intervals
+		beaconCV:         0.25,
+		beaconMinIntvl:   5 * time.Second,
+		beaconMaxIntvl:   2 * time.Hour,
+		beaconReAlert:    10 * time.Minute,
+		beacons:          map[string]*beaconState{},
+		dgaEnabled:       true,
+		dnsParents:       map[string]*parentState{},
+		seen:             map[string]time.Time{},
+		dnsBypassEnabled: true,
+		nxWindows:        map[string]*queryWindow{},
+		parentWindows:    map[string]*queryWindow{},
 	}
 	def := defaultTunables()
 	e.beaconReAlertFactor = def.beaconReAlertFactor
@@ -245,6 +255,21 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 			pending = append(pending, e.makeDetectionLocked(KindBeacon, ActionAlert, ev, []string{r}))
 		}
 	}
+	// A client using its own encrypted DNS takes resolution out of this gateway.
+	if e.dnsBypassEnabled {
+		if r := e.checkEncryptedDNSBypassLocked(host, dst, process); r != "" {
+			ev.Level = "alert"
+			ev.Reasons = append(ev.Reasons, r)
+			pending = append(pending, e.makeDetectionLocked(KindDNSBypass, ActionAlert, ev, []string{r}))
+		}
+	}
+	// LocalNet: a "LAN" destination that is not on any real local subnet is the
+	// shape of a network lying about its scope to pull traffic out of the tunnel.
+	if r := e.checkLocalNetLocked(dst); r != "" {
+		ev.Level = "alert"
+		ev.Reasons = append(ev.Reasons, r)
+		pending = append(pending, e.makeDetectionLocked(KindLocalNet, ActionAlert, ev, []string{r}))
+	}
 	// DGA / DNS-tunnel scoring on the domain (heuristic => alert only).
 	if e.dgaEnabled && host != "" && !trusted {
 		if rs := e.analyzeDomain(host, now); len(rs) > 0 {
@@ -254,6 +279,11 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 		}
 	}
 	e.noteSeenLocked(dstKey(host, dst), now)
+	// Also key by address: the host route watcher asks "did we dial this IP?" to
+	// tell sing-box's own escape routes from injected ones.
+	if ip := hostOnly(dst); ip != "" {
+		e.noteSeenLocked(ip, now)
+	}
 	e.events = append(e.events, ev)
 	if len(e.events) > e.cap {
 		e.events = e.events[len(e.events)-e.cap:]

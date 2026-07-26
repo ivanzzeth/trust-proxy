@@ -2,6 +2,7 @@ package detect
 
 import (
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
+	"net/netip"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -219,5 +220,62 @@ func TestApplyConfigChangesThresholds(t *testing.T) {
 	}
 	if n := countKind(*got, KindBeacon); n == 0 {
 		t.Fatal("beacon detection must come back when re-enabled")
+	}
+}
+
+// TunnelCrack LocalNet: the gateway treats all of RFC1918/CGNAT as LAN — direct
+// egress AND inside the Permit set. A network claiming one of those ranges for a
+// public service pulls traffic out of the tunnel and around the gate, so a
+// "private" destination that is not on any real local subnet must be reported.
+func TestLocalNetDestinationOutsideRealSubnetIsReported(t *testing.T) {
+	e, _, got := newTestEngine(t)
+	// The host really is on 192.168.31.0/24; everything else "private" is a claim.
+	real, _ := netip.ParsePrefix("192.168.31.0/24")
+	e.SetLocalNetCheck(func(a netip.Addr) bool { return real.Contains(a) })
+
+	e.Track("tcp", "", "192.168.31.10:445", "127.0.0.1:1", "smbd", "", "direct")
+	if n := countKind(*got, KindLocalNet); n != 0 {
+		t.Fatalf("%d findings for a genuinely local destination", n)
+	}
+
+	// 100.64/10 is inside the LAN bypass but is not this host's subnet: exactly
+	// what a hostile hotspot uses to look "local".
+	e.Track("tcp", "", "100.64.7.9:443", "127.0.0.1:1", "curl", "", "direct")
+	if n := countKind(*got, KindLocalNet); n == 0 {
+		t.Fatal("a private-range destination outside every local subnet must be reported")
+	}
+}
+
+// Without the on-link predicate the check must stay quiet rather than guess:
+// alerting on every LAN print job would be worse than not looking.
+func TestLocalNetSilentWithoutOnLinkKnowledge(t *testing.T) {
+	e, _, got := newTestEngine(t)
+	e.Track("tcp", "", "10.1.2.3:443", "127.0.0.1:1", "curl", "", "direct")
+	if n := countKind(*got, KindLocalNet); n != 0 {
+		t.Fatalf("%d findings with no local-subnet knowledge", n)
+	}
+}
+
+// A client resolving through public DoH/DoT takes its names out of the gateway:
+// query-level detection sees nothing and the Permit gate only sees an IP.
+func TestEncryptedDNSBypassIsReported(t *testing.T) {
+	e, _, got := newTestEngine(t)
+	e.ApplyConfig(apitypes.DetectionConfig{BeaconEnabled: false, DGAEnabled: false, DNSBypassDetect: true})
+
+	e.Track("tcp", "mozilla.cloudflare-dns.com", "104.16.249.249:443", "127.0.0.1:1", "firefox", "", "proxy")
+	if n := countKind(*got, KindDNSBypass); n == 0 {
+		t.Fatal("a client using public DoH must be reported")
+	}
+
+	// Ordinary HTTPS to the same provider's website is not DNS bypass...
+	before := countKind(*got, KindDNSBypass)
+	e.Track("tcp", "www.cloudflare.com", "104.16.132.229:443", "127.0.0.1:1", "firefox", "", "proxy")
+	if countKind(*got, KindDNSBypass) != before {
+		t.Fatal("a normal HTTPS connection must not be reported as DNS bypass")
+	}
+	// ...and neither is our own resolver doing its job.
+	e.Track("tcp", "dns.google", "8.8.8.8:443", "127.0.0.1:1", "trust-proxy", "", "proxy")
+	if countKind(*got, KindDNSBypass) != before {
+		t.Fatal("the gateway's own resolver must not be flagged as bypassing itself")
 	}
 }

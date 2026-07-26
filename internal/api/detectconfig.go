@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
+	"github.com/ivanzzeth/trust-proxy/internal/netwatch"
 	"net/http"
 	"strconv"
 
@@ -72,6 +73,31 @@ func (s *Server) handleDNSQueryStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, s.queryStats.QueryStats(top))
+}
+
+// NetworkStateProvider exposes the host routing / interface observation.
+type NetworkStateProvider interface {
+	Snapshot() netwatch.Snapshot
+}
+
+// handleNetcheck reports the host-level picture: which interface carries our
+// tunnel, what is genuinely on-link, and how many routes exist. This is the view
+// that makes tunnel bypasses visible — they never reach the data plane.
+func (s *Server) handleNetcheck(w http.ResponseWriter, r *http.Request) {
+	if s.netstate == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"supported": false})
+		return
+	}
+	snap := s.netstate.Snapshot()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"supported":   netwatch.RouteWatchSupported(),
+		"taken":       snap.Taken,
+		"routes":      snap.Routes,
+		"host_routes": snap.HostRoutes,
+		"local_nets":  snap.LocalNets,
+		"tun_ifaces":  snap.TunIfaces,
+		"default_via": snap.DefaultVia,
+	})
 }
 
 // handleListQuarantine reports what the gateway blocked by itself. Kept separate

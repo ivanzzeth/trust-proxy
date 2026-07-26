@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"net"
+	"strings"
 	"time"
 
 	mDNS "github.com/miekg/dns"
@@ -54,6 +55,14 @@ func (d *detector) RoutedQuery(ctx context.Context, message *mDNS.Msg, response 
 	for _, det := range d.engine.RecordQuery(client, q.Name, mDNS.TypeToString[q.Qtype], rcode) {
 		d.engine.EmitDetection(det)
 	}
+	// Encrypted Client Hello configs are published in HTTPS/SVCB records. Once a
+	// client has one, its ClientHello carries a cover domain and the SNI this
+	// gateway's Permit gate matches on is gone (RFC 9849). Seeing the config go
+	// past is the earliest — and, before we parse ClientHellos ourselves, the
+	// only — warning that a destination is about to become opaque.
+	if echName := echConfigInAnswer(response); echName != "" {
+		d.engine.NoteECH(echName, client)
+	}
 }
 
 func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) net.Conn {
@@ -80,6 +89,31 @@ func (d *detector) RoutedPacketConnection(ctx context.Context, conn N.PacketConn
 // RoutedFlow is only invoked on the TUN gvisor flow path; nil is filtered out.
 func (d *detector) RoutedFlow(ctx context.Context, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) tun.FlowTracker {
 	return nil
+}
+
+// echConfigInAnswer returns the queried name when the answer publishes an ECH
+// config in an HTTPS/SVCB record, else "".
+func echConfigInAnswer(response *mDNS.Msg) string {
+	if response == nil {
+		return ""
+	}
+	for _, rr := range response.Answer {
+		var params []mDNS.SVCBKeyValue
+		switch v := rr.(type) {
+		case *mDNS.HTTPS:
+			params = v.Value
+		case *mDNS.SVCB:
+			params = v.Value
+		default:
+			continue
+		}
+		for _, p := range params {
+			if p.Key() == mDNS.SVCB_ECHCONFIG {
+				return strings.TrimSuffix(rr.Header().Name, ".")
+			}
+		}
+	}
+	return ""
 }
 
 func host(m adapter.InboundContext) string {

@@ -74,6 +74,7 @@ type Manager struct {
 	wl        whitelist.Rules
 	bl        blacklist.Rules
 	quar      quarantine.List
+	onRebuild func()
 	dl        directlist.Rules
 	cr        customrules.Rules
 	pg        proxygroups.Config
@@ -403,6 +404,15 @@ func (m *Manager) SetBlacklist(bl blacklist.Rules) error {
 	})
 }
 
+// SetOnRebuild registers a callback fired after every successful (re)build, so
+// host-level observers can re-baseline against the routes the new data plane
+// just installed.
+func (m *Manager) SetOnRebuild(fn func()) {
+	m.mu.Lock()
+	m.onRebuild = fn
+	m.mu.Unlock()
+}
+
 // SetInitialQuarantine seeds the gateway-owned block list used by the first
 // Start(). Separate from the deny list on purpose: see internal/quarantine.
 func (m *Manager) SetInitialQuarantine(q quarantine.List) {
@@ -625,6 +635,12 @@ func (m *Manager) rebuild() error {
 	m.instance = newInst
 	m.mu.Unlock()
 	m.logger.Info("gateway reloaded (", len(nodes), " node(s), ", len(wl.Domains), " domain(s), ", len(wl.IPs), " ip(s))")
+	m.mu.Lock()
+	onRebuild := m.onRebuild
+	m.mu.Unlock()
+	if onRebuild != nil {
+		onRebuild() // e.g. re-baseline the host route watcher against the new plane
+	}
 	return nil
 }
 

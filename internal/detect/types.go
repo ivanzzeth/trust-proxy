@@ -14,6 +14,15 @@ const (
 	// record types, tunnel-rate parents. Distinct from KindDGA, which scores the
 	// shape of a single name.
 	KindDNS Kind = "dns"
+	// KindLocalNet: a destination inside the LAN bypass that no local interface
+	// actually covers (TunnelCrack LocalNet shape).
+	KindLocalNet Kind = "localnet"
+	// KindDNSBypass: a client resolving through a public encrypted-DNS service
+	// instead of this gateway.
+	KindDNSBypass Kind = "dns-bypass"
+	// KindRoute: the host's routing table changed in a way that can carry
+	// traffic around the tunnel (TunnelVision shape).
+	KindRoute Kind = "route"
 )
 
 // Action is how the system disposed of the finding.

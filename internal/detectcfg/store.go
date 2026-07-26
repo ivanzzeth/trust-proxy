@@ -42,6 +42,9 @@ func Defaults() apitypes.DetectionConfig {
 		QueryParentRate: 300,
 		QueryOddTypeAt:  20,
 
+		DNSBypassDetect: true,
+		RouteWatchSec:   30,
+
 		AutoBlock:         true,
 		RequireWarmPermit: true,
 	}
@@ -91,6 +94,7 @@ func WithDefaults(c apitypes.DetectionConfig) apitypes.DetectionConfig {
 	if c.QueryWindowSec <= 0 {
 		c.QueryWindowSec = d.QueryWindowSec
 	}
+	// RouteWatchSec keeps 0 as "don't poll".
 	// ExfilMinRatio / ExfilNewDestHours are deliberately not defaulted from zero:
 	// 0 means "ignore this signal", which is a legitimate choice.
 	return c
@@ -128,6 +132,9 @@ func Validate(c apitypes.DetectionConfig) error {
 	}
 	if c.QueryWindowSec < 10 {
 		return fmt.Errorf("query_window_s must be >= 10 (a shorter window can't establish a rate)")
+	}
+	if c.RouteWatchSec < 0 || (c.RouteWatchSec > 0 && c.RouteWatchSec < 5) {
+		return fmt.Errorf("route_watch_s must be 0 (off) or >= 5")
 	}
 	if c.QueryNXBurst < 0 || c.QueryParentRate < 0 || c.QueryOddTypeAt < 0 {
 		return fmt.Errorf("query thresholds must be >= 0 (0 disables that signal)")

@@ -55,6 +55,22 @@ func (e *Engine) noteSeenLocked(key string, now time.Time) {
 	e.seen[key] = now
 }
 
+// DialedDestination reports whether this gateway has itself connected to addr.
+// The host route watcher needs it: sing-box installs a /32 escape route via the
+// physical interface for every destination the direct outbound dials, so without
+// this every direct connection would look like a route hijack. An injected host
+// route, by contrast, is for a destination we have NOT dialled — stealing future
+// traffic is the whole point.
+func (e *Engine) DialedDestination(ip string) bool {
+	if ip == "" {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.seen[strings.ToLower(ip)]
+	return ok
+}
+
 // exfilShaped reports whether a large upload also looks like exfiltration.
 func (e *Engine) exfilShaped(ev *Event, up int64) bool {
 	e.mu.Lock()

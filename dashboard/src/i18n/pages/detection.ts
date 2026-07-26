@@ -33,6 +33,14 @@ export default {
     requireWarm: 'Wait for the Permit index before disposing',
     requireWarmHint:
       'The Permit index is built asynchronously and fetches remote rule sets. Until it lands, every rule-set-derived Permit reads as "not permitted" — disposing in that window bans destinations you had approved.',
+    hostTitle: 'Host network integrity',
+    hostHint:
+      'Two bypasses never reach the data plane, so the gateway watches the machine instead: a route that appears after the tunnel is up and carries traffic around it (TunnelVision / DHCP option 121), and a destination inside the LAN bypass that no local subnet actually covers (TunnelCrack LocalNet). Findings appear as route / localnet detections. Observation only — nothing is enforced.',
+    hostUnsupported: 'Route watching is not implemented on this platform.',
+    hostTunnel: 'Our tunnel',
+    hostDefault: 'Default via',
+    hostRoutes: 'Routes',
+    hostLocals: 'Real local subnets',
     queriesTitle: 'DNS queries',
     queriesHint:
       'What the resolver was asked for. A DGA sweep is mostly NXDOMAIN and a tunnel encodes payload into names — neither ever becomes a connection, so this is the only view where they show up. Populated in TUN mode, or whenever clients resolve through this gateway.',
@@ -79,6 +87,14 @@ export default {
     requireWarm: '等 Permit 索引就绪后再处置',
     requireWarmHint:
       'Permit 索引是异步构建的，还要拉取远端规则集。在它就绪之前，所有来自规则集的 Permit 都读作「未许可」——此时处置会把你其实已批准的目的地封掉。',
+    hostTitle: '主机网络完整性',
+    hostHint:
+      '有两种绕过根本不经过数据面，只能盯着机器本身看：隧道起来之后新出现、又能把流量带出隧道的路由（TunnelVision / DHCP option 121），以及落在 LAN 旁路里、却不属于任何真实本地子网的目的地（TunnelCrack LocalNet）。命中会以 route / localnet 类型出现在检测事件里。**只观测，不做任何强制**。',
+    hostUnsupported: '当前平台尚未实现路由监控。',
+    hostTunnel: '我们的隧道',
+    hostDefault: '默认出口',
+    hostRoutes: '路由条数',
+    hostLocals: '真实本地子网',
     queriesTitle: 'DNS 查询',
     queriesHint:
       '解析器被问了什么。DGA 扫描绝大多数是 NXDOMAIN，隧道把载荷编码进域名——两者都不会变成连接，只有在这里才看得见。TUN 模式下、或客户端用本网关解析时才有数据。',

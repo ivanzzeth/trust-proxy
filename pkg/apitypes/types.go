@@ -224,6 +224,19 @@ type DetectionConfig struct {
 	QueryParentRate int `json:"query_parent_rate,omitempty"`    // queries under one parent per window
 	QueryOddTypeAt  int `json:"query_odd_type_at,omitempty"`    // TXT/NULL/ANY queries under one parent
 
+	// DNSBypassDetect reports clients that resolve through a public DoH/DoT
+	// service instead of this gateway — their names never reach our resolver and
+	// the domain-based Permit gate only ever sees an IP.
+	DNSBypassDetect bool `json:"dns_bypass_detect"`
+	// RouteWatchSec polls the host routing table for routes that appeared after
+	// the tunnel came up and can carry traffic around it (TunnelVision shape).
+	// 0 disables. Observation only — nothing is enforced.
+	RouteWatchSec int `json:"route_watch_s,omitempty"`
+	// RouteWatchHostRoutes also reports /32 and /128 routes. Off by default: the
+	// data plane installs one per direct dial, so this trades a finding per
+	// connection for coverage of a host-route hijack.
+	RouteWatchHostRoutes bool `json:"route_watch_host_routes,omitempty"`
+
 	// Disposal (auto-block / auto-ban).
 	AutoBlock bool `json:"auto_block"`
 	// RequireWarmPermit keeps disposal from running until the Permit index has

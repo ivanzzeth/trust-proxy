@@ -25,6 +25,7 @@ export default function Detection() {
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['detection-config'], queryFn: api.detectionConfig });
   const { data: queries } = useQuery({ queryKey: ['dns-query-stats'], queryFn: () => api.dnsQueryStats(8), refetchInterval: 10000 });
+  const { data: net } = useQuery({ queryKey: ['netcheck'], queryFn: api.netcheck, refetchInterval: 15000 });
   const { data: quarantined = [] } = useQuery({ queryKey: ['quarantine'], queryFn: api.quarantine, refetchInterval: 10000 });
   const [cfg, setCfg] = useState<DetectionConfig | null>(null);
   useEffect(() => { if (data) setCfg(data); }, [data]);
@@ -111,6 +112,26 @@ export default function Detection() {
           <Save className="size-3.5" /> {t('pages.detection.apply')}
         </Button>
       </div>
+
+      <Card className="mt-6">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm">{t('pages.detection.hostTitle')}</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 text-xs">
+          <p className="leading-relaxed text-muted-foreground">{t('pages.detection.hostHint')}</p>
+          {net?.supported === false ? (
+            <p className="text-muted-foreground">{t('pages.detection.hostUnsupported')}</p>
+          ) : (
+            <div className="flex flex-wrap gap-x-6 gap-y-1">
+              <span>{t('pages.detection.hostTunnel')}: <b>{(net?.tun_ifaces ?? []).join(', ') || '—'}</b></span>
+              <span>{t('pages.detection.hostDefault')}: <b>{net?.default_via || '—'}</b></span>
+              <span>{t('pages.detection.hostRoutes')}: <b className="tnum">{net?.routes?.length ?? 0}</b>
+                <span className="text-muted-foreground"> ({net?.host_routes ?? 0} host)</span></span>
+              <span>{t('pages.detection.hostLocals')}: <b className="font-mono">{(net?.local_nets ?? []).join(' ') || '—'}</b></span>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <Card className="mt-6">
         <CardHeader className="pb-3">

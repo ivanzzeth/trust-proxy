@@ -26,7 +26,7 @@ func init() {
 	clients := []*cobra.Command{
 		subCmd, aclCmd, rulesCmd, statusCmd, modeCmd, routingCmd, postureCmd, finalCmd,
 		dnsCmd, tunCmd, inboundCmd, groupsCmd, endpointsCmd, proxiesCmd, autoBlockCmd,
-		profileCmd, detectionsCmd, historyCmd, nodeCmd, detectCmd, quarantineCmd,
+		profileCmd, detectionsCmd, historyCmd, nodeCmd, detectCmd, quarantineCmd, netcheckCmd,
 	}
 	addClientFlags(clients...)
 	rootCmd.AddCommand(append(clients, serveCmd, connCmd, proxyCmd, selftestCmd)...)

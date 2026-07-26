@@ -227,6 +227,14 @@ func (c *Client) DNSQueryStats(top int) (map[string]any, error) {
 	return out, err
 }
 
+// NetworkState returns the host routing / interface picture the gateway watches
+// for tunnel bypasses (TunnelVision-style routes, LocalNet scope).
+func (c *Client) NetworkState() (map[string]any, error) {
+	var out map[string]any
+	err := c.do(http.MethodGet, "/api/netcheck", nil, &out)
+	return out, err
+}
+
 // Quarantine lists what the gateway blocked by itself (threat intel / exfil
 // disposal). Separate from the deny list, which is operator policy.
 func (c *Client) Quarantine() ([]apitypes.QuarantineEntry, error) {

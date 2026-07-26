@@ -74,7 +74,7 @@ func TestExfil_EmitsBanned(t *testing.T) {
 	var got []Detection
 	e.SetOnDetection(func(d Detection) { got = append(got, d) })
 
-	ev := e.Track("tcp", "exfil.test", "9.9.9.9:443", "src", "python", "", "direct")
+	ev := e.Track("tcp", "exfil.test", "203.0.113.9:443", "src", "python", "", "direct")
 	if e.checkExfilMidStream(ev, 200) != true {
 		t.Fatal("expected kill")
 	}

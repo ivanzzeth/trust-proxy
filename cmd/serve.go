@@ -32,6 +32,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/inbound"
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
+	"github.com/ivanzzeth/trust-proxy/internal/netwatch"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/policymigrate"
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
@@ -259,6 +260,24 @@ func runServe() error {
 		return err
 	}
 
+	// Host-level observation: routes and interface scope. Two bypasses never
+	// touch the data plane — a rogue DHCP route (TunnelVision) and a network
+	// claiming public space is "local" (TunnelCrack LocalNet) — so the gateway
+	// has to look at the machine to see them. Read-only: findings are reported,
+	// nothing is enforced.
+	netWatcher := netwatch.New(func(f netwatch.Finding) {
+		logging.L().Warn().Str("kind", f.Kind).Str("detail", f.Detail).Msg("network integrity")
+		engine.EmitDetection(detect.Detection{
+			Kind: detect.KindRoute, Action: detect.ActionAlert,
+			Host: f.Route.Prefix.String(), Destination: f.Route.Interface,
+			Reasons: []string{f.Detail},
+		})
+	})
+	engine.SetLocalNetCheck(netWatcher.IsLocal)
+	netWatcher.SetDialedCheck(engine.DialedDestination)
+	netWatcher.SetReportHostRoutes(detCfgStore.Get().RouteWatchHostRoutes)
+	defer netWatcher.Stop()
+
 	detStore, err := detect.NewStore(filepath.Join(serveDataDir, "detections.jsonl"))
 	if err != nil {
 		return err
@@ -431,6 +450,14 @@ func runServe() error {
 			break
 		}
 	}
+	// Baseline the routing table once the data plane is up, so the routes the
+	// gateway itself installs are "expected" and only later arrivals are reported.
+	syncNetWatch := func() {
+		active := mgr.Mode() == gateway.ModeTUN
+		netWatcher.SetTunnelActive(active, gateway.TunPrefixes())
+	}
+	mgr.SetOnRebuild(syncNetWatch)
+
 	if err := mgr.Start(); err != nil {
 		return err
 	}
@@ -446,6 +473,7 @@ func runServe() error {
 		Directlist:   dlStore,
 		DLApplier:    mgr,
 		QueryStats:   engine,
+		NetState:     netWatcher,
 		Detection:    detCfgStore,
 		DetApplier:   detectApplier{engine},
 		Quarantine:   quarStore,
@@ -487,6 +515,11 @@ func runServe() error {
 		}
 	}()
 	defer apiSrv.Close()
+
+	syncNetWatch()
+	if secs := detCfgStore.Get().RouteWatchSec; secs > 0 && netwatch.RouteWatchSupported() {
+		netWatcher.Start(time.Duration(secs) * time.Second)
+	}
 
 	logging.L().Info().Str("api", serveAPIAddr).Msg("gateway up")
 	logging.L().Info().Str("url", "http://"+serveAPIAddr+"/").Msg("dashboard")

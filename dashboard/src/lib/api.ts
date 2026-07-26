@@ -334,6 +334,18 @@ export interface DNSQueryStats {
   top_parents: { parent: string; queries: number; nxdomain: number }[];
 }
 
+// Host routing / interface state. Tunnel bypasses (a rogue DHCP route, a network
+// claiming public space is "local") never reach the data plane, so they are only
+// visible by looking at the machine itself.
+export interface NetworkState {
+  supported: boolean;
+  tun_ifaces?: string[];
+  local_nets?: string[];
+  default_via?: string;
+  host_routes?: number;
+  routes?: { prefix: string; interface: string; gateway?: string }[];
+}
+
 export interface QuarantineEntry {
   value: string;
   is_ip: boolean;
@@ -513,6 +525,7 @@ export const api = {
   detectionConfig: () => get<DetectionConfig>('/detection-config'),
   setDetectionConfig: (c: DetectionConfig) => put<DetectionConfig>('/detection-config', c),
   dnsQueryStats: (top = 10) => get<DNSQueryStats>(`/dns-queries/stats?top=${top}`),
+  netcheck: () => get<NetworkState>('/netcheck'),
   quarantine: () => get<QuarantineEntry[]>('/quarantine'),
   releaseQuarantine: (value: string) => del<QuarantineEntry[]>('/quarantine', { value }),
   clearQuarantine: () => del<QuarantineEntry[]>('/quarantine', { all: true }),

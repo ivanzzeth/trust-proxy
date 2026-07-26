@@ -2,6 +2,7 @@ package detect
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -42,6 +43,8 @@ type QueryStats struct {
 	Total      int64            `json:"total"`
 	NXDomain   int64            `json:"nxdomain"`
 	OddType    int64            `json:"odd_type"`
+	ECHAnswers int64            `json:"ech_answers"` // answers carrying an ECH config
+	ECHDomains []string         `json:"ech_domains"` // names that published one
 	Windows    int              `json:"tracked_windows"`
 	TopParents []ParentQueryRow `json:"top_parents"`
 }
@@ -150,8 +153,17 @@ func (e *Engine) QueryStats(top int) QueryStats {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	echNames := make([]string, 0, len(e.echDomains))
+	for n := range e.echDomains {
+		echNames = append(echNames, n)
+		if len(echNames) >= top {
+			break
+		}
+	}
+	sort.Strings(echNames)
 	st := QueryStats{
 		Total: e.queryTotal, NXDomain: e.queryNX, OddType: e.queryOdd,
+		ECHAnswers: e.echTotal, ECHDomains: echNames,
 		Windows:    len(e.parentWindows),
 		TopParents: make([]ParentQueryRow, 0, top),
 	}

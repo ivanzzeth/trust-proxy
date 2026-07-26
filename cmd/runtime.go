@@ -307,6 +307,14 @@ var dnsQueriesCmd = &cobra.Command{
 				share = nx / total * 100
 			}
 			fmt.Printf("queries: %.0f   nxdomain: %.0f (%.1f%%)   TXT/NULL/ANY: %.0f\n", total, nx, share, odd)
+			if ech, _ := st["ech_answers"].(float64); ech > 0 {
+				names, _ := st["ech_domains"].([]any)
+				fmt.Printf("ECH configs seen: %.0f answer(s)", ech)
+				if len(names) > 0 {
+					fmt.Printf(" — %s", truncate(joinAny(names, ", "), 60))
+				}
+				fmt.Println("  (these destinations' SNI is no longer visible to the Permit gate)")
+			}
 			parents, _ := st["top_parents"].([]any)
 			if len(parents) == 0 {
 				fmt.Println("(no query activity yet — the resolver sees queries only in TUN mode or when clients use our DNS)")
@@ -361,6 +369,15 @@ var dnsSetCmd = &cobra.Command{
 		}
 		return out(res, func() { fmt.Println("dns updated") })
 	},
+}
+
+// joinAny renders a decoded JSON array of strings.
+func joinAny(vals []any, sep string) string {
+	parts := make([]string, 0, len(vals))
+	for _, v := range vals {
+		parts = append(parts, str(v))
+	}
+	return strings.Join(parts, sep)
 }
 
 // ---- TUN / inbound / groups / endpoints ---------------------------------

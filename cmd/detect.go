@@ -36,6 +36,8 @@ var detectGetCmd = &cobra.Command{
 				humanBytes(cfg.ExfilUploadBytes), cfg.ExfilMinRatio, cfg.ExfilNewDestHours)
 			fmt.Printf("dns:      window=%ds  nxdomain-burst=%d  parent-rate=%d  odd-type=%d\n",
 				cfg.QueryWindowSec, cfg.QueryNXBurst, cfg.QueryParentRate, cfg.QueryOddTypeAt)
+			fmt.Printf("host:     route-watch=%ds  host-routes=%s  dns-bypass-detect=%s\n",
+				cfg.RouteWatchSec, yesNo(cfg.RouteWatchHostRoutes), yesNo(cfg.DNSBypassDetect))
 			fmt.Printf("disposal: auto-block=%s  require-warm-permit=%s\n",
 				yesNo(cfg.AutoBlock), yesNo(cfg.RequireWarmPermit))
 		})
@@ -63,6 +65,9 @@ var (
 	detQueryNX        int
 	detQueryRate      int
 	detQueryOddAt     int
+	detRouteWatch     int
+	detRouteHostRts   bool
+	detDNSBypass      bool
 	detAutoBlock      bool
 	detRequireWarm    bool
 	detectSettingsSet = map[string]func(*apitypes.DetectionConfig){}
@@ -192,6 +197,9 @@ func init() {
 	f.IntVar(&detQueryNX, "query-nxdomain-burst", 30, "NXDOMAIN answers per client per window (0 = ignore)")
 	f.IntVar(&detQueryRate, "query-parent-rate", 300, "queries under one parent per window (0 = ignore)")
 	f.IntVar(&detQueryOddAt, "query-odd-type-at", 20, "TXT/NULL/ANY queries under one parent (0 = ignore)")
+	f.IntVar(&detRouteWatch, "route-watch", 30, "poll the host routing table every N seconds (0 = off)")
+	f.BoolVar(&detRouteHostRts, "route-watch-host-routes", false, "also report /32 and /128 routes (noisy: one per direct dial)")
+	f.BoolVar(&detDNSBypass, "dns-bypass-detect", true, "report clients resolving through public DoH/DoT")
 	f.BoolVar(&detAutoBlock, "auto-block", true, "drop and quarantine on high-confidence findings")
 	f.BoolVar(&detRequireWarm, "require-warm-permit", true, "hold disposal until the Permit index is built")
 
@@ -215,6 +223,9 @@ func init() {
 	detectSettingsSet["query-nxdomain-burst"] = func(c *apitypes.DetectionConfig) { c.QueryNXBurst = detQueryNX }
 	detectSettingsSet["query-parent-rate"] = func(c *apitypes.DetectionConfig) { c.QueryParentRate = detQueryRate }
 	detectSettingsSet["query-odd-type-at"] = func(c *apitypes.DetectionConfig) { c.QueryOddTypeAt = detQueryOddAt }
+	detectSettingsSet["route-watch"] = func(c *apitypes.DetectionConfig) { c.RouteWatchSec = detRouteWatch }
+	detectSettingsSet["route-watch-host-routes"] = func(c *apitypes.DetectionConfig) { c.RouteWatchHostRoutes = detRouteHostRts }
+	detectSettingsSet["dns-bypass-detect"] = func(c *apitypes.DetectionConfig) { c.DNSBypassDetect = detDNSBypass }
 	detectSettingsSet["auto-block"] = func(c *apitypes.DetectionConfig) { c.AutoBlock = detAutoBlock }
 	detectSettingsSet["require-warm-permit"] = func(c *apitypes.DetectionConfig) { c.RequireWarmPermit = detRequireWarm }
 

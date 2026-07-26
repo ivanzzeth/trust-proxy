@@ -4,6 +4,7 @@ package gateway
 
 import (
 	"encoding/json"
+	"net/netip"
 
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
@@ -97,6 +98,22 @@ func setClashDefaultMode(cfg map[string]json.RawMessage, mode string) error {
 // applyMode rewrites the inbounds (and, for TUN, adds DNS + hijack) to match the
 // requested capture mode. The mixed inbound's listen/port is preserved from the
 // base config so 127.0.0.1:17070 stays available in every mode.
+// tunAddresses are the addresses the TUN inbound gets. Exported through
+// TunPrefixes so the host-level watcher can tell OUR tunnel apart from any other
+// utun on the machine (Tailscale, another VPN) by address rather than by name.
+var tunAddresses = []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"}
+
+// TunPrefixes returns the TUN inbound's own prefixes.
+func TunPrefixes() []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(tunAddresses))
+	for _, a := range tunAddresses {
+		if p, err := netip.ParsePrefix(a); err == nil {
+			out = append(out, p.Masked())
+		}
+	}
+	return out
+}
+
 func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.InboundAuth, tun apitypes.TUNConfig) error {
 	if mode == "" {
 		mode = ModeManual
