@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"runtime"
 
@@ -126,10 +127,7 @@ func serviceConfig() (service.Config, error) {
 
 	data := svcData
 	if data == "" {
-		// Same default as serve, but resolved here: a daemon running as root must
-		// not silently land in /var/root/.trust-proxy while the user's data sits
-		// in their home directory.
-		home, err := os.UserHomeDir()
+		home, err := invokingUserHome()
 		if err != nil {
 			return c, err
 		}
@@ -156,6 +154,25 @@ func serviceConfig() (service.Config, error) {
 		return c, err
 	}
 	return c, nil
+}
+
+// invokingUserHome is the home directory of the human who typed the command, not
+// of root.
+//
+// This runs under sudo. macOS sudo happens to keep HOME, so os.UserHomeDir()
+// usually returns the right thing — but that is a sudoers detail (`sudo -H`, or a
+// different env_reset policy, gives /var/root). Getting it wrong is silent and
+// nasty: the daemon would install against an empty /var/root/.trust-proxy while
+// every subscription and policy the user has sits in their own home.
+func invokingUserHome() (string, error) {
+	if os.Geteuid() == 0 {
+		if name := os.Getenv("SUDO_USER"); name != "" && name != "root" {
+			if u, err := user.Lookup(name); err == nil && u.HomeDir != "" {
+				return u.HomeDir, nil
+			}
+		}
+	}
+	return os.UserHomeDir()
 }
 
 // absOrSelf resolves an explicit --binary, or this executable's real path.
