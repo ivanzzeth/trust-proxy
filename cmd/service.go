@@ -19,12 +19,13 @@ import (
 // gateway — and it has to work when no gateway is running at all.
 
 var (
-	svcConfig  string
-	svcData    string
-	svcAPIAddr string
-	svcMode    string
-	svcLog     string
-	svcBinary  string
+	svcConfig   string
+	svcData     string
+	svcAPIAddr  string
+	svcMode     string
+	svcLog      string
+	svcBinary   string
+	svcKeepPath bool
 )
 
 var serviceCmd = &cobra.Command{
@@ -43,6 +44,7 @@ var serviceInstallCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		c.KeepBinaryPath = svcKeepPath
 		if svcMode == "tun" {
 			// A boot-time TUN daemon captures everything on this machine from the
 			// next restart onward; that deserves a yes.
@@ -54,8 +56,13 @@ var serviceInstallCmd = &cobra.Command{
 			return err
 		}
 		installed, running, detail := service.Status()
-		return out(map[string]any{"installed": installed, "running": running, "detail": detail, "plist": service.PlistPath}, func() {
+		program := service.ProgramFromPlist()
+		return out(map[string]any{
+			"installed": installed, "running": running, "detail": detail,
+			"plist": service.PlistPath, "program": program,
+		}, func() {
 			fmt.Printf("✓ installed %s\n", service.PlistPath)
+			fmt.Printf("  program: %s\n", program)
 			fmt.Printf("  serve -c %s --data %s --api-addr %s", c.ConfigPath, c.DataDir, c.APIAddr)
 			if c.Mode != "" {
 				fmt.Printf(" --mode %s", c.Mode)
@@ -84,13 +91,25 @@ var serviceStatusCmd = &cobra.Command{
 	Short: "Is the system service installed and running?",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		installed, running, detail := service.Status()
+		program := service.ProgramFromPlist()
+		missing := service.BinaryMissing(program)
 		return out(map[string]any{
 			"platform": runtime.GOOS, "installed": installed, "running": running,
 			"detail": detail, "plist": service.PlistPath,
+			"program": program, "program_missing": missing,
 		}, func() {
 			fmt.Printf("%-11s %s\n", "platform:", runtime.GOOS)
 			fmt.Printf("%-11s %v (%s)\n", "installed:", installed, service.PlistPath)
 			fmt.Printf("%-11s %v %s\n", "running:", running, detail)
+			if program != "" {
+				fmt.Printf("%-11s %s\n", "program:", program)
+			}
+			if missing {
+				// The exact state the managed copy exists to prevent: say it out
+				// loud, because launchd will keep retrying it silently forever.
+				fmt.Printf("\n⚠ the program is gone — launchd will retry it at every boot.\n")
+				fmt.Printf("  fix: sudo trust-proxy service uninstall && sudo trust-proxy service install …\n")
+			}
 		})
 	},
 }
@@ -164,6 +183,9 @@ func init() {
 	f.StringVar(&svcMode, "mode", "", "capture mode to start in: manual | system | tun (empty = the config's own)")
 	f.StringVar(&svcLog, "log", "", "log file (default <data>/serve.log)")
 	f.StringVar(&svcBinary, "binary", "", "trust-proxy binary to run (default: this one, symlinks resolved)")
+	f.BoolVar(&svcKeepPath, "keep-binary-path", false,
+		"run the binary where it stands instead of copying it to "+service.ManagedBinary+
+			" (only for a package-managed path; NEVER for one inside an .app, which breaks when the app moves)")
 	f.BoolVarP(&yesToAll, "yes", "y", false, "skip the TUN confirmation")
 
 	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd, serviceStatusCmd)

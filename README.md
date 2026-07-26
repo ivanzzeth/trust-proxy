@@ -27,6 +27,51 @@ make build-embed     # 单文件分发：先构建前端，再 -tags embed_ui �
 ./trust-proxy serve --daemon   # 后台守护（脱离终端，SSH 断开不受影响；停止：proxy stop --pid ~/.trust-proxy/serve.pid）
 ```
 
+## 桌面端（macOS，未签名）
+
+```bash
+make desktop         # -> desktop/src-tauri/target/release/bundle/{macos/Trust Proxy.app,dmg/*.dmg}
+```
+
+壳很薄：它只负责开窗和进程生命周期，UI 就是网关自己在 `:9096` serve 的那个控制台。已在跑网关（launchd 装的、或你终端里 `serve` 起的）时，它**贴附**过去而不会再起一个（两个 `serve` 会抢 `cache.db` 的写锁）。
+
+### 安装：这个 app 没有签名（也不打算签）
+
+签名+公证要 Apple Developer 会员（$99/年），我们不做。所以：
+
+| 你从哪儿拿到的 | 要做什么 |
+|---|---|
+| **自己 `make desktop` 构建的** | 没有隔离标记，**双击直接开**，零操作 |
+| **别人给的 / 下载的 `.dmg`** | 系统会拦一次，见下 |
+
+下载来的需要放行一次，二选一：
+
+```bash
+# ① 一条命令（推荐）
+xattr -dr com.apple.quarantine "/Applications/Trust Proxy.app"
+```
+
+② 或者：双击 → 被拦 → **系统设置 → 隐私与安全性 → 底部「仍要打开」**。
+⚠️ **macOS 15 起「右键→打开」这个老办法对未公证 app 已失效**，只剩上面两条路。
+
+**别漏了第 ① 条的 `-r`**：我们的 app 里有两个可执行文件（壳 + Go 网关），只放行 app 本身不够——实测 macOS 26 会把网关那个直接 SIGKILL，症状是「app 开着但一直显示网关起不来」。app 遇到这种情况会把该执行的命令直接打在界面上。
+
+技术细节（ad-hoc 签名形态、真要签名的完整流程）见 [`docs/release-macos.md`](docs/release-macos.md)。
+
+### TUN 需要 root：装成系统服务
+
+GUI 不该是 root，所以提权交给系统：
+
+```bash
+sudo trust-proxy service install -c ~/.trust-proxy/config.json   # launchd LaunchDaemon，开机自启
+trust-proxy service status                                       # 装了没 / 在跑没 / 指向哪个二进制
+sudo trust-proxy service uninstall                               # 逃生口，任何状态都能收干净
+```
+
+装完壳会自动贴附到这个 daemon（关窗不掉策略）。app 上的按钮就是拿一次管理员授权跑上面这条命令。
+install 会把二进制**拷到 `/usr/local/libexec/trust-proxy`（root:wheel）**再写 plist —— 不能指向 `.app` 内部，否则你把 app 拖进废纸篓，launchd 就永远在重启一个不存在的程序。`uninstall` 只删这份托管副本，绝不碰你自己的二进制（如 Homebrew 装的）。
+install **不会顺手打开 TUN**（不给 `--mode tun` 就不写）。
+
 **数据目录**：默认 **`~/.trust-proxy`**（订阅/白名单/历史/`cache.db`/`clash-secret` 等全在此）；`--data <dir>` 覆盖。旧部署迁移：`mv ./data/* ~/.trust-proxy/` 或 `--data ./data`。
 
 `make build`（开发）从磁盘 serve `dashboard/dist`；`make build-embed`（发布）把前端嵌进二进制，产出的 `./trust-proxy` 单文件自带 UI、不依赖磁盘上的前端目录。**GitHub Release 的二进制即用 `build-embed` 打包。**

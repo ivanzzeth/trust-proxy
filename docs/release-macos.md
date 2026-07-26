@@ -98,15 +98,23 @@ xcrun notarytool log <submission-id> --key … --key-id … --issuer …
 
 ---
 
-## 一个必须先修的板砖坑（与签名无关，但签名后更痛）
+## 板砖坑（已修）
 
-`trust-proxy service install` 现在把 plist 的 `ProgramArguments[0]` 写成**当前二进制路径**，
-从 app 里点安装就是 `/Applications/Trust Proxy.app/Contents/MacOS/trust-proxy`。
-签名后 bundle 是封印的，**app 一旦被移动/删除/升级替换，daemon 就指向空气**，
-而 `KeepAlive` 会不停重启失败。
+`service install` 曾把 plist 的 `ProgramArguments[0]` 写成**当前二进制路径**——从 app 里点安装就是
+`/Applications/Trust Proxy.app/Contents/MacOS/trust-proxy`。app 一旦被移动/删除/升级替换，
+daemon 就指向空气，而 `KeepAlive` 会**每次开机都重启一个不存在的程序**，失败只写进没人看的日志。
 
-正解：install 时把 sidecar **拷到 bundle 之外**（如 `/usr/local/libexec/trust-proxy`），
-plist 指那份拷贝；`uninstall` 一并删除。详见 `docs/TODO.md` #4。
+现在 install 把二进制**拷到 `/usr/local/libexec/trust-proxy`（root:wheel，0755）**再写 plist：
+先写临时文件 → chmod/chown → sha256 比对 → `rename` 落地（半个二进制被 launchd 捡去会在开机时炸）。
+按内容拷贝而非 symlink（symlink 会以同样方式断），顺带**丢掉 `com.apple.quarantine`**（xattr 不属于文件内容），
+这正好治了上面那个「隔离的 sidecar 被 SIGKILL」。
+`--keep-binary-path` 可保留原路径（给 Homebrew 这类本来就稳定的安装用）。
+
+`uninstall` 先读 plist 里的 program 再删 plist，**只删我们那份托管副本**——用户自己的二进制绝不碰。
+`service status` 会显式报 `program_missing`，因为这个状态否则只表现为开机时的静默重试循环。
+
+VM 实测：从 bundle 内安装 → plist 指向 `/usr/local/libexec/trust-proxy`(root:wheel) → **把整个 .app 删掉后
+`launchctl kickstart` 依然起得来** → uninstall 收走副本且不误删用户二进制。
 
 ---
 

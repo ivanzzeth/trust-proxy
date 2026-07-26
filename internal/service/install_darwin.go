@@ -15,6 +15,16 @@ func Install(c Config) error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("installing a system service needs root: re-run with sudo")
 	}
+	// Give the daemon its own copy of the binary unless the caller insists on the
+	// path it passed. Pointing launchd inside an .app is the brick: trash the app
+	// and KeepAlive retries a missing program forever, from every boot onward.
+	if !c.KeepBinaryPath {
+		managed, err := InstallBinary(c.Binary)
+		if err != nil {
+			return err
+		}
+		c.Binary = managed
+	}
 	plist, err := c.Plist()
 	if err != nil {
 		return err
@@ -44,9 +54,16 @@ func Uninstall() error {
 	if os.Geteuid() != 0 {
 		return fmt.Errorf("removing a system service needs root: re-run with sudo")
 	}
+	// Read the program before deleting the plist: it is the only record of what
+	// this install actually put on the machine.
+	program := ProgramFromPlist()
 	_ = exec.Command("launchctl", "bootout", "system/"+Label).Run()
 	if err := os.Remove(PlistPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove %s: %w", PlistPath, err)
+	}
+	// Only our own copy — never a binary the user pointed us at.
+	if err := RemoveManagedBinary(program); err != nil {
+		return fmt.Errorf("remove %s: %w", program, err)
 	}
 	return nil
 }

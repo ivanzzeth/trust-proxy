@@ -139,7 +139,12 @@ UI 就是网关自己在 `:9096` serve 的那个控制台（故 sidecar **必须
 
 **提权不放在壳里**：TUN 要 root，GUI 不该是 root。`internal/service` + `trust-proxy service install`（macOS **LaunchDaemon**，
 `/Library/LaunchDaemons/io.trust-proxy.gateway.plist`）让 **launchd 拥有 daemon**，壳只贴附；壳上的按钮就是拿一次
-管理员授权（`osascript ... with administrator privileges`）去跑这条 CLI。防板砖同调：`service uninstall` 一条命令、
+管理员授权（`osascript ... with administrator privileges`）去跑这条 CLI。
+**plist 绝不指向 `.app` 内部**（第三条防板砖）：install 把二进制拷到 **`/usr/local/libexec/trust-proxy`**（root:wheel，
+临时文件→chmod/chown→sha256 校验→rename）再写 plist——否则 app 被拖进废纸篓/升级替换后，`KeepAlive` 会每次开机
+重启一个不存在的程序，只写日志不报错。按内容拷贝还顺带丢掉 `com.apple.quarantine`（xattr 不属内容），治了
+未公证 sidecar 被 SIGKILL。`uninstall` 先读 plist 的 program 再删，**只删我们那份托管副本**；`--keep-binary-path`
+留给 Homebrew 这类稳定路径；`service status` 显式报 `program_missing`。防板砖同调：`service uninstall` 一条命令、
 任意半装状态都能收干净且幂等；install **不会顺手打开 TUN**（`--mode` 不给就不写）；`RunAtLoad`+`KeepAlive`（kill -9 后自愈）。
 plist 里所有路径必须绝对（launchd 不解析相对路径，否则每次开机静默失败）。
 

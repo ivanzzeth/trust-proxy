@@ -25,7 +25,23 @@ import (
 const Label = "io.trust-proxy.gateway"
 
 // PlistPath is where a system-wide (root) LaunchDaemon lives.
-const PlistPath = "/Library/LaunchDaemons/" + Label + ".plist"
+//
+// A var, not a const, only so tests can redirect it away from a root-owned path.
+var PlistPath = "/Library/LaunchDaemons/" + Label + ".plist"
+
+// ManagedBinary is where install copies the gateway to.
+//
+// Never point a LaunchDaemon at a binary inside an .app bundle: moving the app to
+// the Trash, or an update replacing the bundle, leaves the plist pointing at
+// nothing — and KeepAlive then retries a doomed exec forever, at boot, with the
+// failure visible only in a log nobody opens. The daemon gets its own copy, and
+// the desktop app becomes just a window again.
+//
+// /usr/local/libexec is the conventional place for a program that is run by
+// something else rather than typed by a human.
+//
+// A var, not a const, only so tests can redirect it away from a root-owned path.
+var ManagedBinary = "/usr/local/libexec/trust-proxy"
 
 // Config describes the daemon to install.
 type Config struct {
@@ -35,6 +51,11 @@ type Config struct {
 	APIAddr    string // --api-addr
 	Mode       string // --mode (manual | system | tun); empty = leave the default
 	LogPath    string // stdout/stderr destination
+
+	// KeepBinaryPath runs Binary where it stands instead of copying it to
+	// ManagedBinary. For a package-managed install (Homebrew, a distro package)
+	// whose path is already stable; not for anything inside an .app.
+	KeepBinaryPath bool
 }
 
 // Plist renders the LaunchDaemon property list.
