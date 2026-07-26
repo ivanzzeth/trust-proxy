@@ -36,6 +36,19 @@ func addClientFlags(cmds ...*cobra.Command) {
 	}
 }
 
+// resolveToken picks the credential to present: the --api-token flag, else
+// TP_API_KEY from the environment.
+//
+// Nothing is read from disk on purpose. A cached credential file was the first
+// design, and it went stale against a rebuilt registry and then turned an
+// unclaimed gateway into a 401 — a secret at rest buying a footgun.
+func resolveToken() string {
+	if apiToken != "" {
+		return apiToken
+	}
+	return os.Getenv("TP_API_KEY")
+}
+
 // emit prints v as indented JSON. Every command routes its result through
 // printJSON/table so --json is honoured uniformly.
 func emit(v any) error {

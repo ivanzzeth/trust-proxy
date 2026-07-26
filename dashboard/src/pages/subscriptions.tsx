@@ -111,7 +111,7 @@ export default function Subscriptions() {
                         {s.name}
                         {s.applied && <Badge variant="success"><Check className="size-3" /> {t('pages.subscriptions.active')}</Badge>}
                       </div>
-                      <div className="max-w-[260px] truncate text-xs text-muted-foreground">{s.url || t('pages.subscriptions.pasted')}</div>
+                      <div className="max-w-[260px] truncate text-xs text-muted-foreground">{s.source || t('pages.subscriptions.pasted')}</div>
                       {s.last_error && <div className="max-w-[260px] truncate text-xs text-destructive">{s.last_error}</div>}
                     </TableCell>
                     <TableCell className="tnum text-right">{s.node_count}</TableCell>

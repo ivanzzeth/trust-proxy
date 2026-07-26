@@ -459,8 +459,10 @@ func (s *Server) handleAutoBlock(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"autoBlock": req.Enabled})
 }
 
+// Subscriptions leave this process redacted: the URL is a credential, so is
+// pasted node text, so is each node's outbound. See subscription.Public.
 func (s *Server) handleListSubs(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.store.List())
+	writeArray(w, http.StatusOK, s.store.ListPublic())
 }
 
 func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {
@@ -477,7 +479,7 @@ func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		logging.L().Warn().Err(err).Msg("subscription add refresh")
 	}
-	writeJSON(w, http.StatusCreated, sub)
+	writeJSON(w, http.StatusCreated, subscription.Public(sub))
 }
 
 func (s *Server) handleDeleteSub(w http.ResponseWriter, r *http.Request) {
@@ -497,7 +499,7 @@ func (s *Server) handleRefreshSub(w http.ResponseWriter, r *http.Request) {
 		}
 		logging.L().Warn().Err(err).Msg("subscription refresh")
 	}
-	writeJSON(w, http.StatusOK, sub)
+	writeJSON(w, http.StatusOK, subscription.Public(sub))
 }
 
 func (s *Server) handleApplySub(w http.ResponseWriter, r *http.Request) {
@@ -530,7 +532,7 @@ func (s *Server) handleApplySub(w http.ResponseWriter, r *http.Request) {
 		logging.L().Warn().Err(err).Msg("mark subscription applied")
 	}
 	sub, _ = s.store.Get(sub.ID)
-	writeJSON(w, http.StatusOK, sub)
+	writeJSON(w, http.StatusOK, subscription.Public(sub))
 }
 
 // ---- connections (proxied from the Clash API) -----------------------------

@@ -61,8 +61,8 @@ func (c *Client) Health() error {
 }
 
 // ListSubscriptions returns all subscriptions.
-func (c *Client) ListSubscriptions() ([]apitypes.Subscription, error) {
-	var out []apitypes.Subscription
+func (c *Client) ListSubscriptions() ([]apitypes.SubscriptionPublic, error) {
+	var out []apitypes.SubscriptionPublic
 	err := c.do(http.MethodGet, "/api/subscriptions", nil, &out)
 	return out, err
 }
@@ -70,23 +70,23 @@ func (c *Client) ListSubscriptions() ([]apitypes.Subscription, error) {
 // AddSubscription registers and refreshes a subscription. userAgent may be
 // empty to use the server default; via (socks5:// or http://) routes the fetch
 // through a proxy.
-func (c *Client) AddSubscription(name, url, userAgent, via string) (apitypes.Subscription, error) {
-	var out apitypes.Subscription
+func (c *Client) AddSubscription(name, url, userAgent, via string) (apitypes.SubscriptionPublic, error) {
+	var out apitypes.SubscriptionPublic
 	err := c.do(http.MethodPost, "/api/subscriptions", apitypes.AddSubscriptionRequest{Name: name, URL: url, UserAgent: userAgent, Via: via}, &out)
 	return out, err
 }
 
 // ImportNodes adds a manual subscription from pasted node text (share links,
 // base64, Clash YAML or sing-box JSON) — no network fetch.
-func (c *Client) ImportNodes(name, content string) (apitypes.Subscription, error) {
-	var out apitypes.Subscription
+func (c *Client) ImportNodes(name, content string) (apitypes.SubscriptionPublic, error) {
+	var out apitypes.SubscriptionPublic
 	err := c.do(http.MethodPost, "/api/subscriptions", apitypes.AddSubscriptionRequest{Name: name, Content: content}, &out)
 	return out, err
 }
 
 // ApplySubscription applies a subscription's nodes to the running gateway.
-func (c *Client) ApplySubscription(id string) (apitypes.Subscription, error) {
-	var out apitypes.Subscription
+func (c *Client) ApplySubscription(id string) (apitypes.SubscriptionPublic, error) {
+	var out apitypes.SubscriptionPublic
 	err := c.do(http.MethodPost, "/api/subscriptions/"+id+"/apply", nil, &out)
 	return out, err
 }
@@ -97,8 +97,8 @@ func (c *Client) DeleteSubscription(id string) error {
 }
 
 // RefreshSubscription re-fetches and re-parses a subscription.
-func (c *Client) RefreshSubscription(id string) (apitypes.Subscription, error) {
-	var out apitypes.Subscription
+func (c *Client) RefreshSubscription(id string) (apitypes.SubscriptionPublic, error) {
+	var out apitypes.SubscriptionPublic
 	err := c.do(http.MethodPost, "/api/subscriptions/"+id+"/refresh", nil, &out)
 	return out, err
 }

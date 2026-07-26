@@ -305,3 +305,94 @@ func TestProxyProtocolsUnwrapsABareArray(t *testing.T) {
 		t.Fatalf("path %s", p)
 	}
 }
+
+// Auth: the CLI and the console both go through these, so the wire shapes are
+// worth pinning — a login that posts the wrong field name fails at runtime only.
+func TestAuthSDK(t *testing.T) {
+	c, seen := fakeAPI(t, `{"user":{"id":"u1","username":"alice","role":"admin","created_at":"now"},"expires_at":"later"}`)
+	sess, err := c.Login("alice", "secret-password")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := last(t, seen)
+	if got.method != http.MethodPost || got.path != "/api/auth/login" {
+		t.Fatalf("%s %s", got.method, got.path)
+	}
+	var lr apitypes.LoginRequest
+	if err := json.Unmarshal([]byte(got.body), &lr); err != nil {
+		t.Fatal(err)
+	}
+	if lr.Username != "alice" || lr.Password != "secret-password" {
+		t.Fatalf("login body = %+v", lr)
+	}
+	if sess.User.Role != "admin" {
+		t.Fatalf("session = %+v", sess)
+	}
+
+	// Bootstrap carries the one-time code only when there is one.
+	if _, err := c.Bootstrap("alice", "secret-password", "the-code"); err != nil {
+		t.Fatal(err)
+	}
+	if b := last(t, seen).body; !strings.Contains(b, `"code":"the-code"`) {
+		t.Fatalf("bootstrap body = %s", b)
+	}
+	if _, err := c.Bootstrap("alice", "secret-password", ""); err != nil {
+		t.Fatal(err)
+	}
+	if b := last(t, seen).body; strings.Contains(b, "code") {
+		t.Fatalf("empty code must be omitted: %s", b)
+	}
+}
+
+func TestUserAdminSDK(t *testing.T) {
+	c, seen := fakeAPI(t, `{"id":"u2","username":"bob","role":"user","created_at":"now"}`)
+	if _, err := c.CreateUser("bob", "bob-password-long", "user"); err != nil {
+		t.Fatal(err)
+	}
+	if p := last(t, seen).path; p != "/api/users" {
+		t.Fatalf("path %s", p)
+	}
+
+	// A PATCH must send only what was asked for: an absent proxy password means
+	// "leave it", an empty one means "revoke proxy access". Merging those would
+	// silently take away someone's access.
+	empty := ""
+	if _, err := c.PatchUser("u2", apitypes.PatchUserRequest{ProxyPassword: &empty}); err != nil {
+		t.Fatal(err)
+	}
+	got := last(t, seen)
+	if got.method != http.MethodPatch || got.path != "/api/users/u2" {
+		t.Fatalf("%s %s", got.method, got.path)
+	}
+	if got.body != `{"proxy_password":""}` {
+		t.Fatalf("patch body = %s (only the set field may be sent)", got.body)
+	}
+	role := "admin"
+	if _, err := c.PatchUser("u2", apitypes.PatchUserRequest{Role: &role}); err != nil {
+		t.Fatal(err)
+	}
+	if b := last(t, seen).body; b != `{"role":"admin"}` {
+		t.Fatalf("patch body = %s", b)
+	}
+}
+
+func TestAPIKeySDK(t *testing.T) {
+	c, seen := fakeAPI(t, `{"id":"k1","label":"cli","prefix":"tp_abc","created_at":"now","key":"tp_theactualkey"}`)
+	created, err := c.CreateAPIKey("u1", "cli", 30)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Key != "tp_theactualkey" {
+		t.Fatalf("the raw key must come through once: %+v", created)
+	}
+	got := last(t, seen)
+	if got.path != "/api/users/u1/apikeys" || !strings.Contains(got.body, `"expires_in_days":30`) {
+		t.Fatalf("%s %s", got.path, got.body)
+	}
+	if err := c.DeleteAPIKey("u1", "k1"); err != nil {
+		t.Fatal(err)
+	}
+	if p := last(t, seen).path; p != "/api/users/u1/apikeys/k1" {
+		t.Fatalf("path %s", p)
+	}
+}

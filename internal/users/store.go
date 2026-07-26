@@ -89,11 +89,56 @@ type APIKey struct {
 }
 
 // Store is a file-backed user registry, safe for concurrent use.
+//
+// It re-reads the file whenever it changed underneath us. That matters because
+// `trust-proxy user add` writes users.json directly — the only way to claim a
+// headless gateway over SSH — and a running gateway that kept its startup copy
+// would keep reporting itself unclaimed until the next restart. Measured: it did
+// exactly that.
 type Store struct {
-	path string
-	mu   sync.Mutex
-	data doc
-	now  func() time.Time
+	path  string
+	mu    sync.Mutex
+	data  doc
+	stamp fileStamp
+	now   func() time.Time
+}
+
+// fileStamp is enough to notice someone else's write: a change of size or mtime.
+type fileStamp struct {
+	size    int64
+	modTime time.Time
+}
+
+func stampOf(path string) fileStamp {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fileStamp{}
+	}
+	return fileStamp{size: info.Size(), modTime: info.ModTime()}
+}
+
+// reloadIfChangedLocked re-reads the file when its stamp moved. A parse error is
+// ignored on purpose: a half-written file must not wipe the copy we already have,
+// and the next read will pick up the finished one.
+func (s *Store) reloadIfChangedLocked() {
+	now := stampOf(s.path)
+	if now == s.stamp {
+		return
+	}
+	b, err := os.ReadFile(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			s.data = doc{}
+			s.stamp = now
+		}
+		return
+	}
+	var fresh doc
+	if json.Unmarshal(b, &fresh) != nil {
+		return
+	}
+	s.data = fresh
+	s.stamp = now
 }
 
 type doc struct {
@@ -125,6 +170,7 @@ func NewStore(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &s.data); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
+	s.stamp = stampOf(path)
 	return s, nil
 }
 
@@ -141,7 +187,12 @@ func (s *Store) save() error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	// Record our own write so it does not look like somebody else's.
+	s.stamp = stampOf(s.path)
+	return nil
 }
 
 // Empty reports whether anybody has been created yet. An empty registry is what
@@ -149,6 +200,7 @@ func (s *Store) save() error {
 func (s *Store) Empty() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reloadIfChangedLocked()
 	return len(s.data.Users) == 0
 }
 
@@ -156,6 +208,7 @@ func (s *Store) Empty() bool {
 func (s *Store) Settings() Settings {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reloadIfChangedLocked()
 	return s.data.Settings
 }
 
@@ -194,6 +247,7 @@ var ErrRegistrationClosed = fmt.Errorf("registration is closed: ask an administr
 func (s *Store) List() []apitypes.User {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reloadIfChangedLocked()
 	out := make([]apitypes.User, 0, len(s.data.Users))
 	for _, u := range s.data.Users {
 		out = append(out, u.public())
@@ -212,6 +266,7 @@ func (s *Store) Create(username, password, role string) (apitypes.User, error) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reloadIfChangedLocked()
 	if s.findLocked(username) != nil {
 		return apitypes.User{}, fmt.Errorf("user %q already exists", username)
 	}
@@ -242,6 +297,7 @@ func (s *Store) Create(username, password, role string) (apitypes.User, error) {
 // Authenticate checks a username/password pair and returns the account.
 func (s *Store) Authenticate(username, password string) (apitypes.User, error) {
 	s.mu.Lock()
+	s.reloadIfChangedLocked()
 	u := s.findLocked(username)
 	var hash string
 	if u != nil {
@@ -342,6 +398,7 @@ func (s *Store) SetProxyPassword(id, password string) error {
 func (s *Store) ProxyCredentials() []apitypes.ProxyCredential {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reloadIfChangedLocked()
 	var out []apitypes.ProxyCredential
 	for _, u := range s.data.Users {
 		if u.Disabled || u.ProxyPassword == "" {
@@ -416,6 +473,7 @@ func (s *Store) AuthenticateAPIKey(raw string) (apitypes.User, error) {
 	want := hashKey(raw)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reloadIfChangedLocked()
 	for i := range s.data.Users {
 		u := &s.data.Users[i]
 		for j := range u.APIKeys {
@@ -445,6 +503,7 @@ func (s *Store) AuthenticateAPIKey(raw string) (apitypes.User, error) {
 func (s *Store) ByID(id string) (apitypes.User, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reloadIfChangedLocked()
 	if u := s.byIDLocked(id); u != nil {
 		return u.public(), true
 	}
@@ -497,6 +556,7 @@ func VerifyPassword(stored, password string) bool {
 func (s *Store) mutate(id string, f func(*User) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.reloadIfChangedLocked()
 	u := s.byIDLocked(id)
 	if u == nil {
 		return fmt.Errorf("no such user")

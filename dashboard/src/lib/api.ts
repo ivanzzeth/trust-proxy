@@ -147,12 +147,18 @@ export interface TPNode {
   server: string;
   port: number;
 }
+// A subscription as the backend is willing to show it. The URL, any pasted node
+// text, the `via` proxy URL and each node's outbound are credentials and never
+// leave the server — see internal/subscription/public.go. `source` is a masked
+// origin for display only.
 export interface Subscription {
   id: string;
   name: string;
-  url: string;
+  source: string;
+  has_url: boolean;
+  has_content: boolean;
+  has_via: boolean;
   user_agent?: string;
-  via?: string;
   node_count: number;
   nodes?: TPNode[];
   updated_at?: string;

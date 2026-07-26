@@ -33,7 +33,7 @@ var subLsCmd = &cobra.Command{
 			if name == "" {
 				name = "-"
 			}
-			fmt.Printf("%-14s %-20s %-6d %s\n", s.ID, name, s.NodeCount, s.URL)
+			fmt.Printf("%-14s %-20s %-6d %s\n", s.ID, name, s.NodeCount, s.Source)
 			if s.LastError != "" {
 				fmt.Printf("   ! last error: %s\n", s.LastError)
 			}
@@ -145,5 +145,5 @@ func init() {
 
 // sdk builds the SDK client from the shared client flags (see cmd/cli.go).
 func sdk() *client.Client {
-	return client.New(client.Options{APIBaseURL: apiAddr, Token: apiToken})
+	return client.New(client.Options{APIBaseURL: apiAddr, Token: resolveToken()})
 }

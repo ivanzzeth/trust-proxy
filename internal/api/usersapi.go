@@ -52,12 +52,7 @@ func (s *Server) handlePatchUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
-	var req struct {
-		Role          *string `json:"role,omitempty"`
-		Disabled      *bool   `json:"disabled,omitempty"`
-		Password      *string `json:"password,omitempty"`
-		ProxyPassword *string `json:"proxy_password,omitempty"`
-	}
+	var req apitypes.PatchUserRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return

@@ -32,6 +32,41 @@ type Subscription struct {
 	Applied   bool   `json:"applied,omitempty"`
 }
 
+// SubscriptionPublic is a subscription as the wire sees it: everything needed to
+// display and manage one, and none of the credentials.
+//
+// A subscription URL *is* a credential — anyone holding it can pull the whole node
+// list, and airports often key the account to it. The same is true of pasted node
+// text, of a `via` proxy URL that can embed user:pass, and of each node's outbound
+// (uuid / password / reality keys). None of it has any use in a browser: the
+// console displays names and counts, and applying or refreshing happens by id.
+//
+// So they are write-only, exactly like a password field: settable, never readable
+// back. internal/endpoints already treats WireGuard secrets this way; this type
+// closes the same hole for subscriptions.
+type SubscriptionPublic struct {
+	ID         string       `json:"id"`
+	Name       string       `json:"name"`
+	Source     string       `json:"source"`      // masked origin, e.g. "https://***.sbs/***"
+	HasURL     bool         `json:"has_url"`     // fetched from a URL…
+	HasContent bool         `json:"has_content"` // …or pasted
+	HasVia     bool         `json:"has_via"`     // fetched through a proxy
+	UserAgent  string       `json:"user_agent,omitempty"`
+	NodeCount  int          `json:"node_count"`
+	Nodes      []NodePublic `json:"nodes,omitempty"`
+	UpdatedAt  string       `json:"updated_at,omitempty"`
+	LastError  string       `json:"last_error,omitempty"`
+	Applied    bool         `json:"applied,omitempty"`
+}
+
+// NodePublic identifies a node without carrying the secret that dials it.
+type NodePublic struct {
+	Tag      string `json:"tag"`
+	Protocol string `json:"protocol"`
+	Server   string `json:"server"`
+	Port     int    `json:"port"`
+}
+
 // AddSubscriptionRequest is the POST /api/subscriptions body.
 type AddSubscriptionRequest struct {
 	Name      string `json:"name"`
@@ -496,6 +531,16 @@ type AuthState struct {
 	AllowRegistration bool  `json:"allow_registration"`
 	Authenticated     bool  `json:"authenticated"`
 	User              *User `json:"user,omitempty"`
+}
+
+// PatchUserRequest is the PATCH /api/users/{id} body. Every field is optional; a
+// nil one is left untouched. An empty (non-nil) ProxyPassword removes proxy
+// access — which is why these are pointers and not plain strings.
+type PatchUserRequest struct {
+	Role          *string `json:"role,omitempty"`
+	Disabled      *bool   `json:"disabled,omitempty"`
+	Password      *string `json:"password,omitempty"`
+	ProxyPassword *string `json:"proxy_password,omitempty"`
 }
 
 // AuthSettings are the registry-wide auth knobs (admin-writable at runtime).
