@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Trust Proxy</title>
+    <style>
+      /* The splash is a waiting room, not a second console: it exists to show
+         what the gateway is doing before the window navigates to the real UI,
+         and to say something useful when it fails to come up. */
+      :root { color-scheme: dark light; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; height: 100vh; display: grid; place-items: center;
+        font: 13px/1.6 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+        background: #0b0f0e; color: #e6edeb;
+      }
+      @media (prefers-color-scheme: light) { body { background: #f7faf9; color: #12201c; } }
+      main { width: 460px; max-width: calc(100vw - 48px); }
+      .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+      .dot {
+        width: 26px; height: 26px; border-radius: 8px; display: grid; place-items: center;
+        background: rgba(52, 211, 153, .16); color: #34d399; font-weight: 700;
+      }
+      h1 { font-size: 15px; margin: 0; letter-spacing: -.01em; }
+      .sub { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; opacity: .5; }
+      .card { border: 1px solid rgba(127,140,141,.25); border-radius: 12px; padding: 16px 18px; }
+      .row { display: flex; justify-content: space-between; gap: 12px; padding: 3px 0; }
+      .row span:last-child { font-variant-numeric: tabular-nums; opacity: .85; }
+      .muted { opacity: .6; }
+      .spinner {
+        width: 13px; height: 13px; border-radius: 50%; display: inline-block; vertical-align: -2px;
+        border: 2px solid rgba(52,211,153,.25); border-top-color: #34d399; animation: spin .8s linear infinite;
+      }
+      @keyframes spin { to { transform: rotate(360deg) } }
+      .err { margin-top: 14px; border: 1px solid rgba(248,113,113,.4); background: rgba(248,113,113,.08);
+             color: #fca5a5; border-radius: 10px; padding: 10px 12px; white-space: pre-wrap; }
+      .actions { margin-top: 14px; display: flex; gap: 8px; flex-wrap: wrap; }
+      button {
+        font: inherit; padding: 6px 12px; border-radius: 8px; cursor: pointer;
+        border: 1px solid rgba(127,140,141,.35); background: transparent; color: inherit;
+      }
+      button.primary { background: #34d399; border-color: #34d399; color: #06231a; font-weight: 600; }
+      button:disabled { opacity: .5; cursor: default; }
+      .hint { margin-top: 12px; font-size: 12px; opacity: .6; }
+      code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="brand">
+        <div class="dot">T</div>
+        <div>
+          <h1>Trust Proxy</h1>
+          <div class="sub">Gateway</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row"><span id="headline"><span class="spinner"></span> Starting the gateway…</span></div>
+        <div class="row muted"><span>API</span><span id="api">—</span></div>
+        <div class="row muted"><span>Data</span><span id="data">—</span></div>
+        <div class="row muted"><span>System service</span><span id="svc">—</span></div>
+      </div>
+
+      <div id="error" class="err" hidden></div>
+
+      <div class="actions" id="actions" hidden>
+        <button class="primary" id="retry">Retry</button>
+        <button id="install">Install system service…</button>
+        <button id="uninstall" hidden>Remove system service…</button>
+      </div>
+
+      <p class="hint" id="hint">
+        TUN capture needs root. Installing the system service lets
+        <code>launchd</code> own the gateway, so the data plane keeps running when
+        this window is closed — and survives a reboot.
+      </p>
+    </main>
+
+    <script type="module">
+      const { invoke } = window.__TAURI__.core;
+      const $ = (id) => document.getElementById(id);
+
+      const render = (s) => {
+        $('api').textContent = s.api;
+        $('data').textContent = s.data_dir;
+        $('svc').textContent = s.service_installed
+          ? s.service_running ? 'installed, running' : 'installed, not running'
+          : 'not installed';
+        $('uninstall').hidden = !s.service_installed;
+
+        if (s.error) {
+          $('headline').textContent = 'The gateway did not start';
+          $('error').hidden = false;
+          $('error').textContent = s.error;
+          $('actions').hidden = false;
+          return true;
+        }
+        if (s.healthy) {
+          $('headline').innerHTML = s.attached
+            ? 'Attached to the running gateway — opening the console…'
+            : 'Gateway is up — opening the console…';
+          return true;
+        }
+        return false;
+      };
+
+      let done = false;
+      const poll = async () => {
+        try {
+          const s = await invoke('status');
+          if (render(s)) { done = true; }
+        } catch (e) {
+          $('error').hidden = false;
+          $('error').textContent = String(e);
+          $('actions').hidden = false;
+          done = true;
+        }
+        if (!done) setTimeout(poll, 400);
+      };
+      poll();
+
+      $('retry').onclick = () => { done = false; $('error').hidden = true; $('actions').hidden = true; invoke('open_console').catch(()=>{}); poll(); };
+      const privileged = async (cmd, btn) => {
+        btn.disabled = true;
+        try {
+          await invoke(cmd);
+          done = false; poll();
+        } catch (e) {
+          $('error').hidden = false;
+          $('error').textContent = String(e);
+        } finally {
+          btn.disabled = false;
+        }
+      };
+      $('install').onclick = (e) => privileged('install_service', e.target);
+      $('uninstall').onclick = (e) => privileged('uninstall_service', e.target);
+    </script>
+  </body>
+</html>

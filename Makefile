@@ -15,7 +15,7 @@ TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
-.PHONY: run build build-embed tidy webui webui-dev dashboard dashboard-dev dashboard-test deps clean e2e redeploy
+.PHONY: run build build-embed tidy webui webui-dev dashboard dashboard-dev dashboard-test deps clean e2e redeploy desktop desktop-dev desktop-sidecar
 
 # Redeploy defaults (override: make redeploy MODE=manual)
 DATA_DIR  ?= $(HOME)/.trust-proxy
@@ -78,5 +78,23 @@ dashboard:
 dashboard-dev:
 	cd dashboard && corepack pnpm dev
 
+## --- desktop shell (macOS slice) ---------------------------------------------
+## The sidecar MUST be the embed_ui build: inside a .app there is no
+## dashboard/dist on disk to serve the console from.
+DESKTOP_TRIPLE ?= $(shell rustc -vV | sed -n 's/^host: //p')
+
+desktop-sidecar: build-embed
+	mkdir -p desktop/src-tauri/binaries
+	cp trust-proxy desktop/src-tauri/binaries/trust-proxy-$(DESKTOP_TRIPLE)
+
+## Build Trust Proxy.app (+ dmg) with the gateway bundled as a sidecar
+desktop: desktop-sidecar
+	cd desktop && corepack pnpm install && corepack pnpm build
+
+## Run the shell against a dev build (attaches to a running gateway if there is one)
+desktop-dev: desktop-sidecar
+	cd desktop && corepack pnpm install && corepack pnpm dev
+
 clean:
 	rm -f trust-proxy
+	rm -rf desktop/src-tauri/binaries desktop/src-tauri/target

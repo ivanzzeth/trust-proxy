@@ -64,10 +64,11 @@
 ## #6 —— 移动端:客户端配置导出
 - 导出可给 **SFA(Android)/ SFI(iOS)/ Clash Meta / Shadowrocket** 导入的配置/订阅:CN 直连 / 境外走自建出口。检测在出口/网关侧。**不做原生 App**(iOS NE 内存限制 + GPL 与 App Store 冲突)。附使用指引。
 
-## #4 —— Tauri 桌面壳（大,最后）
-- Tauri v2,把 `trust-proxy serve` 作为 **sidecar** 打包,壳启动即拉起、webview 指向 127.0.0.1:9096,数据 `~/.trust-proxy`。
-- 目标平台:**Windows / macOS(仅 arm64)/ Linux**。
-- TUN 需**透明提权**(用户别感知 sudo)。产出 GPLv3 安装包(.msi/.dmg/.AppImage)。
+## #4 —— Tauri 桌面壳（**macOS arm64 切片 ✅,其余待做**）
+- ✅ Tauri v2 壳(`desktop/`),`trust-proxy`(embed_ui) 作 **sidecar**;贴附已运行的网关 / 否则拉起,webview 指向 127.0.0.1:9096,数据 `~/.trust-proxy`。产出 `.app` + `.dmg`(`make desktop`)。
+- ✅ **透明提权**走系统机制而非壳自己 root:`trust-proxy service install`(launchd LaunchDaemon,root)→ TUN 可用、关窗不掉策略、开机自启;壳上一个按钮＝一次管理员授权跑这条 CLI。`service uninstall` 是逃生口(幂等)。
+- ✅ **不留孤儿**:`serve --exit-with-pid` 让子进程盯父进程(强退/崩溃没有回调,实测过)。
+- **待做**:① 代码签名 + 公证(现在是 unsigned,首次打开要右键「打开」);② 自动更新(Tauri updater + 签名 manifest);③ **Windows**(服务 + UAC)与 **Linux**(systemd + polkit/setcap)——两套提权模型各自独立,别硬抽象;④ 菜单栏/托盘常驻 + 开机自启开关的 UI。
 - sidecar 模型**不适用移动端**(见 #6)。
 
 ---

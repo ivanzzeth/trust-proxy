@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Trust Proxy",
+  "version": "0.6.0",
+  "identifier": "io.trust-proxy.desktop",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Trust Proxy",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 900,
+        "minHeight": 600,
+        "resizable": true,
+        "url": "index.html"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns"],
+    "externalBin": ["binaries/trust-proxy"],
+    "macOS": {
+      "minimumSystemVersion": "12.0"
+    },
+    "copyright": "GPL-3.0-or-later. Bundles sing-box (GPL-3.0); corresponding source at https://github.com/ivanzzeth/trust-proxy",
+    "licenseFile": "../../LICENSE"
+  }
+}

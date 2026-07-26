@@ -19,3 +19,14 @@ data/
 # scratch (VM screenshots, diagnosis dumps) + TS incremental build cache
 /tmp/
 /dashboard/tsconfig.tsbuildinfo
+
+# runtime state that lands in the repo root when serve is run without --data
+/cache.db
+/clash-secret
+
+# desktop shell (Tauri) — regenerable artifacts
+/desktop/node_modules
+/desktop/src-tauri/target
+/desktop/src-tauri/binaries
+/desktop/src-tauri/gen/schemas
+/dashboard/.dist-stale-root

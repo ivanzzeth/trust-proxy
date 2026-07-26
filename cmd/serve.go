@@ -50,6 +50,7 @@ import (
 
 var (
 	serveConfig        string
+	serveExitWithPid   int
 	serveAPIAddr       string
 	serveDataDir       string
 	serveConsoleDir    string
@@ -172,6 +173,7 @@ func init() {
 	f.BoolVarP(&serveDaemon, "daemon", "d", false, "run in background (detached; survives SSH logout)")
 	f.StringVar(&serveLog, "log", "", "daemon log file (default <data>/serve.log)")
 	f.StringVar(&servePid, "pid", "", "daemon pid file (default <data>/serve.pid)")
+	f.IntVar(&serveExitWithPid, "exit-with-pid", 0, "shut down when this pid exits (used by the desktop shell so a force-quit leaves no orphan gateway)")
 	f.IntVar(&serveLogMaxMB, "log-max-size", logging.DefaultMaxSizeMB, "rotate the daemon log past this many MB (0 = never rotate)")
 	f.IntVar(&serveLogKeep, "log-keep", logging.DefaultMaxBackups, "how many rotated daemon logs to keep")
 	f.IntVar(&serveLogMaxAge, "log-max-age", 0, "delete rotated daemon logs older than this many days (0 = keep by count only)")
@@ -572,6 +574,16 @@ func runServe() error {
 
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	// --exit-with-pid: shut down when the process that started us disappears, so a
+	// force-quit of the desktop shell cannot leave the data plane running behind
+	// its back (the shell's own exit handler never runs on SIGKILL).
+	if serveExitWithPid > 0 {
+		stopWatch := watchParent(serveExitWithPid, parentWatchInterval, func() {
+			logging.L().Info().Int("parent", serveExitWithPid).Msg("parent process gone; shutting down")
+			signals <- syscall.SIGTERM
+		})
+		defer stopWatch()
+	}
 	<-signals
 	logging.L().Info().Msg("shutting down")
 	close(stopSave)

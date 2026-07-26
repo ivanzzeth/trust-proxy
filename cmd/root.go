@@ -29,5 +29,5 @@ func init() {
 		profileCmd, detectionsCmd, historyCmd, nodeCmd, detectCmd, quarantineCmd, netcheckCmd,
 	}
 	addClientFlags(clients...)
-	rootCmd.AddCommand(append(clients, serveCmd, connCmd, proxyCmd, selftestCmd)...)
+	rootCmd.AddCommand(append(clients, serveCmd, connCmd, proxyCmd, serviceCmd, selftestCmd)...)
 }

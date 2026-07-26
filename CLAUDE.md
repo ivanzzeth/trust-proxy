@@ -122,8 +122,30 @@ sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 
 - `pkg/apitypes` — 共享 wire 类型（无内部依赖，避免 import 环）。
 
 **CLI 覆盖全部 API**（控制台能做的，命令行都能做；每个子命令都有 `--json` 供脚本消费，`--api-addr`/`--api-token` 指向本机或探针）：
-`status` | `acl ls|add|rm <permit|deny|no-proxy>` | `rules ls`(生效视图) `rules custom|packs|sets …` | `dns get|set`（`--direct-server` 等单项 patch，`-f` 整档替换）| `mode get|set|confirm`（`--guard` 死亡开关）| `routing get|set`(Rule/Global) | `posture get|set` | `final get|set` | `profile ls|save|activate|rm` | `proxies ls|select|delay` | `groups get|set` | `endpoints ls|add|toggle|rm` | `tun get|set` | `inbound get|set` | `autoblock on|off` | `detections ls|stats` | `history ls|stats` | `node ls|add|rm`(fleet) | `sub add|import|ls|apply|rm|refresh` | `conn ls|kill`(底层 Clash 原语→:9090) | `proxy gen|run|stop`(**本地离线**,不经 SDK——出口机上没有网关在跑；`--json` 与 `POST /api/proxy-gen` 同形)。
+`status` | `acl ls|add|rm <permit|deny|no-proxy>` | `rules ls`(生效视图) `rules custom|packs|sets …` | `dns get|set`（`--direct-server` 等单项 patch，`-f` 整档替换）| `mode get|set|confirm`（`--guard` 死亡开关）| `routing get|set`(Rule/Global) | `posture get|set` | `final get|set` | `profile ls|save|activate|rm` | `proxies ls|select|delay` | `groups get|set` | `endpoints ls|add|toggle|rm` | `tun get|set` | `inbound get|set` | `autoblock on|off` | `detections ls|stats` | `history ls|stats` | `node ls|add|rm`(fleet) | `sub add|import|ls|apply|rm|refresh` | `service install|uninstall|status`(**本地 root**,macOS launchd) | `conn ls|kill`(底层 Clash 原语→:9090) | `proxy gen|run|stop`(**本地离线**,不经 SDK——出口机上没有网关在跑；`--json` 与 `POST /api/proxy-gen` 同形)。
 **坑**：`/api/customrules` 与 `/api/rulesets` 返回的是**整份 store 文档**（`{"rules":[…]}` / `{"sets":[…]}`），不是裸数组——SDK 里 `customRulesDoc`/`ruleSetsDoc` 负责解包（`pkg/client/policy_test.go` 有回归）。
+
+### 桌面端（macOS 切片，✅）
+
+`desktop/`：**Tauri v2 壳 + Go 网关做 sidecar**。壳里没有任何策略/检测逻辑——它是一个窗口加一段生命周期，
+UI 就是网关自己在 `:9096` serve 的那个控制台（故 sidecar **必须**是 `embed_ui` 构建，`.app` 里没有 `dashboard/dist`）。
+
+两条不变量（都在真机上验过，不是设想）：
+
+| 不变量 | 为什么 | 怎么做 |
+|---|---|---|
+| **绝不起第二个网关** | 两个 `serve` 同数据目录会抢 `cache.db`（bolt 单写锁）和端口 | 先探 `/api/health`：有人在跑就**贴附**（launchd 装的、终端里手起的都算），只有没人应答才拉起自己的 |
+| **绝不留孤儿** | 关窗/强退后数据面还在跑＝用户以为关了其实还在管流量 | 正常退出杀子进程；**SIGKILL/崩溃没有回调**（实测 SIGTERM 掉壳后网关活着），故 `serve --exit-with-pid <ppid>` 让**子进程盯父进程**（`cmd/parentwatch.go`，signal 0 探活 + 被 reparent 也算父亲已死） |
+
+**提权不放在壳里**：TUN 要 root，GUI 不该是 root。`internal/service` + `trust-proxy service install`（macOS **LaunchDaemon**，
+`/Library/LaunchDaemons/io.trust-proxy.gateway.plist`）让 **launchd 拥有 daemon**，壳只贴附；壳上的按钮就是拿一次
+管理员授权（`osascript ... with administrator privileges`）去跑这条 CLI。防板砖同调：`service uninstall` 一条命令、
+任意半装状态都能收干净且幂等；install **不会顺手打开 TUN**（`--mode` 不给就不写）；`RunAtLoad`+`KeepAlive`（kill -9 后自愈）。
+plist 里所有路径必须绝对（launchd 不解析相对路径，否则每次开机静默失败）。
+
+构建：`make desktop`（→ `.app` + `.dmg`，先 `make build-embed` 再 bundle）/ `make desktop-dev`。首启把内置默认配置写进
+`<data>/config.json`，**已存在则绝不覆盖**（那是用户的东西）。启动失败时把网关日志里的最后一条错误**原样引到界面上**
+（最常见的就是 17070 被别的代理占了，说清楚十秒能修，指一个日志路径不能）。
 
 ### 关键文件 / 目录
 ```
@@ -152,6 +174,9 @@ internal/logging/          日志栈：**zerolog**(编码) → **diode**(无锁 
 internal/nodes/            多节点注册表（大脑侧，data/nodes.json；反代 /api/nodes/{id}/* → 各探针 /api，注入 token）
 internal/api/              我们自己的后端 /api（stdlib mux；订阅/白名单/规则集/配置档 CRUD + 模式/状态/自动阻断 + 代理 Clash connections/proxies/logs + serve dashboard）
 dashboard/                 我们自建的控制台（shadcn/ui + Tailwind v4 + React19 + Vite，走 /api 单一 origin）
+desktop/                   Tauri v2 桌面壳（macOS 切片）：src-tauri/src/main.rs 贴附/拉起/杀子 + ui/index.html 等待页；sidecar = embed_ui 的 trust-proxy
+internal/service/          系统服务安装（macOS launchd LaunchDaemon；plist 生成 + bootstrap/bootout；`trust-proxy service`）
+cmd/parentwatch.go         --exit-with-pid：父进程消失即自我关闭（桌面壳强退不留孤儿网关）
 internal/subscription/     订阅 抓取/解析(base64+share链)/JSON 存储（借鉴 s-ui）
 pkg/clash/                 底层 SDK：标准 Clash API 客户端
 pkg/client/                上层 SDK：/api + 组合 clash
