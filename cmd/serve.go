@@ -65,6 +65,11 @@ var (
 	serveLogKeep       int
 	serveLogMaxAge     int
 	serveLogCompress   bool
+
+	serveHistoryMaxMB    int
+	serveHistoryKeep     int
+	serveHistoryMaxAge   int
+	serveHistoryCompress bool
 )
 
 // daemonLogPath returns the daemon log path the same way for the parent (which
@@ -167,6 +172,10 @@ func init() {
 	f.IntVar(&serveLogKeep, "log-keep", logging.DefaultMaxBackups, "how many rotated daemon logs to keep")
 	f.IntVar(&serveLogMaxAge, "log-max-age", 0, "delete rotated daemon logs older than this many days (0 = keep by count only)")
 	f.BoolVar(&serveLogCompress, "log-compress", true, "gzip rotated daemon logs")
+	f.IntVar(&serveHistoryMaxMB, "history-max-size", 32, "rotate the connection history past this many MB")
+	f.IntVar(&serveHistoryKeep, "history-keep", 2, "how many rotated history files to keep (still browsable in the History view)")
+	f.IntVar(&serveHistoryMaxAge, "history-max-age", 0, "delete rotated history older than this many days (0 = keep by count only)")
+	f.BoolVar(&serveHistoryCompress, "history-compress", true, "gzip rotated history files")
 }
 
 func runServe() error {
@@ -218,7 +227,12 @@ func runServe() error {
 
 	// Durable per-connection history: fold every completed connection into an
 	// append-only log + aggregates.
-	histStore, err := history.NewStore(filepath.Join(serveDataDir, "history.jsonl"))
+	histStore, err := history.NewStoreWithOptions(filepath.Join(serveDataDir, "history.jsonl"), history.Options{
+		MaxSizeMB:  serveHistoryMaxMB,
+		MaxBackups: serveHistoryKeep,
+		MaxAgeDays: serveHistoryMaxAge,
+		Compress:   serveHistoryCompress,
+	})
 	if err != nil {
 		return err
 	}

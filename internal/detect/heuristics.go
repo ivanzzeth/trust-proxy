@@ -10,7 +10,12 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-const beaconWindow = 20 // per-destination connection timestamps kept
+const (
+	beaconWindow = 20 // per-destination connection timestamps kept
+	// beaconReAlertFactor multiplies the observed interval to get the re-alert
+	// cooldown: report a cadence at most once per this many of its own periods.
+	beaconReAlertFactor = 36
+)
 
 type beaconState struct {
 	times     []time.Time
@@ -74,7 +79,15 @@ func (e *Engine) recordBeacon(key string, now time.Time) string {
 	if mean < e.beaconMinIntvl.Seconds() || mean > e.beaconMaxIntvl.Seconds() || cv > e.beaconCV {
 		return ""
 	}
-	if !bs.lastAlert.IsZero() && now.Sub(bs.lastAlert) < e.beaconReAlert {
+	// The cooldown has to outlast the cadence being reported, or a detector that
+	// fires on a 10-minute poller re-fires every 10 minutes forever: one ordinary
+	// keepalive then produces ~144 alerts a day and buries the real ones. Scale
+	// it with the observed interval and keep the configured value as the floor.
+	reAlert := e.beaconReAlert
+	if scaled := time.Duration(mean*beaconReAlertFactor) * time.Second; scaled > reAlert {
+		reAlert = scaled
+	}
+	if !bs.lastAlert.IsZero() && now.Sub(bs.lastAlert) < reAlert {
 		return ""
 	}
 	bs.lastAlert = now

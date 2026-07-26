@@ -108,6 +108,11 @@ func (e *Engine) AutoBlock() bool { return e.autoBlock.Load() }
 // Track records a new connection event, runs connection-time detection, and
 // returns the event (whose Upload/Download the caller updates as bytes flow).
 func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) *Event {
+	// Resolved before the lock: trustedDest is a caller-supplied predicate that
+	// walks the whitelist / pack / rule-set indexes under their own locks. Running
+	// it inside e.mu would serialize every connection behind those lookups and
+	// invites a lock cycle back into the engine (finalize takes the same care).
+	trusted := e.trustedHostDest(host, dst)
 	e.mu.Lock()
 	e.seq++
 	now := e.now()
@@ -125,9 +130,14 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 	if rs := e.matchThreatLocked(ev, host, dst); len(rs) > 0 {
 		pending = append(pending, e.makeDetectionLocked(KindIntel, e.disposalActionLocked(), ev, rs))
 	}
+	// Heuristics never alert on a destination the operator explicitly Permitted:
+	// a heartbeat to (or a big upload to) something you approved is the approved
+	// behaviour, and drowning the real findings in it is how a detector becomes
+	// wallpaper. Threat-intel hits above are deliberately NOT gated this way — a
+	// permitted domain turning up on a feed is precisely what must still shout.
 	// beaconing: periodic connections to the same destination = possible C2
 	// heartbeat. Heuristic => alert only (NOT auto-blocked).
-	if e.beaconEnabled {
+	if e.beaconEnabled && !trusted {
 		key := host
 		if key == "" {
 			key = hostOnly(dst)
@@ -139,7 +149,7 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 		}
 	}
 	// DGA / DNS-tunnel scoring on the domain (heuristic => alert only).
-	if e.dgaEnabled && host != "" {
+	if e.dgaEnabled && host != "" && !trusted {
 		if rs := e.analyzeDomain(host, now); len(rs) > 0 {
 			ev.Level = "alert"
 			ev.Reasons = append(ev.Reasons, rs...)
@@ -304,10 +314,19 @@ func hasReason(rs []string, prefix string) bool {
 }
 
 func (e *Engine) isTrusted(ev *Event) bool {
+	if ev == nil {
+		return false
+	}
+	return e.trustedHostDest(ev.Host, ev.Destination)
+}
+
+// trustedHostDest reports whether the operator explicitly Permitted this
+// destination. Must be called WITHOUT e.mu held (see Track).
+func (e *Engine) trustedHostDest(host, destination string) bool {
 	if e.trustedDest == nil {
 		return false
 	}
-	return e.trustedDest(ev.Host, ev.Destination)
+	return e.trustedDest(host, destination)
 }
 
 // BanFromEvent adds the event's destination to the deny-list (threat-intel or

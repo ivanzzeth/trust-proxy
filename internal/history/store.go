@@ -7,6 +7,7 @@ package history
 import (
 	"bufio"
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"os"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
+
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 func b2r(b []byte) io.Reader { return bytes.NewReader(b) }
@@ -25,10 +28,15 @@ func contains(s, sub string) bool {
 }
 
 const (
-	maxBytes    = 64 << 20 // rotate the JSONL past this size
-	hourWindow  = 24       // hourly buckets kept
-	maxTalkers  = 500      // prune talker map past this
-	topTalkersN = 20
+	// Retention defaults. 64 MiB with a single hand-rolled rename kept up to
+	// ~128 MiB of uncompressed JSONL around and made startup (which replays the
+	// live file to rebuild aggregates) proportional to it. lumberjack owns the
+	// rotation now; these are the defaults Options fills in.
+	defaultMaxSizeMB  = 32
+	defaultMaxBackups = 2
+	hourWindow        = 24  // hourly buckets kept
+	maxTalkers        = 500 // prune talker map past this
+	topTalkersN       = 20
 )
 
 // Record is one completed connection (compact keys — the file can get long).
@@ -75,12 +83,20 @@ type Stats struct {
 	Hourly      []HourBucket `json:"hourly"`
 }
 
+// Options tunes retention. Zero values take the defaults above; MaxAgeDays 0
+// means "keep by count only".
+type Options struct {
+	MaxSizeMB  int
+	MaxBackups int
+	MaxAgeDays int
+	Compress   bool
+}
+
 // Store is a file-backed connection history, safe for concurrent use.
 type Store struct {
 	path string
 	mu   sync.Mutex
-	f    *os.File
-	size int64
+	w    *lumberjack.Logger // owns rotation/retention/compression
 	now  func() time.Time
 
 	// readMu serializes RecentPage's disk reads with each other only — kept
@@ -101,8 +117,13 @@ type Store struct {
 	hours                  map[int64]*HourBucket
 }
 
-// NewStore opens (creating) the JSONL at path and rebuilds aggregates from it.
-func NewStore(path string) (*Store, error) {
+// NewStore opens the JSONL at path with the default retention.
+func NewStore(path string) (*Store, error) { return NewStoreWithOptions(path, Options{}) }
+
+// NewStoreWithOptions opens (creating) the JSONL at path and rebuilds aggregates
+// from it. Only the live file is replayed: rotated generations stay on disk for
+// forensics but are not folded back in, which is what keeps startup bounded.
+func NewStoreWithOptions(path string, o Options) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
@@ -117,15 +138,30 @@ func NewStore(path string) (*Store, error) {
 			}
 		}
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return nil, err
+	if o.MaxSizeMB <= 0 {
+		o.MaxSizeMB = defaultMaxSizeMB
 	}
-	s.f = f
-	if fi, err := f.Stat(); err == nil {
-		s.size = fi.Size()
+	if o.MaxBackups <= 0 {
+		o.MaxBackups = defaultMaxBackups
+	}
+	s.w = &lumberjack.Logger{
+		Filename:   path,
+		MaxSize:    o.MaxSizeMB,
+		MaxBackups: o.MaxBackups,
+		MaxAge:     o.MaxAgeDays,
+		Compress:   o.Compress,
 	}
 	return s, nil
+}
+
+// Close flushes and closes the underlying file.
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.w == nil {
+		return nil
+	}
+	return s.w.Close()
 }
 
 // Record appends a completed connection and updates aggregates.
@@ -141,26 +177,59 @@ func (s *Store) Record(e detect.Event) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.f != nil {
-		if s.size >= maxBytes {
-			s.rotate()
-		}
-		n, _ := s.f.Write(append(line, '\n'))
-		s.size += int64(n)
+	if s.w != nil {
+		_, _ = s.w.Write(append(line, '\n'))
 	}
 	s.fold(r)
 	s.prune()
 }
 
-// rotate renames the current file aside and opens a fresh one (caller holds mu).
-func (s *Store) rotate() {
-	s.f.Close()
-	_ = os.Rename(s.path, s.path+".1")
-	f, err := os.OpenFile(s.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err == nil {
-		s.f = f
-		s.size = 0
+// rotatedFiles lists the rotated generations oldest-first. lumberjack names them
+// "<base>-<timestamp>.<ext>" (plus .gz when compressing), and that timestamp
+// sorts lexicographically, so plain name order is chronological.
+func (s *Store) rotatedFiles() []string {
+	dir, base := filepath.Split(s.path)
+	ext := filepath.Ext(base)
+	prefix := strings.TrimSuffix(base, ext)
+	matches, err := filepath.Glob(filepath.Join(dir, prefix+"-*"+ext+"*"))
+	if err != nil {
+		return nil
 	}
+	// Compression happens after the rename, so a generation can appear twice for
+	// a moment ("X.jsonl" and "X.jsonl.gz"). Keep one per generation or the
+	// History page counts those records twice while the window is open.
+	byGen := make(map[string]string, len(matches))
+	for _, m := range matches {
+		gen := strings.TrimSuffix(m, ".gz")
+		if _, dup := byGen[gen]; dup && strings.HasSuffix(m, ".gz") {
+			continue // prefer the plain file when both exist
+		}
+		byGen[gen] = m
+	}
+	out := make([]string, 0, len(byGen))
+	for _, m := range byGen {
+		out = append(out, m)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// readMaybeGzip reads a rotated generation whether or not it was compressed, so
+// turning compression on doesn't silently shrink what the History page can show.
+func readMaybeGzip(path string) ([]byte, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if !strings.HasSuffix(path, ".gz") {
+		return b, nil
+	}
+	zr, err := gzip.NewReader(b2r(b))
+	if err != nil {
+		return nil, err
+	}
+	defer zr.Close()
+	return io.ReadAll(zr)
 }
 
 // fold updates aggregates for one record (caller holds mu, or during load).
@@ -290,7 +359,7 @@ func (s *Store) RecentPage(limit, offset int, q string) ([]Record, int) {
 
 	var recs []Record
 	appendFrom := func(path string) {
-		b, err := os.ReadFile(path)
+		b, err := readMaybeGzip(path)
 		if err != nil {
 			return
 		}
@@ -307,10 +376,12 @@ func (s *Store) RecentPage(limit, offset int, q string) ([]Record, int) {
 			recs = append(recs, r)
 		}
 	}
-	// The rotated-away half is older and comes first so overall order stays
-	// chronological; without it, history past the rotation boundary would be
-	// permanently unreachable via the API even though it's still on disk.
-	appendFrom(s.path + ".1")
+	// Rotated generations are older and come first so overall order stays
+	// chronological; without them, history past a rotation boundary would be
+	// permanently unreachable via the API even though it is still on disk.
+	for _, p := range s.rotatedFiles() {
+		appendFrom(p)
+	}
 	appendFrom(s.path)
 
 	total := len(recs)
