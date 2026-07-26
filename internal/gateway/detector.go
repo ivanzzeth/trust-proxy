@@ -21,10 +21,13 @@ import (
 // detection engine and byte-counts the TCP ones.
 type detector struct {
 	engine *detect.Engine
+	// outbounds resolves a group tag to the member it currently uses, so a record
+	// says which exit carried the connection rather than which group was asked.
+	outbounds adapter.OutboundManager
 }
 
-func newDetector(engine *detect.Engine) *detector {
-	return &detector{engine: engine}
+func newDetector(engine *detect.Engine, outbounds adapter.OutboundManager) *detector {
+	return &detector{engine: engine, outbounds: outbounds}
 }
 
 var (
@@ -75,7 +78,7 @@ func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapte
 			fp = f.JA4
 		}
 	}
-	ev := d.engine.TrackWithFingerprint("tcp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound), fp)
+	ev := d.engine.TrackWithFingerprint("tcp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), d.outStr(matchOutbound), fp)
 	// Who this is, when the inbound authenticates. Needed to show a person their
 	// own traffic on a shared gateway.
 	ev.SetUser(m.User)
@@ -94,7 +97,7 @@ func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapte
 
 func (d *detector) RoutedPacketConnection(ctx context.Context, conn N.PacketConn, m adapter.InboundContext, matchedRule adapter.Rule, matchOutbound adapter.Outbound) N.PacketConn {
 	// UDP: record the event (no byte-count wrapper for packet conns yet).
-	ev := d.engine.Track("udp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), outStr(matchOutbound))
+	ev := d.engine.Track("udp", host(m), m.Destination.String(), m.Source.String(), procOf(m), ruleStr(matchedRule), d.outStr(matchOutbound))
 	ev.SetUser(m.User)
 	return conn
 }
@@ -156,11 +159,40 @@ func ruleStr(rule adapter.Rule) string {
 	return "(final)"
 }
 
-func outStr(out adapter.Outbound) string {
-	if out != nil {
-		return out.Type() + "/" + out.Tag()
+// outStr names the outbound a connection was handed to.
+//
+// A group is not an answer: "selector/proxy" tells you nothing about which exit
+// carried the traffic, and with several exits in play (subscription nodes,
+// WireGuard endpoints, gateways) that is the first question anyone asks of
+// history. So groups are followed to the member in use — proxy → Auto → gw-cloud
+// becomes "socks/gw-cloud".
+func (d *detector) outStr(out adapter.Outbound) string {
+	if out == nil {
+		return ""
 	}
-	return ""
+	resolved := d.resolveGroup(out, 0)
+	return resolved.Type() + "/" + resolved.Tag()
+}
+
+// resolveGroup walks a group to its current member. Bounded: a
+// misconfigured selector pointing at itself must not spin on the connection path.
+func (d *detector) resolveGroup(out adapter.Outbound, depth int) adapter.Outbound {
+	if depth >= 4 || d.outbounds == nil {
+		return out
+	}
+	group, isGroup := out.(adapter.OutboundGroup)
+	if !isGroup {
+		return out
+	}
+	now := group.Now()
+	if now == "" || now == out.Tag() {
+		return out
+	}
+	member, found := d.outbounds.Outbound(now)
+	if !found || member == nil {
+		return out
+	}
+	return d.resolveGroup(member, depth+1)
 }
 
 // connTiming adapts *adapter.ConnectionTiming (sing-box's raw per-connection

@@ -163,6 +163,15 @@ func TestFleetGatewayAsExit(t *testing.T) {
 			body, cli.logs(), gw.logs())
 	}
 
+	// ---- the client's own record names the exit that carried it ------------
+	//
+	// A group name ("selector/proxy") is not an answer when several exits are in
+	// play, so the record must resolve to the member in use.
+	cliHist := cliCLI("history", "ls", "--json", "--limit", "10")
+	if !strings.Contains(cliHist, "gw-cloud") {
+		t.Fatalf("the client's history does not name the exit it used:\n%s", cliHist)
+	}
+
 	// ---- and the gateway attributed it to that account --------------------
 	time.Sleep(2 * time.Second)
 	hist := gwCLI("history", "ls", "--json")

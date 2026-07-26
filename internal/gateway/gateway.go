@@ -736,7 +736,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 		return nil, err
 	}
 	if os.Getenv("TP_NO_DETECTOR") == "" {
-		det := newDetector(m.engine)
+		det := newDetector(m.engine, instance.Outbound())
 		instance.Router().AppendTracker(det)
 		// The same detector also watches the resolver: queries that never become
 		// connections (NXDOMAIN sweeps, TXT tunnels) are invisible to a connection
