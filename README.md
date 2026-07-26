@@ -25,7 +25,14 @@ make build-embed     # 发布：-tags embed_ui 把 UI 嵌进二进制，单文�
 ./trust-proxy serve --daemon   # 后台（停止：proxy stop --pid ~/.trust-proxy/serve.pid）
 ```
 
-控制台：**http://127.0.0.1:21585/**（`serve` 启动日志会打印）。
+控制台：**http://127.0.0.1:21585/**（`serve` 启动日志会打印）。第一次打开先**建首个管理员**（自动成为 admin）；在网关本机上填用户名密码即可，从别的机器打开还需要启动日志里那个一次性认领码。没有浏览器的服务器上用 CLI：
+
+```bash
+trust-proxy auth bootstrap                                   # 本机
+trust-proxy auth bootstrap --api-addr <host>:21585 --code …   # 远程（码在 serve 启动日志里）
+```
+
+**在有人认领之前 `/api/*` 是开放的**（否则全新安装没法初始化），`serve` 会把这件事明说在日志里。账号、两种密码（登录 / 走代理）、API key、注册开关见 [docs/operations.md](docs/operations.md#账号与权限)。
 
 **数据目录**默认 `~/.trust-proxy`：订阅/策略/历史/`cache.db`/`clash-secret`，**以及配置本身**（`<data>/config.json`，首启自动种下，仓库里 `configs/config.json` 是它唯一的来源模板）。`--data <dir>` 换目录，`-c` 显式指定别的配置（如 `configs/config.tun.json`）。**同一数据目录勿并跑两实例**（bolt 单写锁）。
 
@@ -42,22 +49,26 @@ make build-embed     # 发布：-tags embed_ui 把 UI 嵌进二进制，单文�
 
 **铁律**：Route 永不开闸，Permit 永不选出口。第三条铁律是 **DNS 必须跟随 Route**——解析器的出网路径要和流量一致，否则国内站点会被解析到境外边缘节点再直连过去（实测 taobao 15.8s → 修复后 0.2s）。详见 [CLAUDE.md](./CLAUDE.md)。
 
-## 桌面端（macOS）
+## 桌面端（macOS / Linux / Windows）
 
 ```bash
-make desktop   # -> Trust Proxy.app + .dmg
+make desktop   # 在当前平台上打包：.app+.dmg / .deb+.AppImage / .msi+.nsis
 ```
 
 壳只负责开窗和生命周期，UI 就是网关 serve 的控制台；已有网关在跑则**贴附**而不再起一个。
 
 **app 未签名**（也不打算签）：自己构建的双击即开；下载来的需放行一次 —— `xattr -dr com.apple.quarantine "/Applications/Trust Proxy.app"`，或系统设置 → 隐私与安全性 →「仍要打开」。
 
-TUN 需要 root → 装成系统服务（launchd 拥有 daemon，关窗不掉策略）：
+同一个壳，各平台各自提权（macOS `osascript` / Linux `pkexec` / Windows UAC）——壳本身从不是 root，只请系统以 root 跑同一条 CLI。
+
+TUN 需要 root → 装成系统服务（服务管理器拥有 daemon，关窗不掉策略）：
 
 ```bash
-sudo trust-proxy service install   # 配置默认就是 <data>/config.json
+sudo trust-proxy service install     # launchd / systemd / SCM，取决于平台
 sudo trust-proxy service uninstall   # 逃生口
 ```
+
+服务默认用**机器级**数据目录（`/Library/Application Support/trust-proxy`、`/var/lib/trust-proxy`、`%ProgramData%\trust-proxy`）；已有 `~/.trust-proxy` 数据时会问一句要不要拷过去（拷贝，不移动）。
 
 细节见 [docs/desktop.md](docs/desktop.md)。
 
@@ -66,7 +77,7 @@ sudo trust-proxy service uninstall   # 逃生口
 控制台能做的，命令行都能做；每个子命令都有 `--json`，`--api-addr`/`--api-token` 可指向本机或远程探针。
 
 ```
-status | acl | rules | dns | mode | routing | posture | final | profile | proxies | groups
+status | auth | user | apikey | request | acl | rules | dns | mode | routing | posture | final | profile | proxies | groups
 endpoints | tun | inbound | autoblock | detect | detections | quarantine | netcheck | history
 node | sub | conn | proxy gen|run|stop | service install|uninstall|status
 ```

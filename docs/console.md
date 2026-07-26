@@ -3,6 +3,7 @@
 浏览器只连 **`:21585` 单一 origin**，一切走 `/api/*`；连接/代理组/日志由后端代理 Clash API，**浏览器不碰 Clash secret**。
 HashRouter，无需 SPA 服务端兜底。
 
+- **登录闸**（`auth-gate`，在所有页面之前）：三种状态由**后端**决定，前端不猜 —— 无人认领 → 建首个管理员（不在网关本机打开时**多一个一次性认领码字段**）/ 未登录 → 登录（仅当管理员开放注册才出现「注册」）/ 已登录 → 渲染应用。会话是 httpOnly cookie，页面读不到也不去读；任何请求收到 401 都会让它重新问一次后端，而不是把用户留在空布局上。
 - **Overview**：实时流量、连接数、告警计数、当前姿势/模式。
 - **Connections**（一页三标签 **全部 / 活动 / 已关闭**）：活动连接来自 Clash API（可断开单条/全部）；已关闭来自持久化历史。每行带状态（活动 / 已放行 / **已拦截**）——**被拦的连接也可见**（兜底路由到 `block` 出站而非 `reject`，detector 因此仍能记录并拿到嗅到的 SNI）。每行**一键加白**：`+域名` / `+IP` / `+进程` / `+设备`（来源 IP），第一次被拦点一下就热重载放行；`+IP` 仅在目标确为 IP 时出现。
 - **Detection**：检测阈值（beacon / DGA / exfil / 处置四组，改完即时进引擎）、隔离区（网关自行封禁的目的地，可放行）、DNS 查询级统计、JA4 指纹基线、主机侧完整性（路由劫持 / LocalNet 越界）。
@@ -14,11 +15,16 @@ HashRouter，无需 SPA 服务端兜底。
 - **Endpoints / VPN**：WireGuard / Tailscale 出口——粘贴 wg-quick 配置或填 Tailscale auth key，启用后自动加入 `proxy` 组（与订阅节点并列）。secrets 服务端保存，不回浏览器。
 - **DNS**：服务器（local/udp/tcp/tls/https/quic）+ 分流规则（domain_suffix / rule_set → server）+ strategy/final + fakeip/hosts，含预设。`detour: proxy` 让 DNS 走出口节点**防泄漏**；`direct_server` 是走 direct 的域名用的国内解析器（见 CLAUDE.md「DNS 跟随 Route」）。
 - **History**：**持久化**的每条完成连接（`history.jsonl`，重启不丢）——总上下行、连接/拦截数、24h 趋势、top talkers、按 host 搜索明细。轮转后的旧代仍可翻阅。
-- **Gateways（多网关）**：注册远程网关（探针）+ 健康状态 + 顶栏一键切换视图。大脑反代到各探针，token 服务端保存，浏览器单 origin 不碰 token。
-- **Settings**：代理入站鉴权（mixed 账号密码，空=开放）+ TUN 高级选项（stack / mtu / strict_route / 按包名分流）。
+- **Gateways（多网关）**：本机作为**独立一条**（Gateway / Client 模式切换）+ 注册的远程网关（健康状态、「作为出口」开关与代理端口/账号、启用开关）。大脑反代到各探针，token 与代理密码**服务端保存、从不回显**，浏览器单 origin 不碰 token。切换「管理哪台」在顶栏，与「我的流量走哪」是两个不同的控件——详见 [`operations.md`](operations.md)「多网关」。
+- **Users（仅管理员）**：账号 + 角色、注册开关、每人**两种密码**（账号密码 = 登录，代理密码 = 走代理，页面把区别写在标签上）、API key（只在创建时显示一次）、以及**待批的放行申请**（批准即启用规则）。
+- **Settings**：TUN 高级选项（stack / mtu / strict_route / 按包名分流）。**代理入站的账号密码不在这里** —— 它就是 Users 里每个人的「代理密码」，一份人员名单，不是两套用户系统。
 - **Logs**：实时日志流（后端把 Clash WS 转 SSE）。
 
-**顶栏常驻**：Posture（Strict ↔ Split）+ Routing（Rule ↔ Global）+ Capture（手动 / 系统代理 / TUN）+ 威胁自动阻断开关 + 实时流量 + 威胁情报计数 + 明暗主题 + 网关切换。
+**顶栏常驻**：**出口切换器**（所有角色可用：订阅节点 / VPN 端点 / 作为出口的网关都是 `proxy` 组成员）+ Posture（Strict ↔ Split）+ Routing（Rule ↔ Global）+ Capture（手动 / 系统代理 / TUN）+ 威胁自动阻断开关 + 实时流量 + 威胁情报计数 + 明暗主题 + **管理对象切换** + 账号菜单（登出）。全局策略类开关只对管理员显示。
+
+**Capture 里的 TUN** 是否可点由后端的 `can_tun` 决定，而不是「是不是 root」——setcap 过的 Linux 二进制非 root 也能开 TUN，Windows 要的是「此刻是否提权」（UAC 下管理员的普通进程并不算）。切之前就说清楚，比切到一半失败好。
+
+未匹配的 hash（旧书签、改过名的页面）一律回首页；否则 react-router 会在应用外层渲染它自己的 404，连导航都没有。
 
 旧路径重定向：`/whitelist`·`/blacklist` → `/acls`，`/rulesets`·`/custom-rules` → `/rules`。
 

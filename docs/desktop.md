@@ -1,9 +1,19 @@
-# 桌面端（macOS）
+# 桌面端（macOS / Linux / Windows）
 
 ```bash
-make desktop     # -> desktop/src-tauri/target/release/bundle/{macos/Trust Proxy.app, dmg/*.dmg}
+make desktop     # 在当前平台上打包（macOS: .app + .dmg / Linux: .deb + .AppImage / Windows: .msi + .nsis）
 make desktop-dev # 开发运行（贴附已在跑的网关）
 ```
+
+**同一个壳，三种提权方式**——壳本身在哪都不是 root，它只是请系统以 root 跑同一条 CLI 命令，再读回 CLI 自己的 JSON。这样「装出来的东西」不取决于是谁问的：
+
+| 平台 | 提权 | 服务 | 机器级数据目录 |
+|---|---|---|---|
+| macOS | `osascript … with administrator privileges` | launchd LaunchDaemon | `/Library/Application Support/trust-proxy` |
+| Linux | **`pkexec`**（polkit） | systemd unit | `/var/lib/trust-proxy` |
+| Windows | **RunAs**（UAC） | 服务控制管理器(SCM) | `%ProgramData%\trust-proxy` |
+
+Linux 上**故意不拿 `sudo` 兜底**：GUI 里没有终端可以问密码，结果要么静默失败，要么在配了免密 sudo 的机器上**不弹任何提示就提权**。没有 pkexec 时壳直接告诉你去终端敲哪条命令。
 
 壳很薄：**只负责开窗和进程生命周期**，UI 就是网关自己在 `:21585` serve 的那个控制台。策略/检测一行都不在 Rust 里——否则一周内就会和 CLI 漂移。
 
@@ -56,6 +66,22 @@ app 上的按钮就是拿一次管理员授权跑上面这条 CLI（`osascript .
 
 `service status` 会显式报 `program_missing`，因为这个状态否则只表现为开机时的静默重试循环。
 
+## 各平台的系统服务
+
+三条路径共用同一套 `Config` 和同一批防板砖规则（托管副本、一条命令卸干净、install 不会顺手开 TUN）：
+
+```bash
+sudo trust-proxy service install     # macOS launchd / Linux systemd / Windows SCM（Windows 需管理员命令行）
+trust-proxy service status           # 装了没 / 在跑没 / 指向哪个二进制（--json 里字段名是 file）
+sudo trust-proxy service uninstall   # 逃生口
+```
+
+- **Linux**：写 `/etc/systemd/system/trust-proxy.service` 并 `enable --now`。`Restart=always` 对应 launchd 的 `KeepAlive`；只挂 `After=network.target`，**绝不等 `network-online.target`**——在「我们就是网络出口」的机器上那个 target 可能永远不到，网关就永远不启动。ExecStart 里的路径是**带引号**的：systemd 按空白拆参数并展开 `%` 说明符，`/home/ivan/My Gateway/data` 不加引号会被拆成两个参数，然后网关用错的数据目录起来了，还不报错。TUN 所需能力用 `AmbientCapabilities` 精确给（`CAP_NET_ADMIN`/`NET_RAW`/`NET_BIND_SERVICE`），其余丢掉。
+- **Windows**：SCM 服务不是「系统帮你起的进程」——它必须回报 Running 并处理 Stop，否则启动超时后被 SCM 杀掉（表现为「服务起不来」，且哪个日志里都没线索）。所以服务是用 `serve --windows-service` 启的；Stop 时先让网关收尾再报 Stopped（TUN 模式下有一张网要还原，中途被杀就是一台没有路由的机器）。失败自动重启 = SCM 的 recovery actions。
+- **数据目录**：`service install` 默认用**机器级**目录（boot 时可能还没人登录，家目录未必可读）。若检测到你已有 `~/.trust-proxy` 数据，会**问一句要不要拷过去**——拷贝而非移动，服务不合用时你还有一个能跑的个人网关；`cache.db`（bolt 单写锁）和 pid/log 刻意不拷。
+
+回归测试：`make e2e-macos`（tart VM 里真装 launchd + TUN 死亡开关）、`make e2e-linux`（特权容器里 pid 1 = 真 systemd：install → `kill -9` 后自愈 → TUN 真捕获 → 卸载干净）。两者缺依赖时**skip 而非失败**。
+
 ## 还没做
 
-代码签名/公证（**已决定不做**）、自动更新、Windows（服务 + UAC）与 Linux（systemd + polkit/setcap）的提权模型、菜单栏/托盘常驻。见 `docs/TODO.md` #4。
+代码签名/公证（**已决定不做**）、自动更新、菜单栏/托盘常驻。**Windows 的提权与服务代码尚未在真 Windows 上跑过**（这里没有 Windows 机器）——三平台都能编译、vet 通过，纯字符串部分（参数表、引号处理）有跨平台单测。见 `docs/TODO.md` #4。
