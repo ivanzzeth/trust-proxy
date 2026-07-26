@@ -125,11 +125,17 @@ func echConfigInAnswer(response *mDNS.Msg) string {
 	return ""
 }
 
+// host is the name a detector should reason about: the sniffed domain when we
+// have one, otherwise the destination — but *without* the port. Socksaddr's
+// String() joins host:port, and a "cloudflare-dns.com:443" host silently defeats
+// every name comparison in the engine (suffix matches, DGA labels, allow-list
+// lookups). Unsniffed traffic reaches this path routinely (UDP, plain socks with
+// sniff off), so it is not a corner case.
 func host(m adapter.InboundContext) string {
 	if m.Domain != "" {
 		return m.Domain
 	}
-	return m.Destination.String()
+	return m.Destination.AddrString()
 }
 
 func procOf(m adapter.InboundContext) string {

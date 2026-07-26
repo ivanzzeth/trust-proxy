@@ -53,7 +53,9 @@ func (e *Engine) checkEncryptedDNSBypassLocked(host, dst, process string, now ti
 	if process != "" && strings.Contains(strings.ToLower(process), "trust-proxy") {
 		return ""
 	}
-	target := strings.ToLower(strings.TrimSuffix(host, "."))
+	// hostOnly: callers that never sniffed a domain hand us the destination, and
+	// a trailing ":443" would make every suffix comparison below miss.
+	target := hostOnly(strings.ToLower(strings.TrimSuffix(host, ".")))
 	matched := ""
 	for _, d := range dohEndpoints {
 		if target == d || strings.HasSuffix(target, "."+d) {
