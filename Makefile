@@ -15,7 +15,7 @@ TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
-.PHONY: run build build-embed tidy webui webui-dev dashboard dashboard-dev deps clean e2e redeploy
+.PHONY: run build build-embed tidy webui webui-dev dashboard dashboard-dev dashboard-test deps clean e2e redeploy
 
 # Redeploy defaults (override: make redeploy MODE=manual)
 DATA_DIR  ?= $(HOME)/.trust-proxy
@@ -65,6 +65,10 @@ webui:
 ## Run the dashboard dev server (talks to the api service on :9095)
 webui-dev:
 	cd $(WEBUI_DIR) && corepack pnpm run dev
+
+## Frontend unit tests (vitest, jsdom): pages rendered against a mocked API
+dashboard-test:
+	cd dashboard && corepack pnpm test
 
 ## Build the shadcn dashboard -> dashboard/dist (served at :9096, the default UI)
 dashboard:

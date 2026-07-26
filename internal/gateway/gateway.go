@@ -27,6 +27,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -71,6 +72,7 @@ type Manager struct {
 	nodes     []apitypes.Node
 	wl        whitelist.Rules
 	bl        blacklist.Rules
+	quar      quarantine.List
 	dl        directlist.Rules
 	cr        customrules.Rules
 	pg        proxygroups.Config
@@ -400,6 +402,23 @@ func (m *Manager) SetBlacklist(bl blacklist.Rules) error {
 	})
 }
 
+// SetInitialQuarantine seeds the gateway-owned block list used by the first
+// Start(). Separate from the deny list on purpose: see internal/quarantine.
+func (m *Manager) SetInitialQuarantine(q quarantine.List) {
+	m.mu.Lock()
+	m.quar = q
+	m.mu.Unlock()
+}
+
+// SetQuarantine replaces the gateway-owned block list and hot-reloads.
+func (m *Manager) SetQuarantine(q quarantine.List) error {
+	return m.setAndRebuild("quarantine", func() func() {
+		prev := m.quar
+		m.quar = q
+		return func() { m.quar = prev }
+	})
+}
+
 // SetInitialDirectList sets the no-proxy (bypass) list used by the first Start().
 func (m *Manager) SetInitialDirectList(dl directlist.Rules) {
 	m.mu.Lock()
@@ -569,15 +588,15 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture :=
-		m.nodes, m.wl, m.bl, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts, m.final, m.posture
+	nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture :=
+		m.nodes, m.wl, m.bl, m.quar, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts, m.final, m.posture
 	m.mu.Unlock()
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, bl, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture, m.clashSecret, m.dataDir)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture, m.clashSecret, m.dataDir)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -647,7 +666,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // The split keeps two orthogonal concerns apart: the whitelist decides only
 // allow/deny (L3), the no-proxy list + rule-sets decide only egress (L4). All
 // injection is at the JSON level so sing-box's own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, final, posture, clashSecret, dataDir string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, quar quarantine.List, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, final, posture, clashSecret, dataDir string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -673,6 +692,11 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	}
 	// L1 security floor (hard deny). Blacklist rejects go right after the prelude.
 	if err := injectBlacklist(cfg, bl); err != nil {
+		return nil, err
+	}
+	// Same floor, separate source: what the gateway blocked by itself survives a
+	// posture switch that replaces the operator's deny list.
+	if err := injectQuarantine(cfg, quar); err != nil {
 		return nil, err
 	}
 	// L1: register rule_set descriptors + emit block-role rejects (allow-role

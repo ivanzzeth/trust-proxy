@@ -1,7 +1,9 @@
 package detect
 
 import (
+	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -118,5 +120,104 @@ func TestThreatIntelStillFiresForPermittedDestinations(t *testing.T) {
 	e.Track("tcp", "evil.tp", "9.9.9.9:443", "127.0.0.1:1", "app", "", "proxy")
 	if n := countKind(*got, KindIntel); n == 0 {
 		t.Fatal("threat-intel hits must not be suppressed by the Permit set")
+	}
+}
+
+// A byte threshold alone says "someone uploaded a lot" — a photo sync, a
+// container push, an AI coding agent. Exfil is the *shape*: lopsided, or bound
+// somewhere never seen before.
+func TestExfilNeedsShapeNotJustBytes(t *testing.T) {
+	e, now, got := newTestEngine(t)
+	cfg := apitypes.DetectionConfig{
+		BeaconEnabled: false, DGAEnabled: false, AutoBlock: false,
+		ExfilUploadBytes: 1 << 20, ExfilMinRatio: 4, ExfilNewDestHours: 1,
+	}
+	e.ApplyConfig(cfg)
+
+	// Establish the destination as long-known, then upload a lot with plenty
+	// coming back: a sync, not an exfil.
+	ev := e.Track("tcp", "backup.known.tp", "1.2.3.4:443", "127.0.0.1:1", "app", "", "direct")
+	*now = now.Add(3 * time.Hour)
+	atomic.StoreInt64(&ev.Upload, 50<<20)
+	atomic.StoreInt64(&ev.Download, 40<<20)
+	e.finalize(ev)
+	if n := countKind(*got, KindExfil); n != 0 {
+		t.Fatalf("%d exfil alerts for balanced traffic to a known destination", n)
+	}
+
+	// Same volume, nothing coming back => lopsided.
+	ev2 := e.Track("tcp", "backup.known.tp", "1.2.3.4:443", "127.0.0.1:1", "app", "", "direct")
+	atomic.StoreInt64(&ev2.Upload, 50<<20)
+	atomic.StoreInt64(&ev2.Download, 1<<10)
+	e.finalize(ev2)
+	if n := countKind(*got, KindExfil); n == 0 {
+		t.Fatal("a lopsided upload must still alert")
+	}
+
+	// A first-seen destination is interesting even when the ratio is mild.
+	before := countKind(*got, KindExfil)
+	ev3 := e.Track("tcp", "brand-new.tp", "9.9.9.9:443", "127.0.0.1:1", "app", "", "direct")
+	atomic.StoreInt64(&ev3.Upload, 50<<20)
+	atomic.StoreInt64(&ev3.Download, 30<<20)
+	e.finalize(ev3)
+	if countKind(*got, KindExfil) == before {
+		t.Fatal("a large upload to a never-seen destination must alert")
+	}
+}
+
+// Disposal must not run while the Permit index is still being built: every
+// rule-set-derived Permit reads as "not permitted" until it lands, so a large
+// upload in that window would ban a destination the operator had approved.
+// Alerting is unaffected.
+func TestDisposalWaitsForTheWarmPermitIndex(t *testing.T) {
+	e, _, got := newTestEngine(t)
+	var banned []string
+	e.SetOnBan(func(domain, ip, reason string) { banned = append(banned, domain+ip) })
+	warm := false
+	e.SetDisposalReady(func() bool { return warm })
+	e.ApplyConfig(apitypes.DetectionConfig{
+		BeaconEnabled: false, DGAEnabled: false, AutoBlock: true,
+		ExfilUploadBytes: 1 << 20,
+	})
+
+	ev := e.Track("tcp", "unknown.tp", "5.5.5.5:443", "127.0.0.1:1", "app", "", "proxy")
+	atomic.StoreInt64(&ev.Upload, 20<<20)
+	e.finalize(ev)
+	if len(banned) != 0 {
+		t.Fatalf("banned %v before the permit index was warm", banned)
+	}
+	if countKind(*got, KindExfil) == 0 {
+		t.Fatal("the finding must still be reported while disposal waits")
+	}
+
+	warm = true
+	ev2 := e.Track("tcp", "unknown2.tp", "6.6.6.6:443", "127.0.0.1:1", "app", "", "proxy")
+	atomic.StoreInt64(&ev2.Upload, 20<<20)
+	e.finalize(ev2)
+	if len(banned) == 0 {
+		t.Fatal("disposal must resume once the permit index is warm")
+	}
+}
+
+// Thresholds are operator-tunable at runtime, not baked in.
+func TestApplyConfigChangesThresholds(t *testing.T) {
+	e, now, got := newTestEngine(t)
+	e.ApplyConfig(apitypes.DetectionConfig{BeaconEnabled: false, DGAEnabled: true})
+	for i := 0; i < 40; i++ {
+		e.Track("tcp", "poller.tp", "1.2.3.4:443", "127.0.0.1:1", "app", "", "direct")
+		*now = now.Add(time.Minute)
+	}
+	if n := countKind(*got, KindBeacon); n != 0 {
+		t.Fatalf("%d beacon alerts after disabling the detector", n)
+	}
+
+	// Re-enable with a tight window and it reports again.
+	e.ApplyConfig(apitypes.DetectionConfig{BeaconEnabled: true, DGAEnabled: true, BeaconMinSample: 4})
+	for i := 0; i < 40; i++ {
+		e.Track("tcp", "poller2.tp", "1.2.3.4:443", "127.0.0.1:1", "app", "", "direct")
+		*now = now.Add(time.Minute)
+	}
+	if n := countKind(*got, KindBeacon); n == 0 {
+		t.Fatal("beacon detection must come back when re-enabled")
 	}
 }

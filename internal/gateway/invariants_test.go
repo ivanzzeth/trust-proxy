@@ -8,6 +8,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -106,7 +107,7 @@ func TestInvariants_Table(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			merged, err := buildMergedConfig([]byte(baseCfg), tc.nodes,
-				whitelist.Rules{Domains: []string{"ok.com"}}, blacklist.Rules{}, directlist.Rules{},
+				whitelist.Rules{Domains: []string{"ok.com"}}, blacklist.Rules{}, quarantine.List{}, directlist.Rules{},
 				customrules.Rules{}, proxygroups.Config{}, tc.mode, ruleset.Sets{},
 				tc.dns, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true},
 				nil, nil, "proxy", "", "s", t.TempDir())

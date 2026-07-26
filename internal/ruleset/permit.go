@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
@@ -25,7 +26,14 @@ type permitIndex struct {
 var (
 	permitMu    sync.Mutex
 	permitCache = map[string]permitIndex{} // keyed by rule-set tag
+	// permitWarm reports whether WarmPermitCache has completed at least once.
+	// Until it has, every rule-set-derived Permit answers "no" — which is fine
+	// for reporting but must not drive disposal (see detect.RequireWarmPermit).
+	permitWarm atomic.Bool
 )
+
+// PermitCacheWarm reports whether the permit index has been built at least once.
+func PermitCacheWarm() bool { return permitWarm.Load() }
 
 // WarmPermitCache decodes every enabled, permit-granting rule set in sets and
 // replaces the in-memory index MatchesPermit reads. This does network I/O
@@ -76,6 +84,7 @@ func WarmPermitCache(sets Sets, get func(url string) (io.ReadCloser, error)) {
 	permitMu.Lock()
 	permitCache = next
 	permitMu.Unlock()
+	permitWarm.Store(true)
 }
 
 func destIP(destination string) string {

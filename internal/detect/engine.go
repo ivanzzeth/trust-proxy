@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
 // Engine holds a ring buffer of recent events and the detection config.
@@ -44,9 +46,25 @@ type Engine struct {
 	beaconReAlert   time.Duration // don't re-alert the same dest within this
 	beacons         map[string]*beaconState
 
+	beaconReAlertFactor int
+
 	// DGA / DNS-tunnel scoring on observed domains
-	dgaEnabled bool
-	dnsParents map[string]*parentState
+	dgaEnabled        bool
+	dgaMinLabelLen    int
+	dgaMinEntropy     float64
+	tunnelMinLabelLen int
+	tunnelMinEntropy  float64
+	subdomainAlertAt  int
+	dnsParents        map[string]*parentState
+
+	// exfil shaping: a big upload is only interesting when it is lopsided or the
+	// destination is new. seen tracks first-contact times (bounded).
+	exfilMinRatio     float64
+	exfilNewDestHours int
+	seen              map[string]time.Time
+
+	// disposalReady gates auto-ban: nil = always ready. See RequireWarmPermit.
+	disposalReady func() bool
 
 	onFinalize  func(Event)     // completed connection (history sink)
 	onDetection func(Detection) // alert findings (detections store)
@@ -65,6 +83,49 @@ func (e *Engine) SetOnDetection(fn func(Detection)) { e.onDetection = fn }
 // whitelist (large upload will not auto-block / auto-ban).
 func (e *Engine) SetTrustedDest(fn func(host, destination string) bool) {
 	e.trustedDest = fn
+}
+
+// SetDisposalReady registers a predicate consulted before auto-ban: false means
+// "the policy picture is not complete yet, do not dispose". Alerts are never
+// gated by it — reporting fails open, disposal fails safe.
+func (e *Engine) SetDisposalReady(fn func() bool) {
+	e.mu.Lock()
+	e.disposalReady = fn
+	e.mu.Unlock()
+}
+
+// canDispose reports whether auto-ban may act right now.
+func (e *Engine) canDispose() bool {
+	e.mu.Lock()
+	fn := e.disposalReady
+	e.mu.Unlock()
+	return fn == nil || fn()
+}
+
+// ApplyConfig swaps in operator-tuned thresholds (see internal/detectcfg).
+// Safe to call while traffic flows; in-flight state (cadence windows, first-seen
+// map) is kept so a settings change doesn't blind the engine.
+func (e *Engine) ApplyConfig(c apitypes.DetectionConfig) {
+	c = withEngineDefaults(c)
+	e.mu.Lock()
+	e.beaconEnabled = c.BeaconEnabled
+	e.beaconMinSample = c.BeaconMinSample
+	e.beaconCV = c.BeaconCV
+	e.beaconMinIntvl = time.Duration(c.BeaconMinInterval) * time.Second
+	e.beaconMaxIntvl = time.Duration(c.BeaconMaxInterval) * time.Second
+	e.beaconReAlert = time.Duration(c.BeaconReAlert) * time.Second
+	e.beaconReAlertFactor = c.BeaconReAlertFactor
+	e.dgaEnabled = c.DGAEnabled
+	e.dgaMinLabelLen = c.DGAMinLabelLen
+	e.dgaMinEntropy = c.DGAMinEntropy
+	e.tunnelMinLabelLen = c.TunnelMinLabelLen
+	e.tunnelMinEntropy = c.TunnelMinEntropy
+	e.subdomainAlertAt = c.SubdomainAlertAt
+	e.exfilMinRatio = c.ExfilMinRatio
+	e.exfilNewDestHours = c.ExfilNewDestHours
+	e.mu.Unlock()
+	e.uploadAlertBytes.Store(c.ExfilUploadBytes)
+	e.autoBlock.Store(c.AutoBlock)
 }
 
 // SetOnBan registers a sink that adds an auto-blocked destination to the
@@ -94,7 +155,17 @@ func New(capacity int) *Engine {
 		beacons:         map[string]*beaconState{},
 		dgaEnabled:      true,
 		dnsParents:      map[string]*parentState{},
+		seen:            map[string]time.Time{},
 	}
+	def := defaultTunables()
+	e.beaconReAlertFactor = def.beaconReAlertFactor
+	e.dgaMinLabelLen = def.dgaMinLabelLen
+	e.dgaMinEntropy = def.dgaMinEntropy
+	e.tunnelMinLabelLen = def.tunnelMinLabelLen
+	e.tunnelMinEntropy = def.tunnelMinEntropy
+	e.subdomainAlertAt = def.subdomainAlertAt
+	e.exfilMinRatio = def.exfilMinRatio
+	e.exfilNewDestHours = def.exfilNewDestHours
 	e.uploadAlertBytes.Store(10 << 20) // 10 MiB upload -> exfil alert
 	return e
 }
@@ -156,6 +227,7 @@ func (e *Engine) Track(network, host, dst, src, process, rule, outbound string) 
 			pending = append(pending, e.makeDetectionLocked(KindDGA, ActionAlert, ev, rs))
 		}
 	}
+	e.noteSeenLocked(dstKey(host, dst), now)
 	e.events = append(e.events, ev)
 	if len(e.events) > e.cap {
 		e.events = e.events[len(e.events)-e.cap:]
@@ -260,7 +332,7 @@ func (e *Engine) finalize(ev *Event) {
 	e.mu.Unlock()
 	thresh := e.uploadAlertBytes.Load()
 	auto := e.autoBlock.Load()
-	if thresh > 0 && up >= thresh {
+	if thresh > 0 && up >= thresh && e.exfilShaped(ev, up) {
 		e.mu.Lock()
 		ev.Level = "alert"
 		reason := fmt.Sprintf("large upload %s (possible exfil)", humanBytes(up))
@@ -271,7 +343,7 @@ func (e *Engine) finalize(ev *Event) {
 		e.mu.Unlock()
 		// Non-whitelist large upload = high-confidence exfil when auto-block is on.
 		// Includes LAN/private destinations — a local C2 / pivot is still exfil.
-		if auto && !ev.Denied && !e.isTrusted(ev) {
+		if auto && !ev.Denied && !e.isTrusted(ev) && e.canDispose() {
 			ev.Block = true
 			e.banEvent(ev, "large upload to non-whitelist destination")
 			if !already {

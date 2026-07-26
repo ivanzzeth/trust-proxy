@@ -114,6 +114,7 @@ type Store struct {
 	// Read-side accounting, all guarded by readMu: incremental line counts (so a
 	// page's total doesn't require re-reading the corpus) and a parsed-record
 	// counter the tests use to prove an unfiltered page decodes only its own rows.
+	done         chan struct{}
 	countedBytes int64
 	countedLines int
 	rotatedLines map[string]int
@@ -135,9 +136,16 @@ func NewStoreWithOptions(path string, o Options) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
 	}
-	s := &Store{path: path, now: time.Now, talkers: map[string]*Talker{}, hours: map[int64]*HourBucket{}}
+	s := &Store{path: path, now: time.Now, talkers: map[string]*Talker{}, hours: map[int64]*HourBucket{}, done: make(chan struct{})}
+	// Restore the aggregate, then fold only what the snapshot had not seen. A
+	// live file smaller than the recorded offset means it rotated: that
+	// generation is already in the snapshot, so the new one folds from its start.
+	offset := s.loadAggregate()
 	if b, err := os.ReadFile(path); err == nil {
-		sc := bufio.NewScanner(b2r(b))
+		if int64(len(b)) < offset {
+			offset = 0
+		}
+		sc := bufio.NewScanner(b2r(b[offset:]))
 		sc.Buffer(make([]byte, 64*1024), 1024*1024)
 		for sc.Scan() {
 			var r Record
@@ -159,6 +167,7 @@ func NewStoreWithOptions(path string, o Options) (*Store, error) {
 		MaxAge:     o.MaxAgeDays,
 		Compress:   o.Compress,
 	}
+	s.startAggregateSaver(30 * time.Second)
 	return s, nil
 }
 
@@ -166,6 +175,12 @@ func NewStoreWithOptions(path string, o Options) (*Store, error) {
 func (s *Store) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	select {
+	case <-s.done:
+	default:
+		close(s.done)
+	}
+	s.saveAggregate()
 	if s.w == nil {
 		return nil
 	}

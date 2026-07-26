@@ -267,3 +267,50 @@ func TestFilteredPageCountsMatchesWithoutDecodingEverything(t *testing.T) {
 		t.Fatalf("decoded %d records for 30 matches", parsed)
 	}
 }
+
+// Totals used to restart from whatever the live file happened to hold: a restart
+// replayed only that file, so everything in a rotated generation vanished from
+// the Overview counters. The aggregate is snapshotted instead.
+func TestAggregatesSurviveRotationAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.jsonl")
+	s, err := NewStoreWithOptions(path, Options{MaxSizeMB: 1, MaxBackups: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pad := strings.Repeat("y", 900)
+	const records = 2500 // ~2.4 MiB => at least one rotation
+	for i := 0; i < records; i++ {
+		s.Record(detect.Event{
+			Time: time.Unix(int64(1700000000+i), 0).Format(time.RFC3339),
+			Host: "h" + pad, Destination: "1.1.1.1:443", Outbound: "direct", Upload: 10, Download: 20,
+		})
+	}
+	before := s.Stats()
+	if before.Connections != records {
+		t.Fatalf("pre-restart connections = %d, want %d", before.Connections, records)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewStoreWithOptions(path, Options{MaxSizeMB: 1, MaxBackups: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	after := reopened.Stats()
+	if after.Connections != before.Connections || after.TotalUp != before.TotalUp {
+		t.Fatalf("after restart connections=%d up=%d, want connections=%d up=%d (rotated generations dropped?)",
+			after.Connections, after.TotalUp, before.Connections, before.TotalUp)
+	}
+
+	// New records still accumulate on top rather than double-counting the tail.
+	reopened.Record(detect.Event{
+		Time: time.Unix(1700009999, 0).Format(time.RFC3339),
+		Host: "later.example", Destination: "2.2.2.2:443", Outbound: "direct", Upload: 5, Download: 5,
+	})
+	if got := reopened.Stats().Connections; got != before.Connections+1 {
+		t.Fatalf("connections after one more record = %d, want %d", got, before.Connections+1)
+	}
+}

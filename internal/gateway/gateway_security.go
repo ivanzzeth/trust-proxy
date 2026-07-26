@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
+
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 )
@@ -235,6 +237,65 @@ func injectProcessDeviceFloor(cfg map[string]json.RawMessage, wl whitelist.Rules
 	merged := make([]json.RawMessage, 0, len(rules)+len(floor))
 	merged = append(merged, rules[:at]...)
 	merged = append(merged, floor...)
+	merged = append(merged, rules[at:]...)
+	nr, err := json.Marshal(merged)
+	if err != nil {
+		return err
+	}
+	route["rules"] = nr
+	nrt, err := json.Marshal(route)
+	if err != nil {
+		return err
+	}
+	cfg["route"] = nrt
+	return nil
+}
+
+// injectQuarantine rejects destinations the gateway blocked by itself (threat
+// intel, exfil disposal). It sits in the same L1 floor as the deny list and
+// above every allow rule, but comes from its own store so a posture switch or
+// profile activation — which replace the deny list wholesale — cannot silently
+// un-block something the gateway quarantined.
+func injectQuarantine(cfg map[string]json.RawMessage, q quarantine.List) error {
+	domains, ips := q.Domains(), q.IPs()
+	if len(domains) == 0 && len(ips) == 0 {
+		return nil
+	}
+	routeRaw, ok := cfg["route"]
+	if !ok {
+		return nil
+	}
+	var route map[string]json.RawMessage
+	if err := json.Unmarshal(routeRaw, &route); err != nil {
+		return err
+	}
+	var rules []json.RawMessage
+	if raw, ok := route["rules"]; ok {
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return err
+		}
+	}
+
+	var reject []json.RawMessage
+	if sfx, rgx := splitDomainMatchers(domains); len(sfx) > 0 || len(rgx) > 0 {
+		if len(sfx) > 0 {
+			r, _ := json.Marshal(map[string]any{"domain_suffix": sfx, "action": "reject"})
+			reject = append(reject, r)
+		}
+		if len(rgx) > 0 {
+			r, _ := json.Marshal(map[string]any{"domain_regex": rgx, "action": "reject"})
+			reject = append(reject, r)
+		}
+	}
+	if len(ips) > 0 {
+		r, _ := json.Marshal(map[string]any{"ip_cidr": ips, "action": "reject"})
+		reject = append(reject, r)
+	}
+
+	at := preludeLen(rules)
+	merged := make([]json.RawMessage, 0, len(rules)+len(reject))
+	merged = append(merged, rules[:at]...)
+	merged = append(merged, reject...)
 	merged = append(merged, rules[at:]...)
 	nr, err := json.Marshal(merged)
 	if err != nil {

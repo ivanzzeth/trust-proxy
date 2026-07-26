@@ -299,6 +299,38 @@ export interface DNSRule {
   rule_set?: string[];
   server: string;
 }
+// Detection thresholds. Every one of these was a Go constant until it turned out
+// nobody can tune an alert stream they'd have to rebuild the binary to change.
+export interface DetectionConfig {
+  beacon_enabled: boolean;
+  beacon_min_sample?: number;
+  beacon_cv?: number;
+  beacon_min_interval_s?: number;
+  beacon_max_interval_s?: number;
+  beacon_realert_s?: number;
+  beacon_realert_factor?: number;
+  dga_enabled: boolean;
+  dga_min_label_len?: number;
+  dga_min_entropy?: number;
+  tunnel_min_label_len?: number;
+  tunnel_min_entropy?: number;
+  subdomain_alert_at?: number;
+  exfil_upload_bytes?: number;
+  exfil_min_ratio?: number;
+  exfil_new_dest_hours?: number;
+  auto_block: boolean;
+  require_warm_permit: boolean;
+}
+
+// What the gateway blocked by itself. Distinct from the deny list: policy lives
+// in the posture slot and gets replaced wholesale, defensive blocks must not.
+export interface QuarantineEntry {
+  value: string;
+  is_ip: boolean;
+  reason: string;
+  time: string;
+}
+
 export interface DNSConfig {
   servers: DNSServer[];
   rules: DNSRule[];
@@ -468,6 +500,11 @@ export const api = {
       `/rulesets/${encodeURIComponent(tag)}/rules?q=${encodeURIComponent(q)}&offset=${offset}&limit=${limit}`,
     ),
   effectiveRules: () => get<RuleView[]>('/effective-rules'),
+  detectionConfig: () => get<DetectionConfig>('/detection-config'),
+  setDetectionConfig: (c: DetectionConfig) => put<DetectionConfig>('/detection-config', c),
+  quarantine: () => get<QuarantineEntry[]>('/quarantine'),
+  releaseQuarantine: (value: string) => del<QuarantineEntry[]>('/quarantine', { value }),
+  clearQuarantine: () => del<QuarantineEntry[]>('/quarantine', { all: true }),
   final: () => get<{ outbound: string }>('/final'),
   setFinal: (outbound: string) => put<{ outbound: string }>('/final', { outbound }),
   proxyGroups: () =>

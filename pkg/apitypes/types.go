@@ -172,6 +172,60 @@ type PackApplyResult struct {
 	RuleSets []PackRuleSet `json:"rule_sets"`
 }
 
+// QuarantineEntry is one destination the gateway blocked by itself, with why and
+// when. Released explicitly by an operator; never rewritten by a posture switch.
+type QuarantineEntry struct {
+	Value  string `json:"value"`
+	IsIP   bool   `json:"is_ip"`
+	Reason string `json:"reason"`
+	Time   string `json:"time"`
+}
+
+// DetectionConfig is the tunable half of the detection engine. Every threshold
+// that used to be a constant lives here so an operator can trade sensitivity for
+// noise without a rebuild. Zero values mean "use the default" (see
+// internal/detectcfg.Defaults), which is also what an older config file gets.
+type DetectionConfig struct {
+	// Beaconing: periodic re-connections to one destination.
+	BeaconEnabled     bool    `json:"beacon_enabled"`
+	BeaconMinSample   int     `json:"beacon_min_sample,omitempty"`     // connections before a cadence is judged
+	BeaconCV          float64 `json:"beacon_cv,omitempty"`             // max interval coefficient of variation
+	BeaconMinInterval int     `json:"beacon_min_interval_s,omitempty"` // ignore bursts faster than this
+	BeaconMaxInterval int     `json:"beacon_max_interval_s,omitempty"` // ignore cadences slower than this
+	BeaconReAlert     int     `json:"beacon_realert_s,omitempty"`      // floor for the re-alert cooldown
+	// BeaconReAlertFactor multiplies the observed interval to get the cooldown:
+	// a cadence is reported at most once per this many of its own periods. A
+	// cooldown shorter than the cadence re-reports every cycle (~144 alerts/day
+	// for one 10-minute poller), which is what buried the real findings.
+	BeaconReAlertFactor int `json:"beacon_realert_factor,omitempty"`
+
+	// DGA / DNS-tunnel scoring.
+	DGAEnabled        bool    `json:"dga_enabled"`
+	DGAMinLabelLen    int     `json:"dga_min_label_len,omitempty"`
+	DGAMinEntropy     float64 `json:"dga_min_entropy,omitempty"`
+	TunnelMinLabelLen int     `json:"tunnel_min_label_len,omitempty"`
+	TunnelMinEntropy  float64 `json:"tunnel_min_entropy,omitempty"`
+	SubdomainAlertAt  int     `json:"subdomain_alert_at,omitempty"` // distinct subdomains under one parent
+
+	// Exfil: a large upload is only interesting when it is also *shaped* like
+	// exfil — lopsided, or to a destination this gateway has never seen. Set
+	// either signal to 0 to ignore it; with both off, any upload over the byte
+	// threshold alerts (the old behaviour).
+	ExfilUploadBytes  int64   `json:"exfil_upload_bytes,omitempty"`
+	ExfilMinRatio     float64 `json:"exfil_min_ratio,omitempty"`      // upload/download ratio
+	ExfilNewDestHours int     `json:"exfil_new_dest_hours,omitempty"` // "never seen in this window" counts as new
+
+	// Disposal (auto-block / auto-ban).
+	AutoBlock bool `json:"auto_block"`
+	// RequireWarmPermit keeps disposal from running until the Permit index has
+	// completed a warm pass. The index is built asynchronously and fetches remote
+	// rule sets, so until it lands every rule-set-derived Permit reads as "not
+	// permitted" — and a large upload in that window would ban a destination the
+	// operator had in fact approved. Alerts are unaffected: fail open on
+	// reporting, fail safe on disposal.
+	RequireWarmPermit bool `json:"require_warm_permit"`
+}
+
 // ACLList is the wire shape shared by the three ACL stores. Each store fills
 // only its own dimensions: Permit uses domains/ips/processes/devices, Deny adds
 // keywords/regexes, No-Proxy uses domains/ips.

@@ -71,7 +71,15 @@ func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir s
 				detour = ProxyGroupTag
 			}
 			desc["url"] = rs.URL
-			desc["download_detour"] = detour
+			// http_client replaces both deprecations sing-box 1.14 warns about and
+			// 1.16 removes: the legacy `download_detour` option, and relying on the
+			// implicit default HTTP client. Pinning domain_resolver here also keeps
+			// the .srs fetch off the exit-node resolver, same rule as every other
+			// direct dial (see injectDirectDNS).
+			desc["http_client"] = map[string]any{
+				"detour":          detour,
+				"domain_resolver": directResolverTag,
+			}
 			desc["update_interval"] = rs.UpdateInterval
 		}
 		raw, err := json.Marshal(desc)

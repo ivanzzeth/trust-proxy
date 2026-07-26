@@ -20,6 +20,7 @@ import History from '@/pages/history';
 import Fleet from '@/pages/fleet';
 import Settings from '@/pages/settings';
 import Endpoints from '@/pages/endpoints';
+import Detection from '@/pages/detection';
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
@@ -43,6 +44,7 @@ const router = createHashRouter([
       { path: 'proxies', element: <Proxies /> },
       { path: 'rules', element: <Rules /> },
       { path: 'dns', element: <DNS /> },
+      { path: 'detection', element: <Detection /> },
       { path: 'history', element: <History /> },
       { path: 'logs', element: <Logs /> },
       { path: 'fleet', element: <Fleet /> },

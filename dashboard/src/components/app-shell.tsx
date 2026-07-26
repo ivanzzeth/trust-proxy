@@ -15,6 +15,7 @@ import {
   ScrollText,
   Server,
   Settings as SettingsIcon,
+  ShieldAlert,
   ShieldCheck,
   Sun,
   Terminal,
@@ -42,6 +43,7 @@ const NAV_SECTIONS = [
     items: [
       { to: '/', label: 'nav.overview', icon: Activity, end: true },
       { to: '/connections', label: 'nav.connections', icon: Waypoints },
+      { to: '/detection', label: 'nav.detection', icon: ShieldAlert },
       { to: '/history', label: 'nav.history', icon: HistoryIcon },
       { to: '/logs', label: 'nav.logs', icon: Terminal },
     ],

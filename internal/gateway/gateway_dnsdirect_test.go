@@ -8,6 +8,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -35,7 +36,7 @@ func cnDirectSets() ruleset.Sets {
 func buildDNS(t *testing.T, mode string, dns apitypes.DNSConfig, dl directlist.Rules, cr customrules.Rules, sets ruleset.Sets, nodes []apitypes.Node) []byte {
 	t.Helper()
 	merged, err := buildMergedConfig([]byte(baseCfg), nodes, whitelist.Rules{Domains: []string{"example.com"}},
-		blacklist.Rules{}, dl, cr, proxygroups.Config{}, mode, sets,
+		blacklist.Rules{}, quarantine.List{}, dl, cr, proxygroups.Config{}, mode, sets,
 		dns, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "proxy", "", "sekret", t.TempDir())
 	if err != nil {
 		t.Fatalf("buildMergedConfig: %v", err)
@@ -287,7 +288,7 @@ func TestUserDNSRulesKeepPriority(t *testing.T) {
 // resolver must be the direct one too.
 func TestCatchAllDirectFlipsDNSFinal(t *testing.T) {
 	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"example.com"}},
-		blacklist.Rules{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, cnDirectSets(),
+		blacklist.Rules{}, quarantine.List{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, cnDirectSets(),
 		dohViaProxy(), apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "direct", "", "sekret", t.TempDir())
 	if err != nil {
 		t.Fatalf("buildMergedConfig: %v", err)
@@ -324,6 +325,47 @@ func TestSplitResolverAddr(t *testing.T) {
 		}
 		if addr != c.wantAddr || port != c.wantPort {
 			t.Fatalf("splitResolverAddr(%q) = %q,%d want %q,%d", c.in, addr, port, c.wantAddr, c.wantPort)
+		}
+	}
+}
+
+// Remote rule sets must fetch through an explicit http_client: sing-box 1.14
+// deprecated both `download_detour` and the implicit default HTTP client, and
+// 1.16 removes them — a warning today is a failed start then. The client also
+// pins the direct resolver, so the .srs fetch resolves like every other direct
+// dial instead of through the exit node.
+func TestRuleSetsFetchViaExplicitHTTPClient(t *testing.T) {
+	merged := buildDNS(t, ModeManual, dohViaProxy(), directlist.Rules{}, customrules.Rules{}, cnDirectSets(), nil)
+	parseValidate(t, merged)
+
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(merged, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	var route map[string]json.RawMessage
+	if err := json.Unmarshal(cfg["route"], &route); err != nil {
+		t.Fatal(err)
+	}
+	var sets []map[string]any
+	if err := json.Unmarshal(route["rule_set"], &sets); err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) == 0 {
+		t.Fatal("no rule-set descriptors emitted")
+	}
+	for _, rs := range sets {
+		if _, legacy := rs["download_detour"]; legacy {
+			t.Fatalf("%v still uses the removed download_detour option", rs["tag"])
+		}
+		hc, ok := rs["http_client"].(map[string]any)
+		if !ok {
+			t.Fatalf("%v has no http_client: %v", rs["tag"], rs)
+		}
+		if hc["detour"] == nil || hc["detour"] == "" {
+			t.Fatalf("%v: http_client without an explicit detour: %v", rs["tag"], hc)
+		}
+		if hc["domain_resolver"] != directResolverTag {
+			t.Fatalf("%v: rule-set fetch resolves via %v, want %q", rs["tag"], hc["domain_resolver"], directResolverTag)
 		}
 	}
 }

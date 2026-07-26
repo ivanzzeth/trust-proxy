@@ -197,6 +197,45 @@ func (c *Client) DeleteProfile(id string) error {
 	return c.do(http.MethodDelete, "/api/profiles/"+url.PathEscape(id), nil, nil)
 }
 
+// ---- detection tuning + quarantine --------------------------------------
+
+// DetectionConfig returns the engine's tunable thresholds.
+func (c *Client) DetectionConfig() (apitypes.DetectionConfig, error) {
+	var out apitypes.DetectionConfig
+	err := c.do(http.MethodGet, "/api/detection-config", nil, &out)
+	return out, err
+}
+
+// SetDetectionConfig replaces the thresholds and pushes them into the running
+// engine. A rejected document leaves the engine on its previous settings.
+func (c *Client) SetDetectionConfig(cfg apitypes.DetectionConfig) (apitypes.DetectionConfig, error) {
+	var out apitypes.DetectionConfig
+	err := c.do(http.MethodPut, "/api/detection-config", cfg, &out)
+	return out, err
+}
+
+// Quarantine lists what the gateway blocked by itself (threat intel / exfil
+// disposal). Separate from the deny list, which is operator policy.
+func (c *Client) Quarantine() ([]apitypes.QuarantineEntry, error) {
+	var out []apitypes.QuarantineEntry
+	err := c.do(http.MethodGet, "/api/quarantine", nil, &out)
+	return out, err
+}
+
+// ReleaseQuarantine removes one entry ("this was a false positive").
+func (c *Client) ReleaseQuarantine(value string) ([]apitypes.QuarantineEntry, error) {
+	var out []apitypes.QuarantineEntry
+	err := c.do(http.MethodDelete, "/api/quarantine", map[string]any{"value": value}, &out)
+	return out, err
+}
+
+// ClearQuarantine releases everything.
+func (c *Client) ClearQuarantine() ([]apitypes.QuarantineEntry, error) {
+	var out []apitypes.QuarantineEntry
+	err := c.do(http.MethodDelete, "/api/quarantine", map[string]any{"all": true}, &out)
+	return out, err
+}
+
 // ---- resolver / egress knobs -------------------------------------------
 
 // DNS returns the resolver policy.

@@ -23,6 +23,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
+	"github.com/ivanzzeth/trust-proxy/internal/detectcfg"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/endpoints"
@@ -36,11 +37,13 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/threatfeed"
 	"github.com/ivanzzeth/trust-proxy/internal/tuncfg"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
+	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 	"github.com/ivanzzeth/trust-proxy/pkg/clash"
 )
 
@@ -239,6 +242,23 @@ func runServe() error {
 	defer histStore.Close()
 	engine.SetOnFinalize(histStore.Record)
 
+	detCfgStore, err := detectcfg.NewStore(filepath.Join(serveDataDir, "detection.json"))
+	if err != nil {
+		return err
+	}
+	engine.ApplyConfig(detCfgStore.Get())
+	// Disposal waits for the Permit index: it is built asynchronously and fetches
+	// remote rule sets, so until it lands every rule-set-derived Permit reads as
+	// "not permitted" — banning a destination the operator had in fact approved.
+	engine.SetDisposalReady(func() bool {
+		return !detCfgStore.Get().RequireWarmPermit || ruleset.PermitCacheWarm()
+	})
+
+	quarStore, err := quarantine.NewStore(filepath.Join(serveDataDir, "quarantine.json"))
+	if err != nil {
+		return err
+	}
+
 	detStore, err := detect.NewStore(filepath.Join(serveDataDir, "detections.jsonl"))
 	if err != nil {
 		return err
@@ -336,6 +356,7 @@ func runServe() error {
 	mgr.SetInitialPosture(postureStore.Active())
 	mgr.SetInitialFinal(finalStore.Get().Outbound)
 	mgr.SetInitialBlacklist(blStore.Get())
+	mgr.SetInitialQuarantine(quarStore.Get())
 	mgr.SetInitialDirectList(dlStore.Get())
 	mgr.SetInitialCustomRules(crStore.Get())
 	mgr.SetInitialProxyGroups(pgStore.Get())
@@ -386,28 +407,18 @@ func runServe() error {
 	})
 	mgr.SetInitialManagementPorts(managementPorts(serveMgmtPorts, serveAPIAddr))
 	// Auto-ban sink: threat-intel / non-permitted large upload → blacklist + hot reload.
+	// What the gateway blocks by itself goes to the quarantine list, not the
+	// operator's deny list: deny lives in the posture slot, so a Strict<->Split
+	// switch or a profile activation would silently un-block it.
 	engine.SetOnBan(func(domain, ip, reason string) {
-		changed := false
-		if domain != "" {
-			if _, err := blStore.AddDomain(domain); err != nil {
-				logging.L().Error().Err(err).Str("domain", domain).Msg("auto-ban domain")
-			} else {
-				changed = true
-			}
-		}
-		if ip != "" {
-			if _, err := blStore.AddIP(ip); err != nil {
-				logging.L().Error().Err(err).Str("ip", ip).Msg("auto-ban ip")
-			} else {
-				changed = true
-			}
-		}
-		if !changed {
+		list, err := quarStore.Add(domain, ip, reason)
+		if err != nil {
+			logging.L().Error().Err(err).Str("domain", domain).Str("ip", ip).Msg("quarantine add")
 			return
 		}
-		logging.L().Warn().Str("domain", domain).Str("ip", ip).Str("reason", reason).Msg("auto-ban")
-		if err := mgr.SetBlacklist(blStore.Get()); err != nil {
-			logging.L().Error().Err(err).Msg("auto-ban apply blacklist")
+		logging.L().Warn().Str("domain", domain).Str("ip", ip).Str("reason", reason).Msg("quarantined")
+		if err := mgr.SetQuarantine(list); err != nil {
+			logging.L().Error().Err(err).Msg("quarantine apply")
 		}
 	})
 	// Re-apply the previously-applied subscription so a restart/upgrade keeps the
@@ -434,6 +445,10 @@ func runServe() error {
 		BLApplier:    mgr,
 		Directlist:   dlStore,
 		DLApplier:    mgr,
+		Detection:    detCfgStore,
+		DetApplier:   detectApplier{engine},
+		Quarantine:   quarStore,
+		QuarApplier:  quarantineApplier{mgr},
 		CustomRules:  crStore,
 		CRApplier:    mgr,
 		RulesView:    mgr,
@@ -589,3 +604,15 @@ func resolveClashSecret(dataDir string) (string, error) {
 	}
 	return secret, nil
 }
+
+// detectApplier pushes tuned thresholds into the live engine (no rebuild: the
+// detectors read them under their own lock).
+type detectApplier struct{ engine *detect.Engine }
+
+func (d detectApplier) ApplyDetectionConfig(c apitypes.DetectionConfig) { d.engine.ApplyConfig(c) }
+
+// quarantineApplier rebuilds the data plane after a release, so the reject rules
+// match the list.
+type quarantineApplier struct{ mgr *gateway.Manager }
+
+func (q quarantineApplier) ApplyQuarantine(l quarantine.List) error { return q.mgr.SetQuarantine(l) }

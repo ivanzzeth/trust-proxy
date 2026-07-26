@@ -10,12 +10,9 @@ import (
 	"golang.org/x/net/publicsuffix"
 )
 
-const (
-	beaconWindow = 20 // per-destination connection timestamps kept
-	// beaconReAlertFactor multiplies the observed interval to get the re-alert
-	// cooldown: report a cadence at most once per this many of its own periods.
-	beaconReAlertFactor = 36
-)
+// beaconWindow is the number of per-destination connection timestamps kept; the
+// thresholds applied to them are operator-tunable (see internal/detectcfg).
+const beaconWindow = 20
 
 type beaconState struct {
 	times     []time.Time
@@ -84,7 +81,7 @@ func (e *Engine) recordBeacon(key string, now time.Time) string {
 	// keepalive then produces ~144 alerts a day and buries the real ones. Scale
 	// it with the observed interval and keep the configured value as the floor.
 	reAlert := e.beaconReAlert
-	if scaled := time.Duration(mean*beaconReAlertFactor) * time.Second; scaled > reAlert {
+	if scaled := time.Duration(mean*float64(e.beaconReAlertFactor)) * time.Second; scaled > reAlert {
 		reAlert = scaled
 	}
 	if !bs.lastAlert.IsZero() && now.Sub(bs.lastAlert) < reAlert {
@@ -136,12 +133,12 @@ func (e *Engine) analyzeDomain(host string, now time.Time) []string {
 
 	// DGA: long, high-entropy registrable label that is digit-heavy or
 	// vowel-starved (kq3v9z7x1p2m.com), unlike real brands.
-	if len(sld) >= 12 && shannon(sld) >= 3.8 && (digitRatio(sld) >= 0.25 || vowelRatio(sld) <= 0.2) {
+	if len(sld) >= e.dgaMinLabelLen && shannon(sld) >= e.dgaMinEntropy && (digitRatio(sld) >= 0.25 || vowelRatio(sld) <= 0.2) {
 		reasons = append(reasons, fmt.Sprintf("DGA-like domain %q (entropy %.1f) — possible malware C2", sld, shannon(sld)))
 	}
 	// Tunnel: a single long, high-entropy subdomain label encodes data.
 	for _, lab := range subLabels {
-		if len(lab) >= 25 && shannon(lab) >= 4.0 {
+		if len(lab) >= e.tunnelMinLabelLen && shannon(lab) >= e.tunnelMinEntropy {
 			reasons = append(reasons, fmt.Sprintf("long high-entropy subdomain label (%d chars) — possible DNS tunnel", len(lab)))
 			break
 		}
@@ -159,7 +156,7 @@ func (e *Engine) analyzeDomain(host string, now time.Time) []string {
 		if len(ps.subs) < 4096 {
 			ps.subs[h] = struct{}{}
 		}
-		if len(ps.subs) >= 40 && (ps.lastAlert.IsZero() || now.Sub(ps.lastAlert) > 10*time.Minute) {
+		if len(ps.subs) >= e.subdomainAlertAt && (ps.lastAlert.IsZero() || now.Sub(ps.lastAlert) > 10*time.Minute) {
 			ps.lastAlert = now
 			reasons = append(reasons, fmt.Sprintf("%d distinct subdomains under %s — possible DNS tunneling / fast-flux", len(ps.subs), parent))
 		}

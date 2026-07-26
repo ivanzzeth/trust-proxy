@@ -1,5 +1,7 @@
 {
-  "brand": { "subtitle": "gateway" },
+  "brand": {
+    "subtitle": "gateway"
+  },
   "nav": {
     "overview": "Overview",
     "connections": "Connections",
@@ -14,6 +16,7 @@
     "rules": "Rules",
     "dns": "DNS",
     "history": "History",
+    "detection": "Detection",
     "logs": "Logs",
     "fleet": "Fleet",
     "settings": "Settings",
