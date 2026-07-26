@@ -27,7 +27,7 @@ make build-embed     # 发布：-tags embed_ui 把 UI 嵌进二进制，单文�
 
 控制台：**http://127.0.0.1:9096/**（`serve` 启动日志会打印）。
 
-**数据目录**默认 `~/.trust-proxy`（订阅/策略/历史/`cache.db`/`clash-secret`），`--data <dir>` 覆盖。**同一数据目录勿并跑两实例**（bolt 单写锁）。
+**数据目录**默认 `~/.trust-proxy`：订阅/策略/历史/`cache.db`/`clash-secret`，**以及配置本身**（`<data>/config.json`，首启自动种下，仓库里 `configs/config.json` 是它唯一的来源模板）。`--data <dir>` 换目录，`-c` 显式指定别的配置（如 `configs/config.tun.json`）。**同一数据目录勿并跑两实例**（bolt 单写锁）。
 
 ## 安全模型：Permit ⊥ Route
 
@@ -55,7 +55,7 @@ make desktop   # -> Trust Proxy.app + .dmg
 TUN 需要 root → 装成系统服务（launchd 拥有 daemon，关窗不掉策略）：
 
 ```bash
-sudo trust-proxy service install -c ~/.trust-proxy/config.json
+sudo trust-proxy service install   # 配置默认就是 <data>/config.json
 sudo trust-proxy service uninstall   # 逃生口
 ```
 

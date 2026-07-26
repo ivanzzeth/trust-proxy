@@ -19,13 +19,13 @@ LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
 # Redeploy defaults (override: make redeploy MODE=manual)
 DATA_DIR  ?= $(HOME)/.trust-proxy
-CONFIG    ?= configs/config.json
+CONFIG    ?=
 MODE      ?= tun
 PID_FILE  ?= $(DATA_DIR)/serve.pid
 
-## Boot the embedded sing-box with configs/config.json
+## Boot the gateway (config: <data>/config.json, seeded on first run)
 run: build
-	./trust-proxy -c configs/config.json
+	./trust-proxy serve
 
 ## Compile the Go backend (with $(TAGS) if set); serves dashboard from disk
 build:
@@ -41,7 +41,7 @@ redeploy: build-embed
 	@echo "==> restarting serve (data=$(DATA_DIR) mode=$(MODE))"
 	sudo sh -c '$(CURDIR)/trust-proxy proxy stop --pid "$(PID_FILE)" 2>/dev/null || true; \
 		sleep 1; \
-		cd "$(CURDIR)" && ./trust-proxy serve --daemon --data "$(DATA_DIR)" -c "$(CONFIG)" --mode "$(MODE)"'
+		cd "$(CURDIR)" && ./trust-proxy serve --daemon --data "$(DATA_DIR)" $(if $(CONFIG),-c "$(CONFIG)",) --mode "$(MODE)"'
 	@echo "==> done. UI http://127.0.0.1:9096/  (hard-refresh if needed)"
 	@echo "    stop:  sudo $(CURDIR)/trust-proxy proxy stop --pid $(PID_FILE)"
 

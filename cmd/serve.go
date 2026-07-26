@@ -103,6 +103,14 @@ var serveCmd = &cobra.Command{
 			return err
 		}
 		serveDataDir = dir // normalize (~/.trust-proxy by default) for the rest of serve
+		// Config belongs with the data, not with the checkout: resolve (and on
+		// first run seed) <data>/config.json unless -c said otherwise. Done before
+		// the daemon re-exec so the child inherits a concrete path.
+		cfg, err := resolveConfig(serveConfig, dir)
+		if err != nil {
+			return err
+		}
+		serveConfig = cfg
 		// Built-in daemon: re-exec detached (survives SSH logout) unless we're
 		// already the daemon child.
 		if serveDaemon && os.Getenv("TP_DAEMON") == "" {
@@ -157,7 +165,7 @@ func resolveDataDir(dir string) (string, error) {
 
 func init() {
 	f := serveCmd.Flags()
-	f.StringVarP(&serveConfig, "config", "c", "configs/config.json", "sing-box config path")
+	f.StringVarP(&serveConfig, "config", "c", "", "sing-box config path (default <data>/config.json, seeded on first run)")
 	f.StringVar(&serveAPIAddr, "api-addr", "127.0.0.1:9096", "trust-proxy backend API listen address")
 	f.StringVar(&serveDataDir, "data", "", "data directory (subscriptions, cache, etc.); default ~/.trust-proxy")
 	f.StringVar(&serveConsoleDir, "console", "dashboard/dist", "dashboard static dir (shadcn build output)")

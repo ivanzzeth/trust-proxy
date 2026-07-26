@@ -201,7 +201,6 @@ fn spawn_gateway(rt: &Runtime) -> Result<Child, String> {
     }
     std::fs::create_dir_all(&rt.data_dir)
         .map_err(|e| format!("create {}: {e}", rt.data_dir.display()))?;
-    let config = ensure_config(rt)?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -211,8 +210,9 @@ fn spawn_gateway(rt: &Runtime) -> Result<Child, String> {
 
     Command::new(&rt.binary)
         .arg("serve")
-        .arg("-c")
-        .arg(&config)
+        // No -c: the gateway defaults to <data>/config.json and seeds it on first
+        // run. The shell used to pass a path and carry its own copy of the default
+        // config, which is how the CLI and the app ended up on different files.
         .arg("--data")
         .arg(&rt.data_dir)
         .arg("--api-addr")
@@ -235,42 +235,6 @@ fn spawn_gateway(rt: &Runtime) -> Result<Child, String> {
             _ => format!("spawn {}: {e}", rt.binary.display()),
         })
 }
-
-/// ensure_config seeds <data>/config.json from the bundled default on first run.
-/// The user's copy is never overwritten — it is theirs to edit, and an upgrade
-/// silently replacing it would undo their inbound ports and rules.
-fn ensure_config(rt: &Runtime) -> Result<PathBuf, String> {
-    let target = rt.data_dir.join("config.json");
-    if target.exists() {
-        return Ok(target);
-    }
-    let bundled = rt.binary.parent().map(|d| d.join("config.json"));
-    let default = match bundled {
-        Some(p) if p.exists() => std::fs::read(&p).map_err(|e| format!("read {}: {e}", p.display()))?,
-        _ => DEFAULT_CONFIG.as_bytes().to_vec(),
-    };
-    std::fs::write(&target, default).map_err(|e| format!("write {}: {e}", target.display()))?;
-    Ok(target)
-}
-
-/// A minimal manual-mode config: mixed inbound on 17070, Clash API for the
-/// console's connection views. Everything else the gateway injects at runtime.
-const DEFAULT_CONFIG: &str = r#"{
-  "log": { "level": "info", "timestamp": true },
-  "inbounds": [
-    { "type": "mixed", "tag": "in", "listen": "127.0.0.1", "listen_port": 17070 }
-  ],
-  "outbounds": [
-    { "type": "selector", "tag": "proxy", "outbounds": ["direct"], "default": "direct" },
-    { "type": "direct", "tag": "direct" },
-    { "type": "block", "tag": "blocked" }
-  ],
-  "experimental": {
-    "clash_api": { "external_controller": "127.0.0.1:9090" },
-    "cache_file": { "enabled": true }
-  }
-}
-"#;
 
 fn show_console(app: &AppHandle, api: &str) {
     if let Some(window) = app.get_webview_window("main") {

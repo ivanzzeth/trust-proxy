@@ -293,6 +293,8 @@ make webui       # 构建官方 dashboard -> webui/dist（pnpm install→generat
 
 **端到端自测（`cmd/selftest.go`，`trust-proxy selftest`，hidden 子命令）**：**离线、确定性、可扔进 VM 跑**的核心引擎 e2e。自起两个本地「origin」（direct-origin 返回 `direct` / node-origin 返回 `node`）+ 一个 http CONNECT「node」上游，用**真实 `gateway.Manager`** 跑遍：默认拒绝拦截 / 白名单→node / no-proxy→direct / 黑名单胜 / 自定义规则 direct·proxy·block·node / system 模式；`sudo trust-proxy selftest` 额外覆盖 tun（loopback 不被 tun 捕获，故 tun 分支只断言 box 能在 tun 模式起来）。任一场景失败则非零退出。**改引擎后务必 `make build && ./trust-proxy selftest`**（VM 里 `sudo` 跑覆盖全部）。
 
+**配置只有一处**：`<data>/config.json`（默认 `~/.trust-proxy/config.json`），**首启自动种下**——种子是 `main.go` 用 `go:embed` 编进二进制的 `configs/config.json`（仓库里就这一份，不存副本故不会漂移）；若 cwd 有老默认路径 `configs/config.json` 则**以它为种子**（保住用户在仓库里的编辑）。`-c` 只作显式覆盖。**为什么改**：`-c` 原先默认 `configs/config.json` 是**仓库相对路径**，只在 checkout 里成立，于是桌面壳只能另挑位置并在 Rust 里**重写一遍种配置逻辑**——同一件事两份实现、两个默认值，同机上 CLI daemon 与 app 会落到不同配置（连 mode 都不同）。修法是回上游改 `serve`（`cmd/configseed.go` 的 `resolveConfig`，`serve` 与 `service install` 共用），Rust 侧那份删掉。
+
 **数据目录**：`serve` 默认把所有运行时数据放 **`~/.trust-proxy`**（`--data` 可覆盖；`~` 会展开）。含 subscriptions/whitelist/blacklist/events/history + **`cache.db`（clash mode/urltest/rule_set 缓存）** + `ts-<tag>`（Tailscale 状态）+ `clash-secret`。注意 `cache.db`/`ts-*` 的路径由 `gateway.Manager.dataDir` 注入（不再是 cwd 相对的 `data/`）。**旧部署迁移**：`mv ./data/* ~/.trust-proxy/` 或显式 `--data ./data`。
 **后台守护**：`serve --daemon`（`-d`）re-exec 脱离终端（`daemonize`，`TP_DAEMON=1` 标记子进程），`--log`/`--pid` 默认 `<data>/serve.{log,pid}`；停止 `trust-proxy proxy stop --pid <data>/serve.pid`（`proxy stop` 通用杀 pid 文件）。同目录勿并跑两实例（`cache.db` 单写锁）。
 

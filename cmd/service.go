@@ -122,9 +122,8 @@ func serviceConfig() (service.Config, error) {
 	if c.Binary, err = absOrSelf(svcBinary); err != nil {
 		return c, err
 	}
-	if c.ConfigPath, err = filepath.Abs(svcConfig); err != nil {
-		return c, err
-	}
+	// Resolved after the data dir below, since the default lives inside it.
+
 	data := svcData
 	if data == "" {
 		// Same default as serve, but resolved here: a daemon running as root must
@@ -137,6 +136,16 @@ func serviceConfig() (service.Config, error) {
 		data = filepath.Join(home, ".trust-proxy")
 	}
 	if c.DataDir, err = filepath.Abs(expandHome(data)); err != nil {
+		return c, err
+	}
+	// Same rule as serve: default to <data>/config.json, seeding it if this is a
+	// fresh machine — a LaunchDaemon pointing at a config that does not exist
+	// would fail at every boot.
+	cfgPath, err := resolveConfig(svcConfig, c.DataDir)
+	if err != nil {
+		return c, err
+	}
+	if c.ConfigPath, err = filepath.Abs(expandHome(cfgPath)); err != nil {
 		return c, err
 	}
 	logPath := svcLog
@@ -177,7 +186,7 @@ func init() {
 		c.Flags().BoolVar(&jsonOut, "json", false, "print the raw JSON response instead of a table")
 	}
 	f := serviceInstallCmd.Flags()
-	f.StringVarP(&svcConfig, "config", "c", "configs/config.json", "sing-box config path (absolute is safest)")
+	f.StringVarP(&svcConfig, "config", "c", "", "sing-box config path (default <data>/config.json, seeded on first run)")
 	f.StringVar(&svcData, "data", "", "data directory (default ~/.trust-proxy of the invoking user)")
 	f.StringVar(&svcAPIAddr, "api-addr", "127.0.0.1:9096", "backend API listen address")
 	f.StringVar(&svcMode, "mode", "", "capture mode to start in: manual | system | tun (empty = the config's own)")

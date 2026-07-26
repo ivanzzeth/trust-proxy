@@ -14,7 +14,7 @@ make desktop-dev # 开发运行（贴附已在跑的网关）
 | **绝不起第二个网关** | 两个 `serve` 同数据目录会抢 `cache.db`（bolt 单写锁）和端口 | 先探 `/api/health`：有网关在跑就**贴附**（launchd 装的、终端里手起的都算），只有没人应答才拉起自己的 sidecar |
 | **绝不留孤儿** | 关窗/强退后数据面还在跑 = 用户以为关了其实还在管流量 | 正常退出杀子进程；**SIGKILL/崩溃根本不跑回调**（实测 SIGTERM 掉壳后网关还活着），故 `serve --exit-with-pid <ppid>` 让子进程盯父进程 |
 
-首启把内置默认配置写进 `<data>/config.json`，**已存在则绝不覆盖**（那是用户的东西）。起不来时把网关日志里最后一条错误**原样引到界面上**——最常见的是 17070 被别的代理占了，说清楚十秒能修。
+配置由**网关自己**解析和种下（`<data>/config.json`，已存在绝不覆盖）——壳既不传 `-c` 也不自带一份默认 JSON。它曾经两样都做，于是 CLI 和 app 各有一套默认值；见 [`operations.md`](operations.md)「配置在哪」。起不来时把网关日志里最后一条错误**原样引到界面上**——最常见的是 17070 被别的代理占了，说清楚十秒能修。
 
 ## 安装：app 没有签名（也不打算签）
 
@@ -41,7 +41,7 @@ ad-hoc 签名形态、真要签名/公证的完整流程见 [`release-macos.md`]
 GUI 不该是 root，所以提权交给系统 —— launchd 拥有 daemon，壳只贴附（关窗不掉策略、开机自启）：
 
 ```bash
-sudo trust-proxy service install -c ~/.trust-proxy/config.json   # LaunchDaemon
+sudo trust-proxy service install     # LaunchDaemon；配置默认 <data>/config.json
 trust-proxy service status        # 装了没 / 在跑没 / 指向哪个二进制
 sudo trust-proxy service uninstall   # 逃生口，任何状态都能收干净、幂等
 ```
