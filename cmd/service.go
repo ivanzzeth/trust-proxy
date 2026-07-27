@@ -28,6 +28,7 @@ var (
 	svcLog      string
 	svcBinary   string
 	svcKeepPath bool
+	svcConsole  string
 )
 
 var serviceCmd = &cobra.Command{
@@ -42,6 +43,12 @@ var serviceInstallCmd = &cobra.Command{
 	Use:   "install",
 	Short: "Write and load the system service (root)",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Check privilege before anything interactive: without it a non-root run
+		// asks about migrating data and only then refuses, and it cannot even see
+		// the machine-wide directory (0700 root) to answer that question correctly.
+		if !paths.Privileged() {
+			return fmt.Errorf("installing a system service needs root: re-run with sudo")
+		}
 		c, err := serviceConfig()
 		if err != nil {
 			return err
@@ -237,7 +244,44 @@ func serviceConfig() (service.Config, error) {
 	if c.LogPath, err = filepath.Abs(paths.ExpandHome(logPath)); err != nil {
 		return c, err
 	}
+	if c.ConsoleDir, err = resolveServiceConsole(); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+// resolveServiceConsole decides what --console the daemon gets.
+//
+// A service daemon runs with a working directory it did not choose, so the
+// relative default (dashboard/dist) resolves to nothing: the install reports
+// success and the console then serves "dashboard not built" — which is exactly
+// what happened on a real machine. Three outcomes, none of them silent:
+//
+//   - the binary has the UI embedded  → nothing to pass, it carries its own
+//   - --console given                 → made absolute and passed through
+//   - neither                         → refuse, and say which two commands fix it
+func resolveServiceConsole() (string, error) {
+	if svcConsole == "none" {
+		return "", nil // explicitly an API-only gateway; serve warns about it at startup
+	}
+	if svcConsole != "" {
+		abs, err := filepath.Abs(paths.ExpandHome(svcConsole))
+		if err != nil {
+			return "", err
+		}
+		if _, err := os.Stat(filepath.Join(abs, "index.html")); err != nil {
+			return "", fmt.Errorf("--console %s has no index.html in it", abs)
+		}
+		return abs, nil
+	}
+	if embeddedUI != nil {
+		return "", nil
+	}
+	return "", fmt.Errorf(
+		"this binary has no console built into it, and a service cannot use the relative default:\n"+
+			"  build one in:   make build-embed   (then re-run this install)\n"+
+			"  or point at a built dashboard:   %s service install --console /abs/path/to/dashboard/dist\n"+
+			"  or accept an API-only gateway:   --console none", os.Args[0])
 }
 
 // absOrSelf resolves an explicit --binary, or this executable's real path.
@@ -265,6 +309,7 @@ func init() {
 	f.StringVar(&svcMode, "mode", "", "capture mode to start in: manual | system | tun (empty = the config's own)")
 	f.StringVar(&svcLog, "log", "", "log file (default <data>/serve.log)")
 	f.StringVar(&svcBinary, "binary", "", "trust-proxy binary to run (default: this one, symlinks resolved)")
+	f.StringVar(&svcConsole, "console", "", "path to a built dashboard/dist, for a binary without an embedded console (empty = use the embedded one; \"none\" = API-only gateway)")
 	f.BoolVar(&svcKeepPath, "keep-binary-path", false,
 		"run the binary where it stands instead of copying it to "+service.ManagedBinary+
 			" (only for a package-managed path; NEVER for one inside an .app, which breaks when the app moves)")

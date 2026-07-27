@@ -25,3 +25,7 @@ data/
 /desktop/src-tauri/binaries
 /desktop/src-tauri/gen/schemas
 /dashboard/.dist-stale-root
+
+# A dist directory left root-owned by a sudo build, moved aside so the next build
+# can proceed (see docs/operations.md); the user removes it with sudo.
+dashboard/.dist-stale-root-*

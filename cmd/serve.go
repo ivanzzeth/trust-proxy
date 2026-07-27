@@ -153,6 +153,35 @@ var serveCmd = &cobra.Command{
 	},
 }
 
+// resolveConsoleDir turns --console into an absolute path and says something when
+// there is no console to serve at all.
+//
+// The default is a *relative* path, which is right for `make dashboard && ./trust-proxy
+// serve` in a checkout and meaningless anywhere else: an installed service runs
+// with cwd = /usr/local/libexec (or C:\), so the relative default resolves to
+// nothing and the console answers "dashboard not built" — after the install said
+// it succeeded. Measured on a real install, not hypothetical.
+//
+// Absolutising here also means the daemon keeps working if anything later changes
+// its working directory.
+func resolveConsoleDir() string {
+	if embeddedUI != nil {
+		return serveConsoleDir // the embedded build wins; the path is unused
+	}
+	dir := paths.ExpandHome(serveConsoleDir)
+	if abs, err := filepath.Abs(dir); err == nil {
+		dir = abs
+	}
+	if _, err := os.Stat(filepath.Join(dir, "index.html")); err != nil {
+		// Not fatal — the API is the point and plenty of gateways are headless —
+		// but it must be said at startup rather than discovered as a blank page.
+		logging.L().Warn().Str("console", dir).
+			Msg("no console here and none embedded: / will say \"dashboard not built\" " +
+				"(build with `make build-embed`, or point --console at a dashboard/dist)")
+	}
+	return dir
+}
+
 // resolveDataDir returns the data directory (the per-user default when --data is
 // empty), expanding a leading ~, and ensures it exists.
 //
@@ -553,7 +582,7 @@ func runServe() error {
 		CMApplier:    mgr,
 		Token:        serveAPIToken,
 		Clash:        clash.New(serveClashAddr, secret),
-		ConsoleDir:   serveConsoleDir,
+		ConsoleDir:   resolveConsoleDir(),
 		ConsoleFS:    embeddedUI,
 	})
 	apiSrv.SyncActivePostureSlot()

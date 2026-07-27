@@ -52,6 +52,10 @@ type Config struct {
 	APIAddr    string // --api-addr
 	Mode       string // --mode (manual | system | tun); empty = leave the default
 	LogPath    string // stdout/stderr destination
+	// ConsoleDir is an absolute path to a built dashboard, for a binary that does
+	// not carry one. Empty means the binary has the UI embedded (or the operator
+	// accepts an API-only gateway) — see Config.serveFlags.
+	ConsoleDir string
 
 	// KeepBinaryPath runs Binary where it stands instead of copying it to
 	// ManagedBinary. For a package-managed install (Homebrew, a distro package)
@@ -69,10 +73,7 @@ func (c Config) Plist() (string, error) {
 	if err := c.validate(); err != nil {
 		return "", err
 	}
-	args := []string{c.Binary, "serve", "-c", c.ConfigPath, "--data", c.DataDir, "--api-addr", c.APIAddr}
-	if c.Mode != "" {
-		args = append(args, "--mode", c.Mode)
-	}
+	args := append([]string{c.Binary}, c.serveFlags()...)
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>` + "\n")
 	b.WriteString(`<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">` + "\n")
@@ -124,6 +125,24 @@ func xmlEscape(s string) string {
 	return r.Replace(s)
 }
 
+// serveFlags is the one place the daemon's command line is defined, so launchd,
+// systemd and the SCM cannot drift apart.
+//
+// --console matters more than it looks: its default is a *relative* path, which
+// resolves to nothing for a daemon whose working directory is /usr/local/libexec.
+// Without an absolute one (or an embedded UI) the install succeeds and the console
+// then answers "dashboard not built".
+func (c Config) serveFlags() []string {
+	args := []string{"serve", "-c", c.ConfigPath, "--data", c.DataDir, "--api-addr", c.APIAddr}
+	if c.ConsoleDir != "" {
+		args = append(args, "--console", c.ConsoleDir)
+	}
+	if c.Mode != "" {
+		args = append(args, "--mode", c.Mode)
+	}
+	return args
+}
+
 // serviceArgs is the argument list the SCM passes to the binary: the same `serve`
 // flags as everywhere else, plus --windows-service so the process knows to talk
 // the SCM protocol instead of running as a plain foreground gateway.
@@ -131,15 +150,7 @@ func (c Config) serviceArgs() ([]string, error) {
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
-	args := []string{
-		"serve", "--windows-service",
-		"-c", c.ConfigPath,
-		"--data", c.DataDir,
-		"--api-addr", c.APIAddr,
-		"--log", c.LogPath,
-	}
-	if c.Mode != "" {
-		args = append(args, "--mode", c.Mode)
-	}
-	return args, nil
+	args := append(c.serveFlags(), "--log", c.LogPath)
+	// The SCM starts the process itself, so it has to speak the SCM protocol.
+	return append(args[:1:1], append([]string{"--windows-service"}, args[1:]...)...), nil
 }

@@ -78,6 +78,28 @@ struct Runtime {
 }
 
 fn main() {
+    // --print-config answers "what would you attach to, and with which sidecar"
+    // without opening a window. It exists so a test can catch the drift that
+    // actually happened: a bundle left over from before the ports were renumbered
+    // kept probing the old address, found nothing, and sat on the splash forever.
+    // It is also the first thing to ask when a user says "it will not open".
+    if std::env::args().any(|a| a == "--print-config") {
+        let api = env_override("TP_API_ADDR").unwrap_or_else(|| DEFAULT_API.to_string());
+        let sidecar = env_override("TP_BINARY").unwrap_or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|d| d.join(sidecar_name())))
+                .map(|p| p.display().to_string())
+                .unwrap_or_default()
+        });
+        println!(
+            "{{\"api\":\"{}\",\"data_dir\":\"{}\",\"sidecar\":\"{}\"}}",
+            api,
+            data_dir().display(),
+            sidecar
+        );
+        return;
+    }
     tauri::Builder::default()
         .manage(Gateway(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
@@ -87,7 +109,7 @@ fn main() {
             uninstall_service
         ])
         .setup(|app| {
-            let api = std::env::var("TP_API_ADDR").unwrap_or_else(|_| DEFAULT_API.to_string());
+            let api = env_override("TP_API_ADDR").unwrap_or_else(|| DEFAULT_API.to_string());
             let data_dir = data_dir();
             let binary = gateway_binary(app.handle());
             let (installed, running) = service_state(&binary);
@@ -341,7 +363,7 @@ fn healthy(api: &str, timeout: Duration) -> bool {
 }
 
 fn data_dir() -> PathBuf {
-    if let Ok(dir) = std::env::var("TP_DATA") {
+    if let Some(dir) = env_override("TP_DATA") {
         return PathBuf::from(dir);
     }
     // Same location the CLI uses, on purpose: the desktop app and `trust-proxy`
@@ -359,20 +381,37 @@ fn data_dir() -> PathBuf {
     Path::new(&home).join(".trust-proxy")
 }
 
+/// env_override reads a TP_* override, treating an empty value as absent.
+///
+/// `TP_API_ADDR=` in the environment is not a request to connect to nowhere — it
+/// is a variable someone cleared. Taking it literally produced a shell that
+/// probed the empty string and could never attach.
+fn env_override(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(v) if !v.trim().is_empty() => Some(v),
+        _ => None,
+    }
+}
+
+/// sidecar_name is the gateway executable's file name inside the bundle.
+fn sidecar_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "trust-proxy.exe"
+    } else {
+        "trust-proxy"
+    }
+}
+
 /// gateway_binary is the sidecar inside the bundle, or an override for dev.
 fn gateway_binary(app: &AppHandle) -> PathBuf {
-    if let Ok(p) = std::env::var("TP_BINARY") {
+    if let Some(p) = env_override("TP_BINARY") {
         return PathBuf::from(p);
     }
     // Tauri strips the target triple from an externalBin, but *where* the result
     // lands differs per platform: next to the executable on Linux/Windows, in the
     // bundle's MacOS/ directory on macOS (a sibling of Resources/). Try both
     // rather than encoding one layout.
-    let exe_name = if cfg!(target_os = "windows") {
-        "trust-proxy.exe"
-    } else {
-        "trust-proxy"
-    };
+    let exe_name = sidecar_name();
     if let Ok(dir) = app.path().resource_dir() {
         for candidate in [dir.join(format!("../MacOS/{exe_name}")), dir.join(exe_name)] {
             if let Ok(canon) = candidate.canonicalize() {

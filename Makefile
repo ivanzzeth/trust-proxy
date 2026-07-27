@@ -14,7 +14,7 @@ TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
-.PHONY: run build build-embed tidy e2e-fleet e2e-linux e2e-macos dashboard dashboard-dev dashboard-test deps clean e2e redeploy desktop desktop-dev desktop-sidecar
+.PHONY: run build build-embed tidy e2e-fleet e2e-linux e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test deps clean e2e redeploy desktop desktop-dev desktop-sidecar
 
 # Redeploy defaults (override: make redeploy MODE=manual)
 DATA_DIR  ?= $(HOME)/.trust-proxy
@@ -64,6 +64,14 @@ e2e-fleet:
 ## systemd): install, restart after kill -9, TUN, and a clean uninstall.
 e2e-linux:
 	go test -tags docker_e2e -run TestLinuxSystemdServiceLifecycle -v -timeout 15m ./test/
+
+## What is inside the shipped .app, and does it still match the gateway: the
+## shell's default API address vs the gateway's, and whether the bundled sidecar
+## actually carries a console. Both are the drift that let a stale bundle sit on
+## the splash screen forever. Skips when there is no bundle (TP_APP_BUNDLE to
+## point at one; TP_DESKTOP_GUI=1 also runs the attach test, which opens a window).
+e2e-desktop:
+	go test -tags desktop_e2e -run TestDesktop -v -timeout 10m ./test/
 
 ## Run the end-to-end proxy protocol test (self-hosted server <-> client tunnel)
 e2e:

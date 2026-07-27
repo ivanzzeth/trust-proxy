@@ -80,7 +80,15 @@ sudo trust-proxy service uninstall   # 逃生口
 - **Windows**：SCM 服务不是「系统帮你起的进程」——它必须回报 Running 并处理 Stop，否则启动超时后被 SCM 杀掉（表现为「服务起不来」，且哪个日志里都没线索）。所以服务是用 `serve --windows-service` 启的；Stop 时先让网关收尾再报 Stopped（TUN 模式下有一张网要还原，中途被杀就是一台没有路由的机器）。失败自动重启 = SCM 的 recovery actions。
 - **数据目录**：`service install` 默认用**机器级**目录（boot 时可能还没人登录，家目录未必可读）。若检测到你已有 `~/.trust-proxy` 数据，会**问一句要不要拷过去**——拷贝而非移动，服务不合用时你还有一个能跑的个人网关；`cache.db`（bolt 单写锁）和 pid/log 刻意不拷。
 
-回归测试：`make e2e-macos`（tart VM 里真装 launchd + TUN 死亡开关）、`make e2e-linux`（特权容器里 pid 1 = 真 systemd：install → `kill -9` 后自愈 → TUN 真捕获 → 卸载干净）。两者缺依赖时**skip 而非失败**。
+回归测试（缺依赖一律 **skip 而非失败**）：
+
+| 命令 | 覆盖 |
+|---|---|
+| `make e2e-desktop` | **打出来的 `.app` 本身**：壳会去探的地址 vs 网关真正的默认端口、bundle 里的 sidecar 是不是带内嵌控制台（连 `/assets/*` 真的能取到）、壳与 sidecar 是不是同一次构建。`TP_DESKTOP_GUI=1` 再加一条真启动壳、断言它**贴附**而不是另起一个网关（默认跳过，因为会弹窗）。 |
+| `make e2e-macos` | tart VM 里真装 launchd + TUN 死亡开关 |
+| `make e2e-linux` | 特权容器里 pid 1 = 真 systemd：install → `kill -9` 后自愈 → TUN 真捕获 → 卸载干净 |
+
+`e2e-desktop` 是补上一个真实教训：端口改号后，`/Applications` 里那份旧 bundle 仍在探 9096，于是**永远卡在「启动网关」**——而当时所有其它测试都是绿的，因为没有一个去看过 `.app`。壳因此多了一个 `--print-config`（打印它会连的地址、数据目录、sidecar 路径就退出，不开窗），既给测试用，也是用户报「打不开」时第一个该问的东西。
 
 ## 还没做
 
