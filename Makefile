@@ -15,7 +15,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
 .PHONY: help run app build build-ui build-go build-embed build-app check-build-owner tidy \
-	e2e-fleet e2e-linux e2e-policy e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
+	e2e-fleet e2e-linux e2e-policy e2e-dataplane e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
 	deps clean e2e redeploy desktop desktop-dev desktop-sidecar app-service-hint \
 	release version-check
 
@@ -220,6 +220,12 @@ e2e-macos:
 ## and a local machine egresses through it with its own account — and cleans up.
 e2e-fleet:
 	go test -tags docker_e2e -run TestFleetGatewayAsExit -v -timeout 10m ./test/
+
+## What the gateway does to *packets*, on a real install: default-deny, Permit vs
+## Deny, the Route/Permit axis split, Global mode's floor, the mode dead-man's
+## switch, policy surviving restart and in-place upgrade, key rotation on login.
+e2e-dataplane:
+	go test -tags docker_e2e -run 'TestLinux(DefaultDeny|GlobalMode|GuardedMode|PolicySurvives|LoginRotates)' -v -timeout 20m ./test/
 
 ## Every command that rewrites policy, under a real systemd: each one rebuilds
 ## the sing-box config, and a config the box refuses is a gateway that enforces

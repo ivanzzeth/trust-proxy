@@ -285,6 +285,18 @@ make run         # 用 configs/config.json 启动
 make build-ui    # 只构建自研控制台 -> dashboard/dist
 ```
 
+**Linux e2e 分四层**（`make e2e-linux` / `e2e-policy` / `e2e-dataplane` / `e2e-fleet`，都在特权容器 pid1=真 systemd 里，全部进 CI）：
+
+| 套件 | 覆盖 | 为什么单独一层 |
+|---|---|---|
+| `e2e-linux` | 服务生命周期：install → 认领 → CLI 免配置可用 → TUN 捕获 → `kill -9` 自愈 → 无 pid 文件接管 → 卸载干净 | 装不上/回不来是最贵的失败 |
+| `e2e-policy` | **每一条会重建 sing-box 配置的命令**（约 20 条）：sub apply / acl / rules custom / dns / routing / final / mode / profile / posture。每步读回来确认生效 + 断言数据面还在 | 配置被 box 拒绝 = 网关不再执行任何策略。这层缺席时，「全新装机切 split 必炸」发布了才被用户发现 |
+| `e2e-dataplane` | **对包的断言**：默认拒绝拦得住、permit 放行、deny 压过 permit、**no-proxy 不开闸**（两轴正交）、Global 绕闸但地板仍在、模式死亡开关自动回滚、策略活过重启与原地升级、登录轮换 key 且旧 key 立即失效 | 前两层证明「命令成功、服务还在」，都不是产品的主张。产品的主张是关于**包**的 |
+| `e2e-fleet` | 多网关：远程网关持策略，本地机器经它出网 | |
+
+**为什么 origin 用 `203.0.113.10/32 dev lo`**：私网 CIDR 在闸开时本来就在许可集里，把 origin 放在容器自己的网段上，**无论策略怎么写都能连通**——每条断言都会通过，什么也没证明。TEST-NET-3 不是私网，闸对它生效。
+**容器没有外网**（`raw.githubusercontent.com` 只解析出 IPv6 且无 v6 路由），所以远程规则集下不下来：`posture set split` 只能断言「失败原因不是我们自己造的配置错误」，不能断言切换成功。
+
 **端到端自测（`cmd/selftest.go`，`trust-proxy selftest`，hidden 子命令）**：**离线、确定性、可扔进 VM 跑**的核心引擎 e2e。自起两个本地「origin」（direct-origin 返回 `direct` / node-origin 返回 `node`）+ 一个 http CONNECT「node」上游，用**真实 `gateway.Manager`** 跑遍：默认拒绝拦截 / 白名单→node / no-proxy→direct / 黑名单胜 / 自定义规则 direct·proxy·block·node / system 模式；`sudo trust-proxy selftest` 额外覆盖 tun（loopback 不被 tun 捕获，故 tun 分支只断言 box 能在 tun 模式起来）。任一场景失败则非零退出。**改引擎后务必 `make build-go && ./trust-proxy selftest`**（VM 里 `sudo` 跑覆盖全部）。
 
 **配置只有一处**：`<data>/config.json`，**首启自动种下**——种子是 `main.go` 用 `go:embed` 编进二进制的 `configs/config.json`（仓库里就这一份，不存副本故不会漂移）。`-c` 只作显式覆盖。**cwd 里的 `configs/config.json` 只会被提一句，绝不采用**：它曾经会，而发布包正好带着一个 `configs/` 目录，于是解压后 `cd` 进去 `sudo ./trust-proxy install` 的种子来自压缩包那份——特权命令不该依赖你在哪个目录敲它。**为什么改**：`-c` 原先默认 `configs/config.json` 是**仓库相对路径**，只在 checkout 里成立，于是桌面壳只能另挑位置并在 Rust 里**重写一遍种配置逻辑**——同一件事两份实现、两个默认值，同机上 CLI daemon 与 app 会落到不同配置（连 mode 都不同）。修法是回上游改 `serve`（`cmd/configseed.go` 的 `resolveConfig`，`serve` 与 `service install` 共用），Rust 侧那份删掉。

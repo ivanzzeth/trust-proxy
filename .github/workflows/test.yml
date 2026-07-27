@@ -80,6 +80,21 @@ jobs:
           go-version-file: go.mod
       - run: make e2e-policy
 
+  # What the gateway does to packets. The suites above prove commands succeed and
+  # the service comes back; this one proves the product's actual claim — that an
+  # unlisted destination cannot leave, that Deny beats Permit, and that a routing
+  # decision never opens the gate.
+  linux-dataplane:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make e2e-dataplane
+
   shell:
     runs-on: ubuntu-latest
     steps:
