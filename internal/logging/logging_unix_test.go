@@ -86,21 +86,38 @@ func TestSetupRotatesAndCapsBackups(t *testing.T) {
 	}
 	stop() // drains the ring
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var backups []string
-	for _, e := range entries {
-		if e.Name() != "serve.log" {
-			backups = append(backups, e.Name())
+	// lumberjack prunes old generations on a background goroutine, so the count
+	// is bounded *eventually*, not at the instant the last write returns. Reading
+	// the directory once passed on the machine this was written on and failed the
+	// first time CI ran it on Linux, with three backups where two were expected —
+	// a scheduling difference, not a leak. Poll for the bound instead of racing it.
+	backups := func() []string {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
 		}
+		var out []string
+		for _, e := range entries {
+			if e.Name() != "serve.log" {
+				out = append(out, e.Name())
+			}
+		}
+		return out
 	}
-	if len(backups) == 0 {
-		t.Fatal("never rotated")
-	}
-	if len(backups) > 2 {
-		t.Fatalf("MaxBackups=2 exceeded: %v", backups)
+	var last []string
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		last = backups()
+		if len(last) > 0 && len(last) <= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			if len(last) == 0 {
+				t.Fatal("never rotated")
+			}
+			t.Fatalf("MaxBackups=2 still exceeded after 10s: %v", last)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	fi, err := os.Stat(path)
 	if err != nil {

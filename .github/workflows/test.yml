@@ -80,6 +80,13 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq libwebkit2gtk-4.1-dev libgtk-3-dev \
             libayatana-appindicator3-dev librsvg2-dev
+          # tauri-build checks that every externalBin exists before it will
+          # compile anything, and the real sidecar is a 60MB Go binary that this
+          # job has no reason to build — it is here to put the Rust through a
+          # compiler, not to produce a bundle. An empty file of the right name
+          # satisfies the check; `make build-app` is what makes a real one.
+          mkdir -p binaries
+          touch "binaries/trust-proxy-$(rustc -vV | sed -n 's/^host: //p')"
           cargo test
 
   console:
