@@ -25,13 +25,39 @@ const reservedDirectTag = "dns-direct"
 
 var validStrategy = map[string]bool{"": true, "prefer_ipv4": true, "prefer_ipv6": true, "ipv4_only": true, "ipv6_only": true}
 
-// Default = system resolver only (non-disruptive; the user opts into
-// proxy/split DNS from the console).
+// Default: resolve through an encrypted resolver behind the exit, and let
+// injectDirectDNS send direct-routed domains to a domestic one.
+//
+// The old default was the system resolver alone, which is the one shape that
+// satisfies none of this package's reasons for existing: every domain you then
+// proxy is still queried in the clear against whatever the OS points at, so the
+// ISP sees the lot, and a censored domain answers with a poisoned address that
+// gets dialed through the exit and fails. It also meant injectDirectDNS — the
+// entire "DNS follows route" mechanism — never activated on a fresh install,
+// because it only splits away from a resolver that sits behind the proxy.
+//
+// Two deliberate omissions:
+//
+//   - no `rule_set` DNS rule (the console's China-split preset has one for
+//     geosite-cn). A fresh install has no rule sets, so the reference would
+//     dangle and the box would refuse to start — the exact class of bug that
+//     shipped once already. It is unnecessary anyway: injectDirectDNS mirrors
+//     the *final* route table into dns.rules, so anything routed direct gets the
+//     domestic resolver without naming a rule set here.
+//   - `local` is kept as a server but is not final: something to fall back to by
+//     hand on a network where 1.1.1.1 is unreachable.
+//
+// Bootstrapping is fine with no nodes yet: `detour: proxy` resolves to the proxy
+// group, which is a selector over direct until an exit exists, and the server is
+// an IP so there is no name to look up first.
 func defaultConfig() apitypes.DNSConfig {
 	return apitypes.DNSConfig{
-		Servers: []apitypes.DNSServer{{Tag: "local", Type: "local"}},
-		Rules:   []apitypes.DNSRule{},
-		Final:   "local",
+		Servers: []apitypes.DNSServer{
+			{Tag: "local", Type: "local"},
+			{Tag: "doh", Type: "https", Server: "1.1.1.1", Detour: "proxy"},
+		},
+		Rules: []apitypes.DNSRule{},
+		Final: "doh",
 	}
 }
 

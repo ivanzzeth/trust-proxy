@@ -236,3 +236,48 @@ func TestLinuxLoginRotatesTheStoredKey(t *testing.T) {
 		t.Fatalf("the previous key still authenticates (HTTP %s) — every login would leave another live admin credential", strings.TrimSpace(got))
 	}
 }
+
+// A fresh install must not query every domain in the clear.
+//
+// The default resolver used to be the system one, alone: the ISP saw every
+// domain you then proxied, a censored domain answered with a poisoned address
+// that got dialed through the exit, and the "DNS follows route" machinery never
+// engaged because it only splits away from a resolver behind the proxy. Nothing
+// said so, and every install started that way.
+//
+// Asserted on a box with no route to the internet on purpose: the point is that
+// the default is safe *and* still starts. A default that leaks is a bug; a
+// default that bricks an offline machine is a worse one.
+func TestLinuxFreshInstallResolvesThroughTheExit(t *testing.T) {
+	l := newLab(t, "tp-e2e-dns")
+
+	got := l.exec("trust-proxy dns get")
+	final := ""
+	for _, line := range strings.Split(got, "\n") {
+		if strings.HasPrefix(line, "final:") {
+			final = strings.Fields(line)[1]
+		}
+	}
+	if final == "" {
+		t.Fatalf("no final resolver in:\n%s", got)
+	}
+	var detour string
+	for _, line := range strings.Split(got, "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 4 && f[0] == final {
+			detour = f[len(f)-1]
+		}
+	}
+	if detour != "proxy" {
+		t.Fatalf("the default final resolver %q has detour %q — a fresh install queries in the clear:\n%s",
+			final, detour, got)
+	}
+	// And the direct split is on, so domestic destinations are not resolved from
+	// wherever the exit happens to be — the 15-second-taobao failure.
+	if !strings.Contains(got, "split on") {
+		t.Fatalf("the direct-route split is off, so direct-routed domains resolve through the exit:\n%s", got)
+	}
+	// Safe is only half of it: the box has to come up with this config on a
+	// machine that cannot reach 1.1.1.1.
+	l.assertBoxAlive("a fresh install's default DNS")
+}
