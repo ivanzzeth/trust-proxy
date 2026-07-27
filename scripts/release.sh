@@ -81,7 +81,17 @@ gates() {
   (cd desktop/src-tauri && cargo test --quiet >/dev/null)
   note "engine selftest"
   make --no-print-directory build-go >/dev/null
-  ./trust-proxy selftest >/dev/null || die "selftest failed"
+  # Captured rather than silenced: the selftest narrates every gateway rebuild on
+  # stderr, which buries the one line that matters, but throwing it away would
+  # leave a failure with nothing to look at.
+  local log
+  log=$(mktemp)
+  if ! ./trust-proxy selftest >"$log" 2>&1; then
+    tail -30 "$log" >&2
+    die "selftest failed (full output: $log)"
+  fi
+  grep -E '^[0-9]+ passed' "$log" | sed 's/^/    /' || true
+  rm -f "$log"
 }
 
 # ---- arguments -------------------------------------------------------------
