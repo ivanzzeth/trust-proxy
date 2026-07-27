@@ -2,7 +2,13 @@ package gateway
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/ivanzzeth/trust-proxy/internal/customrules"
+	"github.com/ivanzzeth/trust-proxy/internal/directlist"
+	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
+	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
 // --clash-addr has to reach the config, not just the API's client.
@@ -71,4 +77,103 @@ func clashAPI(t *testing.T, cfg map[string]json.RawMessage) map[string]any {
 		t.Fatal(err)
 	}
 	return ca
+}
+
+// The gateway has to be allowed to fetch its own policy inputs.
+//
+// Remote rule sets are downloaded by sing-box through its *default* outbound,
+// which means the download goes through route.rules — straight into our own
+// Permit gate. Under default-deny that is a reject, and the log said exactly
+// that: "outbound/block[blocked]: blocked connection to
+// raw.githubusercontent.com:443", surfaced to the user as six lines of
+// "operation not permitted". The gateway was refusing to start because it had
+// blocked itself.
+//
+// The old `download_detour` bypassed route.rules entirely. Its replacement,
+// http_client.detour, is rejected when it names an outbound with no dialer
+// options ("detour to an empty direct outbound makes no sense") — and whether our
+// direct outbound has any depends on whether the DNS split is on, which is not a
+// coupling to build on.
+//
+// So: an explicit exemption for the hosts the enabled rule sets are fetched
+// from, below the deny floor and above the gate, where it is visible in
+// `rules ls` and auditable.
+func TestRuleSetSourcesAreExemptFromTheOwnGate(t *testing.T) {
+	sets := ruleset.Sets{Sets: []apitypes.RuleSet{{
+		Tag: "geosite-cn", Type: "remote", Format: "binary",
+		URL:  "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
+		Role: apitypes.RuleRoleRouteDirect, UpdateInterval: "1d", Enabled: true,
+	}}}
+	merged := buildDNS(t, ModeManual, dohViaProxy(), directlist.Rules{}, customrules.Rules{}, sets, nil)
+	parseValidate(t, merged)
+
+	// The assertion is about the outcome, not the mechanism: the gate is the only
+	// thing that rejects an unlisted destination, so being inside its allow-list
+	// is exactly "this download is not blocked". Where the traffic then goes is
+	// L4's business — proxy when an exit exists, direct when it does not.
+	gate := findPermitGate(t, routeRules(t, merged))
+	if gate == nil {
+		t.Fatal("no Permit gate in a strict config — this test would prove nothing")
+	}
+	if !allowListCovers(gate, "cdn.jsdelivr.net") {
+		t.Fatalf("the rule-set source host is not permitted, so the gateway blocks its own download:\n%v", gate)
+	}
+}
+
+// A rule set the operator disabled is not fetched, so it must not widen the
+// allow-list. An exemption that outlives its reason is just a hole.
+func TestDisabledRuleSetSourceIsNotPermitted(t *testing.T) {
+	sets := ruleset.Sets{Sets: []apitypes.RuleSet{{
+		Tag: "geosite-cn", Type: "remote", Format: "binary",
+		URL:  "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
+		Role: apitypes.RuleRoleRouteDirect, UpdateInterval: "1d", Enabled: false,
+	}}}
+	merged := buildDNS(t, ModeManual, dohViaProxy(), directlist.Rules{}, customrules.Rules{}, sets, nil)
+	parseValidate(t, merged)
+
+	if gate := findPermitGate(t, routeRules(t, merged)); gate != nil && allowListCovers(gate, "cdn.jsdelivr.net") {
+		t.Fatal("a disabled rule set still permitted its source host")
+	}
+}
+
+// findPermitGate returns the inverted allow-list reject that closes default-deny.
+func findPermitGate(t *testing.T, rules []map[string]any) map[string]any {
+	t.Helper()
+	for _, r := range rules {
+		if inv, _ := r["invert"].(bool); inv && r["type"] == "logical" {
+			return r
+		}
+	}
+	return nil
+}
+
+// allowListCovers reports whether the gate lets host through, by exact domain or
+// by suffix.
+func allowListCovers(gate map[string]any, host string) bool {
+	subs, _ := gate["rules"].([]any)
+	for _, sr := range subs {
+		m, ok := sr.(map[string]any)
+		if !ok {
+			continue
+		}
+		for _, key := range []string{"domain", "domain_suffix"} {
+			for _, v := range strSlice(m[key]) {
+				if v == host || strings.HasSuffix(host, v) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func strSlice(v any) []string {
+	arr, _ := v.([]any)
+	out := make([]string, 0, len(arr))
+	for _, e := range arr {
+		if s, ok := e.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }

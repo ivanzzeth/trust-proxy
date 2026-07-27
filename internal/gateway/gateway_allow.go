@@ -5,6 +5,7 @@ package gateway
 import (
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
@@ -160,6 +161,28 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 		if len(permitSetTags) > 0 {
 			subRules = append(subRules, map[string]any{"rule_set": permitSetTags})
 		}
+		// The gateway has to be allowed to fetch its own policy inputs.
+		//
+		// sing-box downloads a remote rule set through its *default* outbound,
+		// which means the request goes through route.rules — straight into this
+		// gate. Under default-deny that is a reject, and the whole box then refuses
+		// to start: "outbound/block[blocked]: blocked connection to
+		// raw.githubusercontent.com:443", surfaced as "operation not permitted"
+		// once per rule set. The gateway had blocked itself, and switching to Split
+		// (which seeds a dozen remote sets) failed on every machine whose permit
+		// list did not happen to include GitHub.
+		//
+		// The deprecated `download_detour` sidestepped route.rules entirely. Its
+		// replacement cannot: http_client.detour is refused when it names an
+		// outbound with no dialer options, and whether our direct outbound has any
+		// depends on whether the DNS split is on — not a coupling worth building
+		// on. So the permission is explicit and visible in `rules ls` instead.
+		//
+		// Exact hosts, not suffixes, and only for sets that are actually enabled:
+		// an exemption that outlives its reason is just a hole.
+		if hosts := ruleSetSourceHosts(sets); len(hosts) > 0 {
+			subRules = append(subRules, map[string]any{"domain": hosts})
+		}
 		subRules = append(subRules, customSubRules...)
 		gate, _ := json.Marshal(map[string]any{
 			"type": "logical", "mode": "or", "rules": subRules,
@@ -285,4 +308,49 @@ func stringOr(v any, fallback string) string {
 		return s
 	}
 	return fallback
+}
+
+// ruleSetSourceHosts lists the hosts the enabled remote rule sets are fetched
+// from, deduplicated and sorted so the emitted config is stable.
+func ruleSetSourceHosts(sets ruleset.Sets) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, rs := range sets.Sets {
+		if !rs.Enabled || rs.Type != "remote" || rs.URL == "" {
+			continue
+		}
+		h := urlHost(rs.URL)
+		if h == "" || seen[h] {
+			continue
+		}
+		seen[h] = true
+		out = append(out, h)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// urlHost pulls the host out of a URL without importing net/url for one field —
+// and without its error path, since a URL we cannot parse simply grants nothing.
+func urlHost(u string) string {
+	i := strings.Index(u, "://")
+	if i < 0 {
+		return ""
+	}
+	rest := u[i+3:]
+	if j := strings.IndexAny(rest, "/?#"); j >= 0 {
+		rest = rest[:j]
+	}
+	if j := strings.LastIndex(rest, "@"); j >= 0 { // strip any userinfo
+		rest = rest[j+1:]
+	}
+	if strings.HasPrefix(rest, "[") { // IPv6 literal
+		if j := strings.Index(rest, "]"); j > 0 {
+			return rest[1:j]
+		}
+	}
+	if j := strings.LastIndex(rest, ":"); j > 0 {
+		rest = rest[:j]
+	}
+	return rest
 }
