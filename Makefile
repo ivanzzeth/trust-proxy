@@ -14,9 +14,9 @@ TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
-.PHONY: help run build build-ui build-go build-embed build-app tidy \
+.PHONY: help run app build build-ui build-go build-embed build-app tidy \
 	e2e-fleet e2e-linux e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
-	deps clean e2e redeploy desktop desktop-dev desktop-sidecar
+	deps clean e2e redeploy desktop desktop-dev desktop-sidecar app-service-hint
 
 # `make` on its own lists what there is to run.
 .DEFAULT_GOAL := help
@@ -37,6 +37,7 @@ help:
 	@echo "trust-proxy — the ones you usually want:"
 	@echo ""
 	@echo "  make build        everything, the way it ships: console + single binary + app"
+	@echo "  make app          build the app, install it, and open it"
 	@echo "  make run          build the single binary and start the gateway"
 	@echo "  make deps         first time: fetch the sing-box submodule"
 	@echo ""
@@ -63,6 +64,66 @@ build: build-embed
 		echo "==> desktop app skipped: no cargo here (fine on a server)"; \
 		echo "    ./trust-proxy is complete and has the console embedded"; \
 		echo "    to build the app too: install Rust, then make build-app"; \
+	fi
+
+# Where `make app` puts the built bundle. Override APP_DIR to install elsewhere.
+#
+# APP_DIR is a variable of its own rather than $(dir $(APP_INSTALL)): make's $(dir)
+# splits on whitespace, and "Trust Proxy.app" is two words to it — which turned the
+# destination into "/Applications/ ./" and copied the bundle nowhere useful.
+APP_NAME    ?= Trust Proxy.app
+APP_DIR     ?= /Applications
+APP_BUNDLE   = desktop/src-tauri/target/release/bundle/macos/$(APP_NAME)
+APP_INSTALL  = $(APP_DIR)/$(APP_NAME)
+
+## Build the app, install it, and open it — the one command for "use the app".
+##
+## It replaces the installed copy first, because `open` on a bundle that is
+## already running just re-focuses the running process: you would be looking at
+## the old build and believe it was the new one. That is how an .app from before
+## the ports were renumbered stayed on screen probing an address nobody answered.
+app: build-app
+ifeq ($(shell uname -s),Darwin)
+	@# Quit the running copy. This only ends the window and any gateway that
+	@# window started; a gateway owned by launchd is untouched, which is the point
+	@# of having it owned by launchd.
+	@osascript -e 'quit app "Trust Proxy"' >/dev/null 2>&1 || true
+	@pkill -f "$(APP_INSTALL)/Contents/MacOS/trust-proxy-desktop" >/dev/null 2>&1 || true
+	@# Only ever delete something that is actually our bundle: APP_INSTALL is
+	@# overridable, and a typo must not take a directory with it.
+	@if [ -e "$(APP_INSTALL)" ] && [ ! -x "$(APP_INSTALL)/Contents/MacOS/trust-proxy-desktop" ]; then \
+		echo "refusing to replace $(APP_INSTALL): that is not a trust-proxy bundle"; exit 1; fi
+	@rm -rf "$(APP_INSTALL)"
+	@cp -R "$(APP_BUNDLE)" "$(APP_DIR)/" || { \
+		echo "could not write to $(APP_DIR) — install it by hand:"; \
+		echo "  cp -R \"$(APP_BUNDLE)\" \"$(APP_DIR)/\""; exit 1; }
+	@# cp reports success for some partial copies; the thing we are about to open
+	@# has to actually be there.
+	@test -x "$(APP_INSTALL)/Contents/MacOS/trust-proxy-desktop" || { \
+		echo "the copy did not land at $(APP_INSTALL)"; exit 1; }
+	@echo "==> installed $(APP_INSTALL)"
+	@$(MAKE) --no-print-directory app-service-hint
+	@open "$(APP_INSTALL)"
+else
+	@echo "==> launching the shell (bundles for this platform are in desktop/src-tauri/target/release/bundle/)"
+	./desktop/src-tauri/target/release/trust-proxy-desktop
+endif
+
+# If a system service is installed but runs an older binary than the one just
+# built, the app will attach to *that* gateway — so the window shows the old
+# code and nothing about it looks wrong. Say it, with the command that fixes it.
+app-service-hint:
+	@# The table output, not --json: the JSON is pretty-printed across lines, so a
+	@# substring match on it silently never fires — which is exactly what this
+	@# hint existing is supposed to prevent.
+	@status=$$(./trust-proxy service status 2>/dev/null || true); \
+	prog=$$(printf '%s\n' "$$status" | sed -n 's/^program:[[:space:]]*//p'); \
+	if printf '%s\n' "$$status" | grep -q '^installed:.*true' && [ -x "$$prog" ] && \
+	   [ "$$("$$prog" --version 2>/dev/null)" != "$$(./trust-proxy --version 2>/dev/null)" ]; then \
+		echo "==> note: the installed service still runs an older gateway:"; \
+		echo "      $$prog ($$("$$prog" --version 2>/dev/null | awk '{print $$NF}'))"; \
+		echo "    the app attaches to that one, so the window would show the old code."; \
+		echo "    update it too:  sudo ./trust-proxy service install --mode tun -y"; \
 	fi
 
 ## Boot the gateway (config: <data>/config.json, seeded on first run)

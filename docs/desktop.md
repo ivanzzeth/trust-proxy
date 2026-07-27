@@ -1,9 +1,19 @@
 # 桌面端（macOS / Linux / Windows）
 
 ```bash
+make app         # 构建 + 安装 + 打开（用 app 就这一条）
 make build       # 全套：控制台 → 内嵌 UI 的单二进制 → 当前平台的 app
 make build-app   # 只重打 app（macOS: .app + .dmg / Linux: .deb + .AppImage / Windows: .msi + .nsis）
 make desktop-dev # 开发运行（贴附已在跑的网关）
+```
+
+`make app` 会先**退掉正在跑的那份再替换** —— `open` 一个已经在运行的 bundle 只是把旧进程调到前台，你会对着旧代码以为是新的（端口改号后那个卡在启动页的 app 就是这么来的）。装完还会检查一件事：**系统服务里跑的二进制如果比刚构建的旧**，就把这行打出来，因为壳会贴附到那个旧网关、窗口里一切看起来都正常：
+
+```
+==> note: the installed service still runs an older gateway:
+      /usr/local/libexec/trust-proxy (v0.8.0-12-ge257201-dirty)
+    the app attaches to that one, so the window would show the old code.
+    update it too:  sudo ./trust-proxy service install --mode tun -y
 ```
 
 **同一个壳，三种提权方式**——壳本身在哪都不是 root，它只是请系统以 root 跑同一条 CLI 命令，再读回 CLI 自己的 JSON。这样「装出来的东西」不取决于是谁问的：
