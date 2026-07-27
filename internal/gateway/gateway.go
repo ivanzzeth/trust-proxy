@@ -847,7 +847,15 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	}
 	// Before applyMode: a configured dns block is installed first; applyMode's
 	// TUN path then runs sanitizeTunDNS so any type=local servers cannot loop.
-	if err := injectDNS(cfg, dns, dataDir); err != nil {
+	// The rule sets the config will end up declaring, so a DNS rule cannot
+	// reference one that is absent.
+	//
+	// Computed from the stores rather than read back from cfg, because injectRuleSets
+	// runs *after* this — reading the config here found nothing and dropped every
+	// reference, including the valid ones. Order-independent beats
+	// order-remembering: the set is "enabled entries, plus whatever the base config
+	// already declared", which is exactly what injectRuleSets will register.
+	if err := injectDNS(cfg, dns, dataDir, willDeclareRuleSetTags(cfg, sets)); err != nil {
 		return nil, err
 	}
 	if err := applyMode(cfg, mode, inbound, tun); err != nil {

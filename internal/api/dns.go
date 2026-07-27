@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -25,6 +26,31 @@ func (s *Server) handleSetDNS(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
+	// A DNS rule may only name a rule set that exists.
+	//
+	// dnscfg validates server tags and Final against the declared servers, and had
+	// no way to check this one: the rule sets live in another store. So the mistake
+	// travelled — the gateway self-heals a dangling reference now, but silently
+	// dropping the rule the operator just wrote is a worse answer than refusing it
+	// here, where the message can name the tag and list what is available.
+	if s.rs != nil {
+		known := map[string]bool{}
+		for _, rs := range s.rs.Get().Sets {
+			if rs.Enabled {
+				known[rs.Tag] = true
+			}
+		}
+		for i, r := range req.Rules {
+			for _, tag := range r.RuleSet {
+				if !known[tag] {
+					writeErr(w, http.StatusBadRequest, fmt.Sprintf(
+						"rules[%d] names rule set %q, which is not imported or not enabled", i, tag))
+					return
+				}
+			}
+		}
+	}
+
 	prev := s.dns.Get()
 	cfg, err := s.dns.Set(req) // validates
 	if err != nil {

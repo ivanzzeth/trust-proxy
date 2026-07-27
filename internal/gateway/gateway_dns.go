@@ -7,12 +7,14 @@ import (
 	"path/filepath"
 
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
+
+	"github.com/ivanzzeth/trust-proxy/internal/logging"
 )
 
 // injectDNS builds the sing-box dns block from our config. Empty servers => no
 // dns block (keep sing-box defaults / TUN's injected resolver). Server types map
 // straight to sing-box 1.12+ typed DNS servers; local needs no address.
-func injectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig, dataDir string) error {
+func injectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig, dataDir string, declaredSets map[string]bool) error {
 	if len(d.Servers) == 0 {
 		return nil
 	}
@@ -56,15 +58,38 @@ func injectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig, dataDir str
 	}
 	rules := make([]map[string]any, 0, len(d.Rules))
 	for _, r := range d.Rules {
-		if r.Server == "" || (len(r.DomainSuffix) == 0 && len(r.RuleSet) == 0) {
+		// Drop references to rule sets that are not in the config.
+		//
+		// dnscfg validates r.Server and c.Final against the declared DNS servers and
+		// never checked r.RuleSet against anything, while the mirror side of
+		// injectDirectDNS does filter (ruleset.DNSSafeTags). sing-box answers a
+		// dangling tag with "rule-set not found: X" at Start, so a DNS rule left
+		// pointing at a set the operator has since disabled or deleted made the
+		// gateway refuse to come up — and the error names DNS rather than the rule
+		// set they just touched. If the pair is already inconsistent on disk (a hand
+		// edit, an older profile) `serve` never starts at all.
+		//
+		// Healed rather than refused, the way the engine treats every other tag that
+		// has gone away: an unknown node egress is skipped, an unknown Final falls
+		// back to proxy.
+		kept := make([]string, 0, len(r.RuleSet))
+		for _, tag := range r.RuleSet {
+			if declaredSets[tag] {
+				kept = append(kept, tag)
+				continue
+			}
+			logging.L().Warn().Str("rule_set", tag).Str("server", r.Server).
+				Msg("a DNS rule names a rule set that is not enabled: dropping the reference")
+		}
+		if r.Server == "" || (len(r.DomainSuffix) == 0 && len(kept) == 0) {
 			continue // never emit an empty-matcher rule
 		}
 		m := map[string]any{"server": r.Server}
 		if len(r.DomainSuffix) > 0 {
 			m["domain_suffix"] = r.DomainSuffix
 		}
-		if len(r.RuleSet) > 0 {
-			m["rule_set"] = r.RuleSet
+		if len(kept) > 0 {
+			m["rule_set"] = kept
 		}
 		rules = append(rules, m)
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
@@ -50,6 +51,9 @@ func applyInvariants(cfg map[string]json.RawMessage, mode string, loopback map[s
 	}
 	if err := assertResolverReferences(cfg); err != nil {
 		return fmt.Errorf("invariant resolver-refs: %w", err)
+	}
+	if err := assertRuleSetReferences(cfg); err != nil {
+		return fmt.Errorf("invariant rule-set-refs: %w", err)
 	}
 	return nil
 }
@@ -437,4 +441,145 @@ func containsAnyStr(all []any, want string) bool {
 		}
 	}
 	return false
+}
+
+// declaredRuleSetTags lists the rule_set tags actually present in the config, so
+// other injectors can avoid emitting a reference to one that is not.
+//
+// Read from the config rather than from the store, because those are different
+// things: injectRuleSets skips disabled entries, so the store may list a set the
+// box will not have.
+func declaredRuleSetTags(cfg map[string]json.RawMessage) map[string]bool {
+	out := map[string]bool{}
+	raw, ok := cfg["route"]
+	if !ok {
+		return out
+	}
+	var route map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &route); err != nil {
+		return out
+	}
+	var sets []map[string]any
+	if rs, ok := route["rule_set"]; ok {
+		if err := json.Unmarshal(rs, &sets); err != nil {
+			return out
+		}
+	}
+	for _, s := range sets {
+		if tag, _ := s["tag"].(string); tag != "" {
+			out[tag] = true
+		}
+	}
+	return out
+}
+
+// willDeclareRuleSetTags is the set of rule_set tags the finished config will
+// have: the enabled entries injectRuleSets is about to register, plus any the base
+// config already carries.
+//
+// Needed because the injectors do not run in dependency order — injectDNS runs
+// before injectRuleSets — so anything that has to agree with the rule sets cannot
+// learn them by reading the config at that point.
+func willDeclareRuleSetTags(cfg map[string]json.RawMessage, sets ruleset.Sets) map[string]bool {
+	out := declaredRuleSetTags(cfg)
+	for _, rs := range sets.Sets {
+		if rs.Enabled && rs.Tag != "" {
+			out[rs.Tag] = true
+		}
+	}
+	return out
+}
+
+// assertRuleSetReferences refuses a config where anything names a rule set the
+// config does not declare.
+//
+// Same class as assertResolverReferences, one namespace over: sing-box answers a
+// dangling rule_set tag with "rule-set not found: X" at Start, which is past every
+// schema check and therefore past every test in this package that stops at
+// unmarshalling. Failing the rebuild instead means the previous config keeps
+// running and the operator gets a sentence naming the tag.
+func assertRuleSetReferences(cfg map[string]json.RawMessage) error {
+	declared := declaredRuleSetTags(cfg)
+	report := func(who, tag string) error {
+		return fmt.Errorf("%s names rule set %q, which nothing declares (declared: %v) — "+
+			"the injector that registers a rule set must be the one that references it",
+			who, tag, sortedTags(declared))
+	}
+
+	if raw, ok := cfg["dns"]; ok {
+		var dns map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &dns); err != nil {
+			return err
+		}
+		var rules []map[string]any
+		if r, ok := dns["rules"]; ok {
+			if err := json.Unmarshal(r, &rules); err != nil {
+				return err
+			}
+		}
+		for i, r := range rules {
+			for _, tag := range strSliceOf(r["rule_set"]) {
+				if !declared[tag] {
+					return report(fmt.Sprintf("dns.rules[%d]", i), tag)
+				}
+			}
+		}
+	}
+
+	if raw, ok := cfg["route"]; ok {
+		var route map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &route); err != nil {
+			return err
+		}
+		var rules []map[string]any
+		if r, ok := route["rules"]; ok {
+			if err := json.Unmarshal(r, &rules); err != nil {
+				return err
+			}
+		}
+		for i, r := range rules {
+			if err := checkRuleSetRefs(fmt.Sprintf("route.rules[%d]", i), r, declared, report); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkRuleSetRefs walks a route rule and its logical sub-rules, which is where
+// the Permit gate keeps its rule_set matchers.
+func checkRuleSetRefs(who string, r map[string]any, declared map[string]bool, report func(string, string) error) error {
+	for _, tag := range strSliceOf(r["rule_set"]) {
+		if !declared[tag] {
+			return report(who, tag)
+		}
+	}
+	subs, _ := r["rules"].([]any)
+	for i, sr := range subs {
+		m, ok := sr.(map[string]any)
+		if !ok {
+			continue
+		}
+		if err := checkRuleSetRefs(fmt.Sprintf("%s.rules[%d]", who, i), m, declared, report); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// strSliceOf reads a JSON string array that may be absent or a bare string.
+func strSliceOf(v any) []string {
+	switch t := v.(type) {
+	case string:
+		return []string{t}
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
