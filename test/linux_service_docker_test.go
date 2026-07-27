@@ -343,6 +343,31 @@ func TestLinuxSystemdServiceLifecycle(t *testing.T) {
 			procs, c.exec("ps -eo args | grep '[t]rust-proxy serve'"), takeover)
 	}
 
+	// ---- nothing in the data directory is readable by other local accounts --
+	//
+	// The API is careful: subscription URLs and node outbounds are redacted before
+	// they reach a browser, and even an admin cannot read a stored proxy password
+	// back. The files were not. subscriptions.json was 0644 in a 0755 directory and
+	// holds the subscription URL — itself a credential — the pasted node text, and
+	// every node's full outbound JSON: UUIDs, Shadowsocks and Trojan passwords,
+	// reality keys. Eight more stores were the same, so any local account could read
+	// every exit credential and the whole policy off a machine-wide install.
+	//
+	// Asserted by walking rather than by listing the stores, because the next store
+	// somebody adds will not be on a list.
+	c.exec("trust-proxy sub add file:///dev/null --name perm-probe || true")
+	c.exec("trust-proxy acl add permit --domain perm-probe.example -y || true")
+	if loose := strings.TrimSpace(c.exec(
+		`find /var/lib/trust-proxy -type f -perm /0066 -printf '%M %p\n' 2>/dev/null || true`)); loose != "" {
+		t.Fatalf("these files in the data directory are readable or writable by other local accounts:\n%s", loose)
+	}
+	// The directory itself, too: 0700 means the question above cannot even be asked
+	// by a non-root process, and it is the one permission a copied or bind-mounted
+	// data directory does not carry with it.
+	if perm := strings.TrimSpace(c.exec(`stat -c '%a' /var/lib/trust-proxy`)); perm != "700" {
+		t.Fatalf("the data directory is mode %s, want 700", perm)
+	}
+
 	// ---- an unclaimed gateway is not open to the network -------------------
 	// The synthetic admin an empty registry hands out used to ignore where the
 	// request came from, and the one-time claim code only ever guarded the

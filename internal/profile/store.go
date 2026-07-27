@@ -53,7 +53,7 @@ func (s *Store) save() error {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, b, 0o644)
+	return os.WriteFile(s.path, b, 0o600)
 }
 
 // List returns a snapshot of all profiles (never nil, so it serializes as []).

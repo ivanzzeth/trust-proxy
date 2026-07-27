@@ -159,6 +159,9 @@ func runInstall() error {
 	if !paths.Privileged() {
 		return fmt.Errorf("installing a system service needs root: re-run with sudo")
 	}
+	// install seeds config.json and mode.json into the machine-wide directory, so it
+	// creates files there too — same reason as serve.
+	tightenUmask()
 	// Then the port, still before any side effect. Something already answering
 	// means the service would start, fail to bind, and be retried at every boot —
 	// while the machine looks fine, because the *other* gateway is answering.

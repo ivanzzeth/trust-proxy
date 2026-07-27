@@ -66,7 +66,7 @@ func resolveConfig(explicit, dataDir string) (string, error) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(path, seed, 0o644); err != nil {
+	if err := os.WriteFile(path, seed, 0o600); err != nil {
 		return "", fmt.Errorf("seed %s: %w", path, err)
 	}
 	// Printed, not logged: this happens before the logging stack is up, and

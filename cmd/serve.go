@@ -109,6 +109,9 @@ var serveCmd = &cobra.Command{
 	Short:  "Run the gateway in the foreground (what the system service execs; use `install`)",
 	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Before anything is created — including by the daemon re-exec, and by
+		// sing-box, which writes cache.db and the Tailscale state itself.
+		tightenUmask()
 		dir, err := resolveDataDir(serveDataDir)
 		if err != nil {
 			return err
@@ -205,12 +208,20 @@ func resolveDataDir(dir string) (string, error) {
 	} else {
 		dir = paths.ExpandHome(dir)
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, dataDirMode); err != nil {
 		if os.IsPermission(err) && !paths.Privileged() {
 			return "", notYourGatewayError(dir)
 		}
 		return "", err
 	}
+	// MkdirAll leaves an existing directory's mode alone, so every machine
+	// installed before this was tightened keeps 0755 — and those are the machines
+	// with the most policy in there.
+	if tightenDataDir(dir) {
+		logging.L().Info().Str("dir", dir).Msg("narrowed the data directory to owner-only")
+	}
+	// The service manager, not us, creates the log file — see tightenLogFile.
+	tightenLogFile(daemonLogPath(dir))
 	// Existing but unwritable is the case that matters, and MkdirAll says nothing
 	// about it: once the service has run, /var/lib/trust-proxy is there and owned
 	// by root, so an unprivileged `serve` sails past the check above and dies
@@ -837,7 +848,7 @@ func resolveClashSecret(dataDir string) (string, error) {
 		return "", err
 	}
 	secret := hex.EncodeToString(buf)
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+	if err := os.MkdirAll(dataDir, dataDirMode); err != nil {
 		return "", err
 	}
 	if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {

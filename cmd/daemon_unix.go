@@ -24,7 +24,7 @@ func daemonize(logPath, pidPath string) error {
 		}
 	}
 
-	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logf, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return fmt.Errorf("open log %s: %w", logPath, err)
 	}
@@ -43,7 +43,7 @@ func daemonize(logPath, pidPath string) error {
 		return err
 	}
 	if pidPath != "" {
-		_ = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o644)
+		_ = os.WriteFile(pidPath, []byte(strconv.Itoa(cmd.Process.Pid)+"\n"), 0o600)
 	}
 	fmt.Printf("daemon started (pid %d); logs -> %s, pid -> %s\n", cmd.Process.Pid, logPath, pidPath)
 	fmt.Printf("stop it with: trust-proxy proxy stop --pid %s\n", pidPath)

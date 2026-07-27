@@ -69,7 +69,7 @@ func SaveJSON(path string, v any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, b, 0o644)
+	return os.WriteFile(path, b, 0o600)
 }
 
 // Mutate runs fn under mu (which must mutate *data in place), persists *data

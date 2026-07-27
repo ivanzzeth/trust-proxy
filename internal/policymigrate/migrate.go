@@ -30,7 +30,7 @@ func Run(dataDir string) error {
 	if err := migrateProfilesVersion(dataDir); err != nil {
 		return err
 	}
-	return os.WriteFile(marker, []byte("ok\n"), 0o644)
+	return os.WriteFile(marker, []byte("ok\n"), 0o600)
 }
 
 // migrateDirectlistToWhitelist copies no-proxy domains/IPs into whitelist so
@@ -96,7 +96,7 @@ func migrateDirectlistToWhitelist(dataDir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(wlPath, out, 0o644)
+	return os.WriteFile(wlPath, out, 0o600)
 }
 
 func migrateProfilesVersion(dataDir string) error {
@@ -134,5 +134,5 @@ func migrateProfilesVersion(dataDir string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, out, 0o644)
+	return os.WriteFile(path, out, 0o600)
 }
