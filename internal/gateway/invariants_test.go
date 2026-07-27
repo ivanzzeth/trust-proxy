@@ -110,7 +110,7 @@ func TestInvariants_Table(t *testing.T) {
 				whitelist.Rules{Domains: []string{"ok.com"}}, blacklist.Rules{}, quarantine.List{}, directlist.Rules{},
 				customrules.Rules{}, proxygroups.Config{}, tc.mode, ruleset.Sets{},
 				tc.dns, apitypes.InboundAuth{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true},
-				nil, nil, "proxy", "", "s", t.TempDir())
+				nil, nil, "proxy", "", "s", "", t.TempDir())
 			if err != nil {
 				t.Fatalf("build: %v", err)
 			}

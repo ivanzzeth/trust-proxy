@@ -66,6 +66,7 @@ type Manager struct {
 	logWriter   io.Writer // sink for sing-box's own log lines (async ring; nil = stderr)
 	engine      *detect.Engine
 	clashSecret string
+	clashAddr   string
 
 	rebuildMu sync.Mutex // serializes rebuilds
 
@@ -204,10 +205,10 @@ func (m *Manager) setAndRebuild(what string, mutate func() (revert func())) erro
 
 // NewManager returns a manager seeded with the initial whitelist, the detection
 // engine, and the Clash API secret to inject into the config.
-func NewManager(configPath, dataDir string, wl whitelist.Rules, engine *detect.Engine, clashSecret string) *Manager {
+func NewManager(configPath, dataDir string, wl whitelist.Rules, engine *detect.Engine, clashSecret, clashAddr string) *Manager {
 	return &Manager{
 		configPath: configPath, dataDir: dataDir, logger: log.StdLogger(),
-		wl: wl, engine: engine, clashSecret: clashSecret, mode: ModeManual,
+		wl: wl, engine: engine, clashSecret: clashSecret, clashAddr: clashAddr, mode: ModeManual,
 		final: "proxy", posture: apitypes.PostureStrict,
 	}
 }
@@ -673,7 +674,7 @@ func (m *Manager) rebuild() error {
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture, m.clashSecret, m.dataDir)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture, m.clashSecret, m.clashAddr, m.dataDir)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -766,7 +767,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // The split keeps two orthogonal concerns apart: the whitelist decides only
 // allow/deny (L3), the no-proxy list + rule-sets decide only egress (L4). All
 // injection is at the JSON level so sing-box's own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, quar quarantine.List, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, final, posture, clashSecret, dataDir string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, quar quarantine.List, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, final, posture, clashSecret, clashAddr, dataDir string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -826,7 +827,7 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	if err := injectManagement(cfg, mgmtPorts); err != nil {
 		return nil, err
 	}
-	if err := injectClashSecret(cfg, clashSecret); err != nil {
+	if err := injectClashSecret(cfg, clashSecret, clashAddr); err != nil {
 		return nil, err
 	}
 	// Safety contracts last: TUN DNS/hijack, DNS-follows-route split, no loopback

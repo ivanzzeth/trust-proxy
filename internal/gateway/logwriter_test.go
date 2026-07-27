@@ -46,7 +46,7 @@ func TestSingBoxLogsGoToOurWriter(t *testing.T) {
 	}`)
 
 	sink := &syncBuffer{}
-	mgr := NewManager(cfg, dir, whitelist.Rules{}, detect.New(16), "")
+	mgr := NewManager(cfg, dir, whitelist.Rules{}, detect.New(16), "", "")
 	mgr.SetLogWriter(sink)
 	if err := mgr.Start(); err != nil {
 		t.Fatalf("start: %v", err)

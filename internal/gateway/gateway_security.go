@@ -14,8 +14,8 @@ import (
 
 // injectClashSecret sets experimental.clash_api.secret (so the secret isn't
 // baked into the repo's config; serve resolves/generates it at runtime).
-func injectClashSecret(cfg map[string]json.RawMessage, secret string) error {
-	if secret == "" {
+func injectClashSecret(cfg map[string]json.RawMessage, secret, addr string) error {
+	if secret == "" && addr == "" {
 		return nil
 	}
 	expRaw, ok := cfg["experimental"]
@@ -34,7 +34,21 @@ func injectClashSecret(cfg map[string]json.RawMessage, secret string) error {
 	if err := json.Unmarshal(caRaw, &ca); err != nil {
 		return err
 	}
-	ca["secret"] = secret
+	if secret != "" {
+		ca["secret"] = secret
+	}
+	// The address, not only the credential.
+	//
+	// --clash-addr configured the API's *client* and nothing else: the port
+	// sing-box bound came from the config file, so the flag silently did half a
+	// job. A second instance started with --clash-addr pointed somewhere free
+	// still tried the config's port, collided, and exited 1 with the reason only
+	// in a log nobody had been told to read. Injecting one half of a listener's
+	// configuration from a flag and reading the other half from disk is an
+	// asymmetry that looks fine right up until they disagree.
+	if addr != "" {
+		ca["external_controller"] = addr
+	}
 	newCA, err := json.Marshal(ca)
 	if err != nil {
 		return err

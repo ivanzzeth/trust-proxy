@@ -469,7 +469,7 @@ func runServe() error {
 		return err
 	}
 
-	mgr := gateway.NewManager(serveConfig, serveDataDir, wlStore.Get(), engine, secret)
+	mgr := gateway.NewManager(serveConfig, serveDataDir, wlStore.Get(), engine, secret, serveClashAddr)
 	// Under --daemon this is the async ring (logging.Setup); in the foreground it
 	// is nil and sing-box keeps writing to the terminal.
 	mgr.SetLogWriter(logging.Sink())

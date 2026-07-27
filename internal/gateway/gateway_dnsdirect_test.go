@@ -37,7 +37,7 @@ func buildDNS(t *testing.T, mode string, dns apitypes.DNSConfig, dl directlist.R
 	t.Helper()
 	merged, err := buildMergedConfig([]byte(baseCfg), nodes, whitelist.Rules{Domains: []string{"example.com"}},
 		blacklist.Rules{}, quarantine.List{}, dl, cr, proxygroups.Config{}, mode, sets,
-		dns, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "proxy", "", "sekret", t.TempDir())
+		dns, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "proxy", "", "sekret", "", t.TempDir())
 	if err != nil {
 		t.Fatalf("buildMergedConfig: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestUserDNSRulesKeepPriority(t *testing.T) {
 func TestCatchAllDirectFlipsDNSFinal(t *testing.T) {
 	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{Domains: []string{"example.com"}},
 		blacklist.Rules{}, quarantine.List{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, cnDirectSets(),
-		dohViaProxy(), apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "direct", "", "sekret", t.TempDir())
+		dohViaProxy(), apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil, "direct", "", "sekret", "", t.TempDir())
 	if err != nil {
 		t.Fatalf("buildMergedConfig: %v", err)
 	}

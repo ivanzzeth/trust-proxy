@@ -183,7 +183,7 @@ func runSelftest() error {
 	}
 
 	engine := detect.New(500)
-	mgr := gateway.NewManager(cfgPath, dataDir, whitelist.Rules{}, engine, "")
+	mgr := gateway.NewManager(cfgPath, dataDir, whitelist.Rules{}, engine, "", "")
 	mgr.SetInitialDNS(dns)
 	// The exit node: an http outbound at our tagging upstream.
 	nodeOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "NODE", "server": "node-exit.tp", "server_port": nodePort})
@@ -782,7 +782,7 @@ func liveTest(subFile string) (pass, fail int) {
 	_ = os.WriteFile(cfgPath, []byte(baseCfg), 0o644)
 
 	engine := detect.New(200)
-	mgr := gateway.NewManager(cfgPath, dir, whitelist.Rules{Domains: []string{"example.com", "api.ipify.org", "www.gstatic.com", "ip-api.com"}}, engine, "")
+	mgr := gateway.NewManager(cfgPath, dir, whitelist.Rules{Domains: []string{"example.com", "api.ipify.org", "www.gstatic.com", "ip-api.com"}}, engine, "", "")
 	mgr.SetInitialNodes(nodes)
 	// Auto (urltest over all nodes) so egress uses a HEALTHY node: a real sub can
 	// mix live and dead nodes (e.g. a host-local Warp endpoint that isn't
