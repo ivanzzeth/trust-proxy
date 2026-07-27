@@ -63,9 +63,14 @@ const NAV_SECTIONS: { key: string; items: NavItem[] }[] = [
     items: [
       { to: '/', label: 'nav.overview', icon: Activity, end: true },
       { to: '/connections', label: 'nav.connections', icon: Waypoints },
-      { to: '/detection', label: 'nav.detection', icon: ShieldAlert },
+      // Detection and Logs are whole-machine views, not the caller's own: the log
+      // stream carries every account's destinations, and fingerprints / netcheck /
+      // DNS-query stats describe the host. The API makes them admin now, so the nav
+      // has to agree — an entry a client can click and only get 403 from is worse
+      // than no entry.
+      { to: '/detection', label: 'nav.detection', icon: ShieldAlert, admin: true },
       { to: '/history', label: 'nav.history', icon: HistoryIcon },
-      { to: '/logs', label: 'nav.logs', icon: Terminal },
+      { to: '/logs', label: 'nav.logs', icon: Terminal, admin: true },
     ],
   },
   {
@@ -100,7 +105,7 @@ const MODE_LABEL: Record<string, string> = { manual: 'Manual', system: 'System',
 // A client sees the observability pages and nothing else: policy, nodes, users and
 // the fleet are an administrator's. The API refuses them anyway — hiding them keeps
 // the console from offering doors that do not open.
-function useIsAdmin() {
+export function useIsAdmin() {
   const { data } = useQuery({ queryKey: ['authState'], queryFn: api.authState });
   return { isAdmin: data?.user?.role === 'admin', user: data?.user };
 }

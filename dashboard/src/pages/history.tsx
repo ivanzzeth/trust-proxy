@@ -7,6 +7,7 @@ import { api } from '@/lib/api';
 import { cn, fmtBytes, fmtDuration, fmtLatencyBreakdown } from '@/lib/utils';
 import { DEFAULT_PAGE_SIZE } from '@/hooks/use-paged-list';
 import { PageHeader } from '@/components/page-header';
+import { useIsAdmin } from '@/components/app-shell';
 import { ListSearch, PaginationBar } from '@/components/pagination-bar';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -23,7 +24,16 @@ export default function History() {
     setPage(0);
   }, [deferredQ]);
 
-  const { data: stats } = useQuery({ queryKey: ['history', 'stats'], queryFn: api.historyStats, refetchInterval: 5000 });
+  // The connection list below is scoped to the caller; these totals are
+  // gateway-wide (top talkers across every account), so they are an admin's and
+  // asking for them as a client would only produce a 403 behind an empty card.
+  const { isAdmin } = useIsAdmin();
+  const { data: stats } = useQuery({
+    queryKey: ['history', 'stats'],
+    queryFn: api.historyStats,
+    refetchInterval: 5000,
+    enabled: isAdmin,
+  });
   const { data: hist } = useQuery({
     queryKey: ['history', 'recent', deferredQ, page, pageSize],
     queryFn: () => api.history(pageSize, deferredQ, page * pageSize),

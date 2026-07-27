@@ -43,28 +43,11 @@ const (
 	accessAdmin                // admin only
 )
 
-// readOnlyForUsers are the GET-able prefixes a non-admin may see: the
-// observability surface. Everything else — policy, mode, users, fleet — is admin.
-//
-// A plain user can watch, and cannot change what the gateway enforces.
-var readOnlyForUsers = []string{
-	"/api/health", "/api/status", "/api/connections", "/api/traffic",
-	"/api/events", "/api/detections", "/api/history", "/api/logs",
-	"/api/dns-queries", "/api/netcheck", "/api/fingerprints", "/api/rules",
-	"/api/proxies", "/api/effective-rules", "/api/auth/me", "/api/auth/state",
-	"/api/permit-requests", // scoped to the caller's own in the handler
-}
-
-// publicPaths need no identity at all. Deliberately tiny: everything here is
-// reachable by anyone who can reach the port.
-var publicPaths = []string{
-	"/api/health",         // liveness, used by the desktop shell before login
-	"/api/auth/state",     // "do I need to bootstrap, may I register?"
-	"/api/auth/bootstrap", // create the first admin (guarded separately, see below)
-	"/api/auth/login",
-	"/api/auth/logout",
-	"/api/auth/register", // refused by the store unless an admin opened it
-}
+// The lists that used to live here — publicPaths and readOnlyForUsers — are gone.
+// A prefix list answers questions about routes that did not exist when it was
+// written: "/api/proxies" also granted /api/proxies/{name}/delay, and
+// "/api/history" also granted the gateway-wide /api/history/stats. Levels are
+// declared per route in access.go and resolved with the mux's own matching.
 
 // selfService is what a client may do to its own account: change its password,
 // rotate its own API keys. Judged against the authenticated identity in
@@ -90,50 +73,32 @@ func isSelfService(r *http.Request) (id string, ok bool) {
 	return "", false
 }
 
-// requirement returns the access level a request needs.
+// requirement returns the access level a request needs, from the level its route
+// declares in access.go.
+//
+// The only rule that is not a straight lookup is the reverse proxy. A forwarded
+// request is judged by what it asks for — otherwise a client could reach an admin
+// endpoint on a remote gateway through the prefix — but never below "logged in",
+// because the relay injects the target gateway's stored token. Judging by the
+// forwarded path *and* honouring a public level there is what turned this into an
+// anonymous, credential-carrying relay onto every registered probe.
 func requirement(r *http.Request) access {
-	p := path0(r.URL.Path)
-	// A console ticket is asymmetric: minting one proves you are already
-	// authenticated, redeeming one is how a browser that has nothing becomes
-	// logged in. The redeem side has to be reachable without a credential — that
-	// is the entire point — and is safe because the ticket is single-use, expires
-	// in a minute, and is only ever handed out to an authenticated caller.
-	if p == "/api/auth/ticket" {
-		if r.Method == http.MethodGet {
-			return accessPublic
+	if target, ok := nodeProxyTarget(r.URL.Path); ok {
+		need := levelOf(r.Method, target)
+		if need < accessUser {
+			need = accessUser
 		}
-		return accessUser
+		return need
 	}
-	// Asking for a destination to be permitted is the one write a client has, and
-	// it is a proposal: the rule it creates is disabled and grants nothing (see
-	// requests.go). Approving one is admin.
-	if p == "/api/permit-requests" && r.Method == http.MethodPost {
-		return accessUser
-	}
-	for _, pub := range publicPaths {
-		if p == pub {
-			return accessPublic
-		}
-	}
-	if r.Method == http.MethodGet || r.Method == http.MethodHead {
-		for _, ro := range readOnlyForUsers {
-			if p == ro || strings.HasPrefix(p, ro+"/") {
-				return accessUser
-			}
-		}
-	}
-	return accessAdmin
+	return levelOf(r.Method, r.URL.Path)
 }
 
-// path0 strips the /api/nodes/{id} reverse-proxy prefix so a request forwarded to
-// a remote gateway is judged by what it actually asks for, not by the prefix.
+// path0 strips the /api/nodes/{id} reverse-proxy prefix. Used by the checks that
+// are about the *forwarded* request rather than the relay: self-service, and the
+// per-caller scoping in the handlers.
 func path0(p string) string {
-	if !strings.HasPrefix(p, "/api/nodes/") {
-		return p
-	}
-	rest := strings.TrimPrefix(p, "/api/nodes/")
-	if i := strings.Index(rest, "/"); i >= 0 {
-		return "/api" + rest[i:]
+	if target, ok := nodeProxyTarget(p); ok {
+		return target
 	}
 	return p
 }
@@ -151,7 +116,15 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 		// A same-origin console plus a SameSite=Strict cookie already stops most
 		// cross-site abuse; rejecting a foreign Origin on mutations closes the rest
 		// (a page on another site scripting our loopback API).
-		if need != accessPublic && isMutation(r.Method) && !s.originOK(r) {
+		//
+		// Every mutation, including the public ones. This used to skip the check when
+		// the level was public, which left POST /api/auth/{bootstrap,register,login,
+		// logout} with no CSRF defence at all — and bootstrap on an unclaimed gateway
+		// creates the first admin. Any page the operator visited could claim a
+		// root-privileged gateway with credentials of the attacker's choosing, with no
+		// need to read the response. A cookie is not the only thing worth protecting
+		// here; the absence of one is.
+		if isMutation(r.Method) && !s.originOK(r) {
 			writeErr(w, http.StatusForbidden, "cross-origin request refused")
 			return
 		}
