@@ -23,18 +23,67 @@ jobs:
         run: go vet ./cmd/... ./internal/... ./pkg/...
       - name: test
         run: go test ./cmd/... ./internal/... ./pkg/...
-      # The gateway ships for three platforms and only one of them is built here
-      # by default. A compile error on Linux or Windows is not something to find
-      # out at tag time, which is the only moment anything currently builds them.
-      - name: cross-compile
+
+  # The gateway ships for four targets and only one gets built by `go test`. A
+  # compile error on Linux or Windows is not something to find out at tag time,
+  # which used to be the only moment anything built them.
+  #
+  # A matrix, not a loop: as four sequential builds of a dependency graph this
+  # size (sing-box + tailscale + gvisor) it was five minutes of the six the whole
+  # workflow took, and each target has its own build cache anyway, so there was
+  # nothing to share by keeping them together.
+  cross:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
         run: |
-          set -euo pipefail
-          tags="with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard with_tailscale"
-          for target in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do
-            echo "==> $target"
-            GOOS="${target%/*}" GOARCH="${target#*/}" CGO_ENABLED=0 \
-              go build -tags "$tags" -o /dev/null .
-          done
+          go build -tags "with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard with_tailscale" \
+            -o /dev/null .
+
+  # One Linux binary for every e2e suite to share.
+  #
+  # Each suite used to compile its own — the same source, the same tags, three
+  # times over. Building it once costs the suites nothing in wall clock (they wait
+  # for a job that is faster than the build they were doing anyway) and saves two
+  # full compiles per run.
+  testbin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build the e2e binary
+        env:
+          CGO_ENABLED: '0'
+          GOOS: linux
+          GOARCH: amd64
+        run: go build -tags "with_clash_api with_quic with_utls with_gvisor" -o trust-proxy-e2e .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trust-proxy-e2e
+          path: trust-proxy-e2e
+          retention-days: 1
 
   # The engine's own end-to-end suite: default-deny, whitelist, no-proxy,
   # blacklist, custom rules, and DNS following the route. Offline and
@@ -56,6 +105,7 @@ jobs:
   # `kill -9` recovery → takeover with no pid file → uninstall leaves only data.
   # This is the one-command flow the project promises, so it gates the branch.
   linux-service:
+    needs: testbin
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -64,12 +114,19 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: make e2e-linux
+      - uses: actions/download-artifact@v4
+        with:
+          name: trust-proxy-e2e
+      - name: e2e-linux
+        run: |
+          chmod +x trust-proxy-e2e
+          TP_TEST_BINARY="$PWD/trust-proxy-e2e" make e2e-linux
 
   # Every command that rewrites policy rebuilds the sing-box config, and a config
   # the box refuses is a gateway that stops enforcing anything. About twenty such
   # commands had no e2e coverage at all until one of them shipped broken.
   linux-policy:
+    needs: testbin
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -78,13 +135,20 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: make e2e-policy
+      - uses: actions/download-artifact@v4
+        with:
+          name: trust-proxy-e2e
+      - name: e2e-policy
+        run: |
+          chmod +x trust-proxy-e2e
+          TP_TEST_BINARY="$PWD/trust-proxy-e2e" make e2e-policy
 
   # What the gateway does to packets. The suites above prove commands succeed and
   # the service comes back; this one proves the product's actual claim — that an
   # unlisted destination cannot leave, that Deny beats Permit, and that a routing
   # decision never opens the gate.
   linux-dataplane:
+    needs: testbin
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -93,7 +157,13 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - run: make e2e-dataplane
+      - uses: actions/download-artifact@v4
+        with:
+          name: trust-proxy-e2e
+      - name: e2e-dataplane
+        run: |
+          chmod +x trust-proxy-e2e
+          TP_TEST_BINARY="$PWD/trust-proxy-e2e" make e2e-dataplane
 
   shell:
     runs-on: ubuntu-latest

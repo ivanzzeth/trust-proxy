@@ -347,9 +347,23 @@ func requireDocker(t *testing.T) {
 	}
 }
 
-// buildLinuxBinary compiles a static linux binary for the container's arch.
+// buildLinuxBinary compiles a static linux binary for the container's arch, or
+// reuses one somebody already built.
+//
+// TP_TEST_BINARY exists for CI, where four suites wanted the same binary from the
+// same source with the same tags and each compiled its own — a dependency graph
+// this size is a minute a time. Unset (a developer running one suite), it builds,
+// which is the behaviour that needs no explanation.
 func buildLinuxBinary(t *testing.T) string {
 	t.Helper()
+	if p := os.Getenv("TP_TEST_BINARY"); p != "" {
+		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			return p
+		}
+		// Named but unusable is a mistake worth stopping for: silently building
+		// instead would hide a broken CI wiring behind a slow green run.
+		t.Fatalf("TP_TEST_BINARY=%s is not an executable file", p)
+	}
 	return buildLinuxBinaryVersioned(t, "")
 }
 
