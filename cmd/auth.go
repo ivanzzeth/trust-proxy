@@ -48,7 +48,16 @@ var authBootstrapCmd = &cobra.Command{
 		"needs --code, the one-time code printed in its log at startup — otherwise\n" +
 		"whoever reaches the port first could claim it. On a headless box you can also\n" +
 		"skip the API entirely: `trust-proxy user add <name> --admin`.",
-	Args: cobra.ExactArgs(1),
+	// A named error beats cobra's "accepts 1 arg(s), received 0": the username is
+	// the account you will log in with forever, and the docs shipped without it
+	// once already.
+	Args: func(_ *cobra.Command, args []string) error {
+		if len(args) != 1 {
+			return fmt.Errorf("choose a username for the first admin, e.g. `trust-proxy auth bootstrap admin`" +
+				" (the password is asked for next; it is not a flag)")
+		}
+		return nil
+	},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pw, err := readNewPassword()
 		if err != nil {

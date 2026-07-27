@@ -371,6 +371,37 @@ func TestAuthStateAnnouncesTheCodeRequirement(t *testing.T) {
 	}
 }
 
+// The CLI takes the username positionally, so `auth bootstrap <code>` with a
+// forgotten --code claims the gateway under an account named after the code —
+// and succeeds, leaving the user logging in as a 22-character blob forever.
+func TestBootstrapRefusesTheCodeAsAUsername(t *testing.T) {
+	s, _, a, dir := newAuthServer(t)
+	code, err := a.BootstrapCode(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, "/api/auth/bootstrap",
+		strings.NewReader(`{"username":"`+code+`","password":"a-long-enough-password"}`))
+	r.RemoteAddr = "127.0.0.1:9999" // loopback: no code needed, which is how it slips through
+	s.handleBootstrap(rec, r)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "--code") {
+		t.Fatalf("the error must point at the right flag: %s", rec.Body)
+	}
+	// And the gateway is still claimable — refusing must not consume the attempt.
+	rec = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, "/api/auth/bootstrap",
+		strings.NewReader(`{"username":"ivan","password":"a-long-enough-password"}`))
+	r.RemoteAddr = "127.0.0.1:9999"
+	s.handleBootstrap(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a real username must still work: %d %s", rec.Code, rec.Body)
+	}
+}
+
 func TestLoopbackBootstrapNeedsNoCode(t *testing.T) {
 	s, _, _, _ := newAuthServer(t)
 	rec := httptest.NewRecorder()

@@ -47,9 +47,9 @@ open "/Applications/Trust Proxy.app"                 # 壳探到已有网关就�
 
 ```bash
 # 网关本机（loopback 即证明你在这台机器上，无需额外凭据）
-trust-proxy auth bootstrap
+trust-proxy auth bootstrap <用户名>          # 密码交互输入
 # 远程/云上（不在本机 ⇒ 还需要 serve 启动时打印的一次性认领码）
-trust-proxy auth bootstrap --api-addr <host>:21585 --code <启动日志里的 code>
+trust-proxy auth bootstrap <用户名> --api-addr <host>:21585 --code <启动日志里的 code>
 ```
 
 浏览器同理：从网关本机打开控制台只要填用户名密码；**从别的机器打开会多一个「一次性认领码」输入框**（`/api/auth/state` 的 `needs_bootstrap_code` 告诉前端要不要问）。第一个账号**必然是 admin**——否则会出现一台没人能管的网关。
@@ -101,7 +101,7 @@ trust-proxy auth bootstrap --api-addr <host>:21585 --code <启动日志里的 co
 ```bash
 # 网关（云服务器）：暴露 API，第一个管理员认领它
 trust-proxy serve --api-addr 0.0.0.0:21585
-trust-proxy auth bootstrap --api-addr <host>:21585 --code <启动日志里的>
+trust-proxy auth bootstrap <用户名> --api-addr <host>:21585 --code <启动日志里的>
 # 给每台要用它的机器建一个账号 + 代理密码
 trust-proxy user add laptop && trust-proxy user proxy-pass laptop
 ```

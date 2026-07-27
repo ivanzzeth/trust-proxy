@@ -316,6 +316,17 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Passing the one-time code where the username goes is an easy mistake — the
+	// CLI takes the username positionally, so a forgotten `--code` turns the code
+	// into the account name, and it *works*: you end up permanently logging in as
+	// "ObhbafOz__K_IruFbORgdg". The server can tell for certain, so it says so
+	// instead of creating that account.
+	if s.authn != nil && req.Username != "" && s.authn.CheckBootstrapCode(req.Username) {
+		writeErr(w, http.StatusBadRequest,
+			"that is the one-time claim code, not a username — it goes in --code (or the "+
+				"code field in the browser). The username is the name you will log in with.")
+		return
+	}
 	u, err := s.users.Create(req.Username, req.Password, users.RoleAdmin)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())

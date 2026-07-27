@@ -29,8 +29,8 @@ make                 # 不带参数 = 列出所有目标，build-* 是各个单�
 控制台：**http://127.0.0.1:21585/**（`serve` 启动日志会打印）。第一次打开先**建首个管理员**（自动成为 admin）；在网关本机上填用户名密码即可，从别的机器打开还需要启动日志里那个一次性认领码。没有浏览器的服务器上用 CLI：
 
 ```bash
-trust-proxy auth bootstrap                                   # 本机
-trust-proxy auth bootstrap --api-addr <host>:21585 --code …   # 远程（码在 serve 启动日志里）
+trust-proxy auth bootstrap <用户名>                            # 本机（密码交互输入）
+trust-proxy auth bootstrap <用户名> --api-addr <host>:21585 --code …   # 远程（码在启动日志里）
 ```
 
 **在有人认领之前 `/api/*` 是开放的**（否则全新安装没法初始化），`serve` 会把这件事明说在日志里。账号、两种密码（登录 / 走代理）、API key、注册开关见 [docs/operations.md](docs/operations.md#账号与权限)。
