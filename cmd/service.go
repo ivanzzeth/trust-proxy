@@ -75,7 +75,7 @@ func newInstallCmd(hidden bool) *cobra.Command {
 	f.StringVarP(&svcConfig, "config", "c", "", "sing-box config path (default <data>/config.json, seeded on first run)")
 	f.StringVar(&svcData, "data", "", "data directory override (default: the machine-wide one, "+paths.Data()+")")
 	f.StringVar(&svcAPIAddr, "api-addr", "127.0.0.1:21585", "backend API listen address")
-	f.StringVar(&svcMode, "mode", "", "capture mode to start in: manual | system | tun (empty = the config's own; TUN can be switched on later from the console)")
+	f.StringVar(&svcMode, "mode", "", "capture mode to start in: manual | system | tun (empty = leave this machine's current setting, so upgrading preserves TUN; can also be switched later from the console)")
 	f.StringVar(&svcLog, "log", "", "log file (default <data>/serve.log)")
 	f.StringVar(&svcBinary, "binary", "", "trust-proxy binary to run (default: this one, symlinks resolved)")
 	f.StringVar(&svcConsole, "console", "", "path to a built dashboard/dist, for a binary without an embedded console (empty = use the embedded one; \"none\" = API-only gateway)")
@@ -218,6 +218,21 @@ func runInstall() error {
 			return err
 		}
 	}
+	// The mode goes in the store, not in the service definition's arguments.
+	//
+	// This is what makes a bare re-install — the documented upgrade path, and what
+	// the desktop Update button runs — preserve TUN instead of silently turning it
+	// off. No --mode means "leave whatever this machine is set to", which is now a
+	// statement the code can actually honour; while the mode lived in the plist's
+	// argument list, rewriting that list dropped it.
+	//
+	// After the refusals and before the service starts: seeding it here means the
+	// daemon reads the intended mode on its very first boot, and an install that
+	// gets rejected above has not written anything.
+	mode, err := seedMode(c.DataDir, svcMode)
+	if err != nil {
+		return err
+	}
 	if err := service.Install(c); err != nil {
 		return err
 	}
@@ -227,7 +242,7 @@ func runInstall() error {
 	res := map[string]any{
 		"installed": installed, "running": running, "detail": detail,
 		"file": service.File(), "program": program,
-		"data_dir": c.DataDir, "api_addr": c.APIAddr, "mode": c.Mode,
+		"data_dir": c.DataDir, "api_addr": c.APIAddr, "mode": mode,
 		"console_url": "http://" + c.APIAddr + "/",
 		"adopted":     adopted,
 	}
@@ -246,9 +261,7 @@ func runInstall() error {
 		fmt.Printf("  program: %s\n", program)
 		fmt.Printf("  data:    %s\n", c.DataDir)
 		fmt.Printf("  logs:    %s\n", c.LogPath)
-		if c.Mode != "" {
-			fmt.Printf("  mode:    %s\n", c.Mode)
-		}
+		fmt.Printf("  mode:    %s\n", mode)
 		if adopted > 0 {
 			fmt.Printf("  adopted %d file(s) from the old per-user directory\n", adopted)
 		}
@@ -659,7 +672,7 @@ func serviceDataDir() (string, error) {
 // serviceConfig fills in the defaults the daemon needs: absolute paths (no
 // service manager resolves a relative one) and this very binary as the program.
 func serviceConfig() (service.Config, error) {
-	c := service.Config{APIAddr: svcAPIAddr, Mode: svcMode}
+	c := service.Config{APIAddr: svcAPIAddr}
 	var err error
 	if c.Binary, err = absOrSelf(svcBinary); err != nil {
 		return c, err

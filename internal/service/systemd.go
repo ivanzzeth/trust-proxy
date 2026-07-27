@@ -25,10 +25,12 @@ func (c Config) Unit() (string, error) {
 	if err := c.validate(); err != nil {
 		return "", err
 	}
-	args := []string{c.Binary, "serve", "-c", c.ConfigPath, "--data", c.DataDir, "--api-addr", c.APIAddr}
-	if c.Mode != "" {
-		args = append(args, "--mode", c.Mode)
-	}
+	// serveFlags, not a second hand-written list. This used to build its own, and
+	// the two had already drifted: systemd never passed --console, whose default is
+	// a relative path a daemon cannot resolve, so a Linux install without an
+	// embedded UI came up answering "dashboard not built" — the exact failure
+	// serveFlags' comment warns about, in the one place that wasn't using it.
+	args := append([]string{c.Binary}, c.serveFlags()...)
 	quoted := make([]string, len(args))
 	for i, a := range args {
 		quoted[i] = systemdQuote(a)

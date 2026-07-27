@@ -213,30 +213,30 @@ tidy:
 ## that must never be tried on the developer's own machine. Skips when tart, the
 ## VM or sshpass are missing (TP_TART_VM overrides the VM name).
 e2e-macos:
-	go test -tags tart_e2e -run 'TestMacOS' -v -timeout 15m ./test/
+	go test -count=1 -tags tart_e2e -run 'TestMacOS' -v -timeout 15m ./test/
 
 ## Multi-gateway e2e in containers: origin + gateway + client, no internet needed.
 ## Verifies the shape the feature exists for — a remote gateway holds the policy
 ## and a local machine egresses through it with its own account — and cleans up.
 e2e-fleet:
-	go test -tags docker_e2e -run TestFleetGatewayAsExit -v -timeout 10m ./test/
+	go test -count=1 -tags docker_e2e -run TestFleetGatewayAsExit -v -timeout 10m ./test/
 
 ## What the gateway does to *packets*, on a real install: default-deny, Permit vs
 ## Deny, the Route/Permit axis split, Global mode's floor, the mode dead-man's
 ## switch, policy surviving restart and in-place upgrade, key rotation on login.
 e2e-dataplane:
-	go test -tags docker_e2e -run 'TestLinux(DefaultDeny|GlobalMode|GuardedMode|PolicySurvives|LoginRotates|FreshInstallResolves|UpgradeHealsTheOldDNS|SplitWorksWithNo)' -v -timeout 20m ./test/
+	go test -count=1 -tags docker_e2e -run 'TestLinux(DefaultDeny|GlobalMode|GuardedMode|PolicySurvives|LoginRotates|FreshInstallResolves|UpgradeHealsTheOldDNS|SplitWorksWithNo)' -v -timeout 20m ./test/
 
 ## Every command that rewrites policy, under a real systemd: each one rebuilds
 ## the sing-box config, and a config the box refuses is a gateway that enforces
 ## nothing. Asserts the change took *and* that the data plane survived it.
 e2e-policy:
-	go test -tags docker_e2e -run TestLinuxPolicyRebuilds -v -timeout 15m ./test/
+	go test -count=1 -tags docker_e2e -run TestLinuxPolicyRebuilds -v -timeout 15m ./test/
 
 ## Linux service lifecycle under a real systemd (privileged container, pid 1 =
 ## systemd): install, restart after kill -9, TUN, and a clean uninstall.
 e2e-linux:
-	go test -tags docker_e2e -run TestLinuxSystemdServiceLifecycle -v -timeout 15m ./test/
+	go test -count=1 -tags docker_e2e -run TestLinuxSystemdServiceLifecycle -v -timeout 15m ./test/
 
 ## What is inside the shipped .app, and does it still match the gateway: the
 ## shell's default API address vs the gateway's, and whether the bundled sidecar
@@ -244,7 +244,7 @@ e2e-linux:
 ## the splash screen forever. Skips when there is no bundle (TP_APP_BUNDLE to
 ## point at one; TP_DESKTOP_GUI=1 also runs the attach test, which opens a window).
 e2e-desktop:
-	go test -tags desktop_e2e -run TestDesktop -v -timeout 10m ./test/
+	go test -count=1 -tags desktop_e2e -run TestDesktop -v -timeout 10m ./test/
 
 ## Run the end-to-end proxy protocol test (self-hosted server <-> client tunnel)
 e2e:

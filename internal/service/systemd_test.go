@@ -43,15 +43,35 @@ func TestUnitRunsTheGatewayWithTheGivenPaths(t *testing.T) {
 	}
 }
 
-func TestUnitCarriesAnExplicitMode(t *testing.T) {
+// The unit must never pin a capture mode, whatever the operator asked install
+// for. The mode lives in a store now, and while it lived here instead, rewriting
+// this unit — which a bare re-install does, and a bare re-install is the
+// documented upgrade path — dropped the argument and silently turned TUN off on a
+// machine that had it on. Nothing looked wrong: service active, console green.
+func TestUnitNeverPinsACaptureMode(t *testing.T) {
+	u, err := linuxConfig().Unit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(u, "--mode") {
+		t.Fatalf("the unit pins a capture mode, so an upgrade can silently change it:\n%s", u)
+	}
+}
+
+// The unit and the plist have to be built from the same argument list. They were
+// not: systemd assembled its own, and had never picked up --console. Its default
+// is a relative path, which a daemon started by systemd cannot resolve, so a
+// Linux install without an embedded UI came up serving "dashboard not built"
+// after reporting success.
+func TestUnitCarriesTheConsoleDirectory(t *testing.T) {
 	c := linuxConfig()
-	c.Mode = "tun"
+	c.ConsoleDir = "/opt/trust-proxy/dashboard/dist"
 	u, err := c.Unit()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(u, "--mode tun") {
-		t.Fatalf("mode not in ExecStart:\n%s", u)
+	if !strings.Contains(u, "--console /opt/trust-proxy/dashboard/dist") {
+		t.Fatalf("--console missing from ExecStart, so the console is served from a path the daemon cannot resolve:\n%s", u)
 	}
 }
 

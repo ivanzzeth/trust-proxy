@@ -21,7 +21,6 @@ func base() Config {
 // (via plutil, which is what launchd itself uses) and that it carries the args.
 func TestPlistIsValidAndCarriesTheServeArguments(t *testing.T) {
 	c := base()
-	c.Mode = "tun"
 	got, err := c.Plist()
 	if err != nil {
 		t.Fatal(err)
@@ -32,12 +31,17 @@ func TestPlistIsValidAndCarriesTheServeArguments(t *testing.T) {
 		"<string>serve</string>", "<string>-c</string>", "<string>/etc/trust-proxy/config.json</string>",
 		"<string>--data</string>", "<string>/var/lib/trust-proxy</string>",
 		"<string>--api-addr</string>", "<string>127.0.0.1:21585</string>",
-		"<string>--mode</string>", "<string>tun</string>",
 		"<key>RunAtLoad</key>", "<key>KeepAlive</key>",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("plist missing %s", want)
 		}
+	}
+	// Never a capture mode. It used to be here, and that made the plist the only
+	// durable record of it: switching to TUN from the console lasted until the next
+	// restart, and rewriting the plist — which any re-install does — dropped it.
+	if strings.Contains(got, "--mode") {
+		t.Errorf("plist pins a capture mode, so an upgrade can silently change it:\n%s", got)
 	}
 
 	if _, err := exec.LookPath("plutil"); err != nil {
@@ -72,7 +76,6 @@ func TestRelativePathsAndBadModeAreRefused(t *testing.T) {
 		"relative log":    func(c *Config) { c.LogPath = "serve.log" },
 		"empty binary":    func(c *Config) { c.Binary = "" },
 		"empty api addr":  func(c *Config) { c.APIAddr = "" },
-		"bogus mode":      func(c *Config) { c.Mode = "wide-open" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := base()

@@ -33,6 +33,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
+	"github.com/ivanzzeth/trust-proxy/internal/modecfg"
 	"github.com/ivanzzeth/trust-proxy/internal/netwatch"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/paths"
@@ -258,7 +259,13 @@ func init() {
 	f.StringVar(&serveClashSecret, "clash-secret", "", "Clash API secret (empty = load/generate a random one in the data dir)")
 	f.StringVar(&serveAPIToken, "api-token", "", "require this bearer token on /api/* (probe mode; set when exposing --api-addr on a non-loopback address)")
 	f.StringVar(&serveMgmtPorts, "management-ports", "22", "comma-separated ports whose local responses always bypass default-deny (SSH etc.), so TUN/system mode can't lock you out; the API port is added automatically")
-	f.StringVar(&serveMode, "mode", gateway.ModeManual, "capture mode: manual | system | tun (tun needs root)")
+	// Empty default = whatever the mode store says, the same way posture, final and
+	// every other axis works. It used to default to "manual", a non-empty value
+	// that was applied unconditionally on every boot, so the mode could only ever
+	// come from this flag — which is why switching to TUN from the console lasted
+	// until the next restart. As an explicit override it still works, for ops and
+	// tests, like --data.
+	f.StringVar(&serveMode, "mode", "", "capture mode override: manual | system | tun (empty = the stored mode; tun needs root)")
 	f.BoolVar(&serveAutoBlock, "auto-block", true, "auto-drop connections that hit a threat-intel indicator")
 	f.StringVar(&serveThreatFeeds, "threat-feeds", "", "comma-separated threat-intel feed URLs (empty = built-in abuse.ch defaults)")
 	f.DurationVar(&serveThreatRefresh, "threat-refresh", 12*time.Hour, "threat-intel feed refresh interval")
@@ -463,6 +470,10 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	modeStore, err := modecfg.NewStore(serveDataDir + "/mode.json")
+	if err != nil {
+		return err
+	}
 
 	store, err := subscription.NewStore(serveDataDir + "/subscriptions.json")
 	if err != nil {
@@ -473,7 +484,19 @@ func runServe() error {
 	// Under --daemon this is the async ring (logging.Setup); in the foreground it
 	// is nil and sing-box keeps writing to the terminal.
 	mgr.SetLogWriter(logging.Sink())
-	mgr.SetInitialMode(serveMode)
+	// An explicit --mode wins for this run and is recorded, so the flag and the
+	// store never disagree afterwards; otherwise the stored mode is authoritative.
+	// A flag that overrode the store on every boot would reintroduce the bug with
+	// the sign flipped: the console switch would apply and then be undone.
+	if mode, err := resolveMode(serveMode, modeStore); err != nil {
+		return err
+	} else {
+		mgr.SetInitialMode(mode)
+	}
+	mgr.SetModePersister(func(mode string) error {
+		_, err := modeStore.Set(mode)
+		return err
+	})
 	mgr.SetInitialPosture(postureStore.Active())
 	mgr.SetInitialFinal(finalStore.Get().Outbound)
 	mgr.SetInitialBlacklist(blStore.Get())

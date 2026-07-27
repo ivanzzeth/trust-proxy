@@ -50,7 +50,6 @@ type Config struct {
 	ConfigPath string // sing-box config (-c)
 	DataDir    string // --data
 	APIAddr    string // --api-addr
-	Mode       string // --mode (manual | system | tun); empty = leave the default
 	LogPath    string // stdout/stderr destination
 	// ConsoleDir is an absolute path to a built dashboard, for a binary that does
 	// not carry one. Empty means the binary has the UI embedded (or the operator
@@ -112,11 +111,6 @@ func (c Config) validate() error {
 	if c.APIAddr == "" {
 		return fmt.Errorf("api address is required")
 	}
-	switch c.Mode {
-	case "", "manual", "system", "tun":
-	default:
-		return fmt.Errorf("mode must be manual, system or tun (got %q)", c.Mode)
-	}
 	return nil
 }
 
@@ -137,9 +131,13 @@ func (c Config) serveFlags() []string {
 	if c.ConsoleDir != "" {
 		args = append(args, "--console", c.ConsoleDir)
 	}
-	if c.Mode != "" {
-		args = append(args, "--mode", c.Mode)
-	}
+	// No --mode. It used to be here, and being here was the bug: the service
+	// definition was the only durable record of the capture mode, so switching to
+	// TUN from the console lasted until the next restart, and a bare re-install —
+	// which is the documented upgrade path — rewrote this list without the argument
+	// and silently turned capture off on a machine that had it on. The mode is a
+	// policy axis and now lives in a store like the other six; `install --mode`
+	// seeds that store instead of pinning an argument here.
 	return args
 }
 

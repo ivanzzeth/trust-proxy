@@ -107,6 +107,8 @@ type Manager struct {
 	// unless confirmed in time.
 	guardMu     sync.Mutex
 	revertTimer *time.Timer
+	// persistMode records a settled capture mode; see SetModePersister.
+	persistMode func(string) error
 	revertTo    string
 	revertAt    time.Time
 }
@@ -302,6 +304,43 @@ func (m *Manager) Mode() string {
 // start (e.g. TUN without root), it reverts to the previous mode so the gateway
 // stays up.
 func (m *Manager) SetMode(mode string) error {
+	return m.setMode(mode, true)
+}
+
+// SetModePersister installs the hook that records a settled mode, so the choice
+// survives a restart. Without it the mode lived only in the service definition's
+// --mode argument, which meant switching to TUN from the console lasted until the
+// next reboot and a bare re-install silently dropped it.
+//
+// "Settled" is the whole subtlety, and it is why this is a hook rather than a
+// write at the top of SetMode: a guarded switch must NOT be persisted while its
+// dead-man's timer is armed. If the machine hard-crashes mid-guard, the guard
+// never gets to revert, so the stored value has to still be the one that was
+// known to work — otherwise the crash boots straight back into the mode that may
+// have cut you off, which is precisely what the guard exists to prevent.
+func (m *Manager) SetModePersister(fn func(mode string) error) {
+	m.mu.Lock()
+	m.persistMode = fn
+	m.mu.Unlock()
+}
+
+// persist records mode via the installed hook. A failure is logged, never fatal:
+// the mode already applied, and refusing to serve traffic because a small JSON
+// file could not be written would trade a durability problem for an outage.
+func (m *Manager) persist(mode string) {
+	m.mu.Lock()
+	fn := m.persistMode
+	m.mu.Unlock()
+	if fn == nil {
+		return
+	}
+	if err := fn(mode); err != nil {
+		m.logger.Error("could not record capture mode ", mode, ": ", err,
+			" (it will not survive a restart)")
+	}
+}
+
+func (m *Manager) setMode(mode string, persist bool) error {
 	if !validMode(mode) {
 		return fmt.Errorf("invalid mode %q (want one of %v)", mode, Modes)
 	}
@@ -309,6 +348,12 @@ func (m *Manager) SetMode(mode string) error {
 	prev := m.mode
 	if prev == mode {
 		m.mu.Unlock()
+		if persist {
+			// Already in this mode, but the store may not say so — a gateway whose
+			// service definition still carries a legacy --mode arrives here on the
+			// first switch back to what it is already doing.
+			m.persist(mode)
+		}
 		return nil
 	}
 	m.mode = mode
@@ -322,6 +367,9 @@ func (m *Manager) SetMode(mode string) error {
 		return fmt.Errorf("switch to %s failed (reverted to %s): %w", mode, prev, err)
 	}
 	m.logger.Info("gateway mode -> ", mode)
+	if persist {
+		m.persist(mode)
+	}
 	return nil
 }
 
@@ -333,10 +381,13 @@ func (m *Manager) SetModeGuarded(mode string, revertAfter time.Duration) (string
 	m.mu.Lock()
 	prev := m.mode
 	m.mu.Unlock()
-	if err := m.SetMode(mode); err != nil {
+	guarded := prev != mode && revertAfter > 0
+	// Deliberately not persisted while a guard will be armed: see
+	// SetModePersister. Confirm (or the revert) is what settles it.
+	if err := m.setMode(mode, !guarded); err != nil {
 		return "", err
 	}
-	if prev == mode || revertAfter <= 0 {
+	if !guarded {
 		return prev, nil // no-op switch or no guard requested
 	}
 	m.guardMu.Lock()
@@ -355,7 +406,9 @@ func (m *Manager) SetModeGuarded(mode string, revertAfter time.Duration) (string
 		m.guardMu.Unlock()
 		if armed && to != "" {
 			m.logger.Warn("mode guard: not confirmed, reverting to ", to)
-			_ = m.SetMode(to)
+			// Persisted: the revert is a settled outcome, and the store may hold the
+			// value we are reverting away from if this switch followed a confirmed one.
+			_ = m.setMode(to, true)
 		}
 	})
 	m.guardMu.Unlock()
@@ -369,10 +422,19 @@ func (m *Manager) ConfirmMode() {
 	if m.revertTimer != nil {
 		m.revertTimer.Stop()
 	}
+	wasArmed := m.revertTimer != nil || m.revertTo != ""
 	m.revertTimer = nil
 	m.revertTo = ""
 	m.revertAt = time.Time{}
 	m.guardMu.Unlock()
+	// Confirming is what makes a guarded switch durable. You still have access, so
+	// the mode is now known-good and may be booted into.
+	if wasArmed {
+		m.mu.Lock()
+		mode := m.mode
+		m.mu.Unlock()
+		m.persist(mode)
+	}
 }
 
 // PendingRevert reports a pending guarded revert, if any.

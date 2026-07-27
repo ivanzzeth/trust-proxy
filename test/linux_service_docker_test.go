@@ -229,6 +229,77 @@ func TestLinuxSystemdServiceLifecycle(t *testing.T) {
 		t.Fatalf("TUN captured the connection but default-deny did not refuse it:\n%s", log)
 	}
 
+	// ---- the mode has to outlive a restart and an upgrade ------------------
+	// This whole block was missing, and its absence is why the bug shipped: every
+	// assertion above passes `--mode tun` explicitly, so nothing here ever asked
+	// what happens to a machine that was *left* in TUN.
+	//
+	// The mode used to live only in the systemd unit's --mode argument. Two ways to
+	// lose it, both silent — service active, console green, `status` reporting a
+	// healthy gateway that is not capturing anything:
+	//   1. switch modes from the console/CLI (which does not touch the unit), then
+	//      restart;
+	//   2. re-install without --mode, which rewrites the unit without it — and a
+	//      bare `trust-proxy install` is the documented upgrade path, what
+	//      scripts/install.sh runs, and what the desktop Update button runs.
+	if out := c.exec("systemctl show -p ExecStart trust-proxy"); strings.Contains(out, "--mode") {
+		t.Fatalf("the unit pins a capture mode, so rewriting it can silently change one:\n%s", out)
+	}
+	c.exec("systemctl restart trust-proxy")
+	c.waitAPI("21585")
+	if status := c.exec("trust-proxy status --json"); !strings.Contains(status, `"mode": "tun"`) {
+		t.Fatalf("TUN did not survive a service restart: %s\nunit: %s",
+			status, c.exec("systemctl show -p ExecStart trust-proxy"))
+	}
+	// The upgrade path, verbatim: same command, no --mode.
+	if out := c.exec("trust-proxy install -y" + consoleNone); !strings.Contains(out, "mode:    tun") {
+		t.Fatalf("a bare re-install did not report the mode it was leaving in place:\n%s", out)
+	}
+	c.waitAPI("21585")
+	if status := c.exec("trust-proxy status --json"); !strings.Contains(status, `"mode": "tun"`) {
+		t.Fatalf("upgrading turned TUN off: %s", status)
+	}
+	if links := c.exec("ip -o link show"); !strings.Contains(links, "tun") {
+		t.Fatalf("no tun interface after the upgrade, so capture really did stop:\n%s", links)
+	}
+
+	// An unconfirmed guarded switch must NOT be recorded.
+	//
+	// The guard is a dead-man's switch: if the new mode cuts off your access you
+	// never get to confirm, and it reverts. Recording it the moment it applies would
+	// defeat that for the one case it exists for — a machine that hard-crashes
+	// during the guard window would boot straight back into the mode that locked you
+	// out, since the revert never got to run. So the store keeps the last mode that
+	// was actually known good.
+	c.exec("trust-proxy mode set manual -y --guard 3")
+	time.Sleep(6 * time.Second)
+	if status := c.exec("trust-proxy status --json"); !strings.Contains(status, `"mode": "tun"`) {
+		t.Fatalf("an unconfirmed guarded switch did not revert: %s", status)
+	}
+	c.exec("systemctl restart trust-proxy")
+	c.waitAPI("21585")
+	if status := c.exec("trust-proxy status --json"); !strings.Contains(status, `"mode": "tun"`) {
+		t.Fatalf("an unconfirmed guarded switch was recorded anyway, so a crash during the "+
+			"guard window boots into the mode the guard was protecting you from: %s", status)
+	}
+
+	// Confirming makes it durable — that is what confirming means.
+	c.exec("trust-proxy mode set manual -y --guard 30")
+	c.exec("trust-proxy mode confirm")
+	c.exec("systemctl restart trust-proxy")
+	c.waitAPI("21585")
+	if status := c.exec("trust-proxy status --json"); !strings.Contains(status, `"mode": "manual"`) {
+		t.Fatalf("a confirmed switch to manual did not survive a restart, so the stored mode is "+
+			"being overridden on boot instead of read: %s", status)
+	}
+	// Back to TUN for the assertions that follow. No guard: an unguarded switch is
+	// settled the moment it succeeds.
+	c.exec("trust-proxy mode set tun -y --guard 0")
+	c.waitAPI("21585")
+	if status := c.exec("trust-proxy status --json"); !strings.Contains(status, `"mode": "tun"`) {
+		t.Fatalf("could not get back into TUN: %s", status)
+	}
+
 	// ---- installing over a gateway somebody started by hand ----------------
 	// Refusing is the default: installing while another gateway holds the API port
 	// produced a service that could never bind and was retried at every boot, with
