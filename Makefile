@@ -16,7 +16,8 @@ LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
 .PHONY: help run app build build-ui build-go build-embed build-app check-build-owner tidy \
 	e2e-fleet e2e-linux e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
-	deps clean e2e redeploy desktop desktop-dev desktop-sidecar app-service-hint
+	deps clean e2e redeploy desktop desktop-dev desktop-sidecar app-service-hint \
+	release version-check
 
 # `make` on its own lists what there is to run.
 .DEFAULT_GOAL := help
@@ -188,6 +189,21 @@ redeploy: build-embed
 		cd "$(CURDIR)" && ./trust-proxy serve --daemon --data "$(DATA_DIR)" $(if $(CONFIG),-c "$(CONFIG)",) --mode "$(MODE)"'
 	@echo "==> done. UI http://127.0.0.1:21585/  (hard-refresh if needed)"
 	@echo "    stop:  sudo $(CURDIR)/trust-proxy proxy stop --pid $(PID_FILE)"
+
+## Cut a release: write the version everywhere it has to be a literal, run the
+## gates, commit and tag. `make release VERSION=0.10.0` (add PUSH=1 to push,
+## which is what actually publishes). `make version-check` just reports.
+##
+## The Go binary takes its version from `git describe`, so only the desktop
+## shell needs this — but its number lives in three files, and three files is
+## three chances to update two of them (they had reached 0.7.0 / 0.9.0 / 0.7.0).
+## cmd/version_test.go fails if they disagree, so this is not optional hygiene.
+release:
+	@test -n "$(VERSION)" || { echo "usage: make release VERSION=0.10.0 [PUSH=1]"; exit 1; }
+	@scripts/release.sh "$(VERSION)" $(if $(PUSH),--push,)
+
+version-check:
+	@scripts/release.sh --check
 
 tidy:
 	go mod tidy
