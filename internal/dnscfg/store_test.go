@@ -1,6 +1,13 @@
 package dnscfg
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
+)
 
 // The default must not be a resolver that leaks.
 //
@@ -34,5 +41,57 @@ func TestDefaultResolvesThroughTheExit(t *testing.T) {
 	}
 	if err := validate(d); err != nil {
 		t.Fatalf("the default config does not validate: %v", err)
+	}
+}
+
+// An install already running the abandoned default has to heal on upgrade.
+//
+// Changing defaultConfig() only helps a machine with no dns.json yet, and the
+// machines that need it most already have one saying "resolve everything with
+// the system resolver". Without this they would query every proxied domain in the
+// clear forever, and nothing would ever tell them.
+func TestUpgradeHealsTheAbandonedDefaultAndNothingElse(t *testing.T) {
+	write := func(t *testing.T, c apitypes.DNSConfig) *Store {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "dns.json")
+		b, err := json.MarshalIndent(c, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		s, err := NewStore(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+
+	// The untouched old default: replaced.
+	s := write(t, abandonedDefault())
+	if got := s.Get(); got.Final == "local" {
+		t.Fatal("an untouched old default survived the upgrade — every proxied domain would still leak")
+	}
+
+	// A deliberate choice of the system resolver: respected. LAN-only and
+	// air-gapped deployments want exactly this, and overriding it would break them
+	// to fix somebody else's problem.
+	chosen := abandonedDefault()
+	chosen.Strategy = "prefer_ipv4" // any edit at all proves a human was here
+	s = write(t, chosen)
+	if got := s.Get(); got.Final != "local" {
+		t.Fatal("a configured system-resolver setup was overwritten")
+	}
+
+	// So is anything already resolving through the proxy.
+	mine := apitypes.DNSConfig{
+		Servers: []apitypes.DNSServer{{Tag: "mine", Type: "https", Server: "9.9.9.9", Detour: "proxy"}},
+		Rules:   []apitypes.DNSRule{},
+		Final:   "mine",
+	}
+	s = write(t, mine)
+	if got := s.Get(); got.Final != "mine" {
+		t.Fatalf("somebody's own resolver was replaced: %+v", got)
 	}
 }

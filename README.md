@@ -13,7 +13,17 @@
 
 ## 快速开始
 
-拿到二进制（[Releases](https://github.com/ivanzzeth/trust-proxy/releases) 里的单文件已自带控制台），**一条命令**：
+**一条命令**（Linux / macOS，装和升级都是这一条）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/ivanzzeth/trust-proxy/main/scripts/install.sh | sudo sh
+```
+
+它认平台、取对应的 [Release](https://github.com/ivanzzeth/trust-proxy/releases)、把 CLI 放到 `/usr/local/bin`，然后跑 `trust-proxy install`。**再跑一遍就是升级** —— 换掉服务那份二进制并重启，策略和账号一行不动。
+
+`TP_VERSION=v0.10.1` 钉版本，`TP_NO_SERVICE=1` 只装 CLI 先看看。
+
+已经有二进制的话，那一条就够：
 
 ```bash
 sudo trust-proxy install

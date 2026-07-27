@@ -281,3 +281,44 @@ func TestLinuxFreshInstallResolvesThroughTheExit(t *testing.T) {
 	// machine that cannot reach 1.1.1.1.
 	l.assertBoxAlive("a fresh install's default DNS")
 }
+
+// An install that predates the DNS default change has to heal when it upgrades.
+//
+// Changing the default only helps machines with no dns.json, and the ones that
+// need it are already running with a file that says "resolve everything with the
+// system resolver". Without this they would keep querying every proxied domain
+// in the clear after upgrading, and nothing would say so.
+//
+// The other half matters just as much: a config somebody actually chose must
+// survive. LAN-only and air-gapped deployments want the system resolver, and
+// healing them would be breaking them.
+func TestLinuxUpgradeHealsTheOldDNSDefault(t *testing.T) {
+	l := newLab(t, "tp-e2e-dnsmig")
+
+	// Put the abandoned default back and restart, as an upgrade from an older
+	// version would find it.
+	l.exec(`systemctl stop trust-proxy.service`)
+	l.exec(`cat > /var/lib/trust-proxy/dns.json <<'JSON'
+{"servers":[{"tag":"local","type":"local"}],"rules":[],"final":"local"}
+JSON`)
+	l.exec(`systemctl start trust-proxy.service`)
+	l.waitAPI("21585")
+
+	got := l.exec("trust-proxy dns get")
+	if !strings.Contains(got, "final: doh") || !strings.Contains(got, "proxy") {
+		t.Fatalf("upgrading left the old leaking default in place:\n%s", got)
+	}
+	l.assertBoxAlive("healing the old DNS default")
+
+	// Now a deliberate choice of the system resolver: it must be left alone.
+	l.exec(`systemctl stop trust-proxy.service`)
+	l.exec(`cat > /var/lib/trust-proxy/dns.json <<'JSON'
+{"servers":[{"tag":"local","type":"local"}],"rules":[],"final":"local","strategy":"prefer_ipv4"}
+JSON`)
+	l.exec(`systemctl start trust-proxy.service`)
+	l.waitAPI("21585")
+	if got := l.exec("trust-proxy dns get"); !strings.Contains(got, "final: local") {
+		t.Fatalf("a configured system-resolver setup was overwritten:\n%s", got)
+	}
+	l.assertBoxAlive("respecting a chosen system resolver")
+}

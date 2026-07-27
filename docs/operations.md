@@ -11,7 +11,10 @@
 | 服务 | systemd unit | launchd LaunchDaemon | SCM |
 
 ```bash
-sudo trust-proxy install     # 全部搞定：拷托管副本、注册服务、启动、开机自启、认领
+# 全新机器 / 升级，都是这一条（认平台、取 Release、装 CLI、装服务）
+curl -fsSL https://raw.githubusercontent.com/ivanzzeth/trust-proxy/main/scripts/install.sh | sudo sh
+
+sudo trust-proxy install     # 已有二进制时：拷托管副本、注册服务、启动、开机自启、认领
 trust-proxy env              # 这台机器现在是什么状态、下一步该干什么
 sudo trust-proxy uninstall   # 逃生口，任何半装状态都能收干净；数据一行不动
 ```

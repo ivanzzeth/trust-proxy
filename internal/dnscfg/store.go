@@ -81,7 +81,51 @@ func NewStore(path string) (*Store, error) {
 	if err := json.Unmarshal(b, &s.data); err != nil {
 		return nil, err
 	}
+	// Heal an install that is still carrying the abandoned default.
+	//
+	// Changing defaultConfig() only helps a machine that has no dns.json yet, and
+	// the machines that need it most are the ones already running: they have the
+	// file, it says "resolve everything with the system resolver", and upgrading
+	// would leave them querying every proxied domain in the clear forever.
+	//
+	// Only an *untouched* copy is replaced — byte-for-byte the old default. That
+	// is the difference between "nobody ever configured this" and "somebody chose
+	// the system resolver", and the second is a decision to respect: plenty of
+	// LAN-only and air-gapped deployments want exactly it.
+	if isAbandonedDefault(s.data) {
+		s.data = defaultConfig()
+		if err := s.save(); err != nil {
+			return nil, err
+		}
+	}
 	return s, nil
+}
+
+// abandonedDefault is what defaultConfig() used to return: the system resolver
+// and nothing else. Kept as a literal because the point is to recognise it long
+// after it stopped being produced.
+func abandonedDefault() apitypes.DNSConfig {
+	return apitypes.DNSConfig{
+		Servers: []apitypes.DNSServer{{Tag: "local", Type: "local"}},
+		Rules:   []apitypes.DNSRule{},
+		Final:   "local",
+	}
+}
+
+// isAbandonedDefault reports whether a stored config is the old default,
+// unmodified. Anything else — an extra server, a rule, a different final, a
+// direct-server override — means somebody has been in here, and is left alone.
+func isAbandonedDefault(c apitypes.DNSConfig) bool {
+	old := abandonedDefault()
+	if c.Final != old.Final || len(c.Rules) != 0 || len(c.Servers) != 1 {
+		return false
+	}
+	if c.Strategy != "" || c.DirectServer != "" || c.DisableDirectSplit {
+		return false
+	}
+	s := c.Servers[0]
+	return s.Tag == old.Servers[0].Tag && s.Type == old.Servers[0].Type &&
+		s.Server == "" && s.Detour == ""
 }
 
 func (s *Store) save() error {
