@@ -241,6 +241,50 @@ func TestUnclaimedGatewayIsOpenThenClosed(t *testing.T) {
 	}
 }
 
+// An unclaimed gateway is open **only to the machine it runs on**.
+//
+// This was a hole, and not a small one. The synthetic admin an empty registry
+// hands out did not look at where the request came from, and the one-time claim
+// code guards `/api/auth/bootstrap` and nothing else — so a remote caller never
+// had to claim anything. It could simply drive the whole policy API: turn off
+// default-deny, read the subscriptions, switch the mode. An exposed gateway that
+// had not been set up yet belonged to whoever scanned the port first.
+//
+// Remove the isLoopback check in authenticate() and this test fails.
+func TestUnclaimedGatewayIsNotOpenToTheNetwork(t *testing.T) {
+	s, _, _, _ := newAuthServer(t)
+
+	remote := req("POST", "/api/mode")
+	remote.RemoteAddr = "203.0.113.9:44100"
+	if got := serve(s, remote).Code; got != 401 {
+		t.Fatalf("an unclaimed gateway answered an admin write from the network: got %d", got)
+	}
+	// Reading is no better: the subscription list carries provider URLs, and the
+	// connection list is everything this machine talks to.
+	for _, path := range []string{"/api/subscriptions", "/api/connections", "/api/status"} {
+		r := req("GET", path)
+		r.RemoteAddr = "203.0.113.9:44100"
+		if got := serve(s, r).Code; got != 401 {
+			t.Fatalf("GET %s from the network on an unclaimed gateway: got %d, want 401", path, got)
+		}
+	}
+	// What must still work off-loopback: finding out that it needs claiming, and
+	// claiming it with the one-time code. Without these a remote console could
+	// only ever show a form that 403s.
+	for _, path := range []string{"/api/auth/state", "/api/health"} {
+		r := req("GET", path)
+		r.RemoteAddr = "203.0.113.9:44100"
+		if got := serve(s, r).Code; got != 200 {
+			t.Fatalf("GET %s must stay reachable off-loopback: got %d", path, got)
+		}
+	}
+	// And from the machine itself it is still open — that is what makes a fresh
+	// install claimable at all.
+	if got := serve(s, req("POST", "/api/mode")).Code; got != 200 {
+		t.Fatalf("an unclaimed gateway must still be usable from loopback: got %d", got)
+	}
+}
+
 // The legacy --api-token keeps existing probe/fleet deployments working, with
 // admin rights, and nothing else must be accepted in its place.
 func TestLegacyStaticToken(t *testing.T) {

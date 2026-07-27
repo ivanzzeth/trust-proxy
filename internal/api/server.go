@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -199,6 +200,7 @@ type Options struct {
 	GWApplier    GatewayExitApplier
 	CMApplier    ClientModeApplier
 	Token        string        // if set, /api/* requires this bearer token (probe mode)
+	Version      string        // this build's version, reported on /api/health from loopback
 	Clash        *clash.Client // low-level Clash primitives, proxied to the browser
 	ConsoleDir   string        // on-disk dashboard dir (dev); used when ConsoleFS is nil
 	ConsoleFS    fs.FS         // embedded dashboard build (release); wins over ConsoleDir
@@ -255,11 +257,16 @@ type Server struct {
 	clash        *clash.Client
 	consoleDir   string
 	consoleFS    fs.FS
+	// version and managedBinary describe *this build*, so /api/health can tell a
+	// caller which gateway it actually reached (see handleHealth).
+	version       string
+	managedBinary bool
 }
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, cmApplier: o.CMApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS}
+	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, cmApplier: o.CMApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS,
+		version: o.Version, managedBinary: runningTheManagedCopy()}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", s.handleHealth)
 	mux.HandleFunc("GET /api/status", s.handleStatus)
@@ -356,6 +363,10 @@ func NewServer(o Options) *Server {
 	mux.HandleFunc("POST /api/auth/bootstrap", s.handleBootstrap)
 	mux.HandleFunc("POST /api/auth/login", s.handleLogin)
 	mux.HandleFunc("POST /api/auth/logout", s.handleLogout)
+	// Asymmetric on purpose: POST needs a credential and hands out a ticket, GET
+	// needs none and spends one (see requirement()).
+	mux.HandleFunc("POST /api/auth/ticket", s.handleMintTicket)
+	mux.HandleFunc("GET /api/auth/ticket", s.handleRedeemTicket)
 	mux.HandleFunc("POST /api/auth/register", s.handleRegister)
 	mux.HandleFunc("GET /api/auth/settings", s.handleGetAuthSettings)
 	mux.HandleFunc("PUT /api/auth/settings", s.handleSetAuthSettings)
@@ -370,6 +381,28 @@ func NewServer(o Options) *Server {
 	return s
 }
 
+// runningTheManagedCopy reports whether this process is the binary `install`
+// put at the fixed managed path — i.e. whether it is the system gateway rather
+// than a `serve` somebody started by hand.
+//
+// Resolving symlinks on both sides: the managed path is a real file, but the
+// process may have been reached through one, and a mismatch here would tell the
+// desktop app to offer taking over the very service it is talking to.
+func runningTheManagedCopy() bool {
+	exe, err := os.Executable()
+	if err != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	managed := paths.ManagedBinary()
+	if resolved, err := filepath.EvalSymlinks(managed); err == nil {
+		managed = resolved
+	}
+	return exe == managed
+}
+
 // Start blocks serving; returns http.ErrServerClosed on Close.
 func (s *Server) Start() error { return s.httpSrv.ListenAndServe() }
 
@@ -378,8 +411,36 @@ func (s *Server) Close() error { return s.httpSrv.Close() }
 
 // ---- subscriptions --------------------------------------------------------
 
+// handleHealth is the liveness probe, and the one place a caller can learn which
+// *build* is actually running here.
+//
+// The version matters because nothing else could see it: a desktop app opened
+// after an upgrade probes this, finds a healthy gateway, attaches — and shows the
+// old daemon's console with nothing anywhere saying the new binary was never
+// used. Silent no-op upgrades are worse than failed ones.
+//
+// Loopback only, for the same reason the unclaimed API is loopback only: being on
+// the machine is the credential. Handing an exact version to an unauthenticated
+// scanner is free targeting information, and this is a security gateway.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	body := map[string]any{"status": "ok"}
+	if isLoopback(r.RemoteAddr) {
+		body["version"] = s.version
+		// Whether this process is the copy the service manager owns. An install
+		// leaves a managed copy at a fixed path precisely so the daemon does not
+		// depend on where it was installed from; comparing against it is how a
+		// caller tells "the system gateway" from "someone's `serve` in a terminal",
+		// which want opposite offers made about them.
+		body["managed"] = s.managedBinary
+		// The pid, so `install --takeover` can stop whatever is holding the port
+		// without hunting for a pid file. Takeover used to depend on one existing,
+		// which is not guaranteed — a gateway started in a terminal never writes
+		// one — and the failure landed the user back on a command line, which is
+		// the whole thing the desktop app exists to avoid. A process that answers
+		// here can simply say who it is.
+		body["pid"] = os.Getpid()
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // ---- status / mode / auto-block -------------------------------------------

@@ -8,8 +8,12 @@ var version = "dev"
 var rootCmd = &cobra.Command{
 	Use:   "trust-proxy",
 	Short: "Egress control / detection gateway built on sing-box",
-	Long: "trust-proxy is one binary: `serve` runs the gateway (sing-box + detection + API);\n" +
-		"other subcommands are a CLI client that talks to a running backend via the Go SDK.",
+	Long: "trust-proxy is one binary. `install` puts the gateway on this machine as a\n" +
+		"system service — root, machine-wide, started at boot — and claims it for you.\n" +
+		"Everything else is a CLI client that talks to that gateway through the Go SDK.\n\n" +
+		"    sudo trust-proxy install      # the whole setup, once\n" +
+		"    trust-proxy status            # what it is doing\n" +
+		"    sudo trust-proxy uninstall    # the escape hatch",
 	Version:       version,
 	SilenceUsage:  true,
 	SilenceErrors: true,
@@ -17,7 +21,9 @@ var rootCmd = &cobra.Command{
 
 // Execute runs the root command.
 func Execute() error {
-	return rootCmd.Execute()
+	// One place decorates authentication failures, so every subcommand gets the
+	// same actionable message instead of each remembering to.
+	return decorateAuthError(rootCmd.Execute(), resolveToken())
 }
 
 func init() {
@@ -27,9 +33,16 @@ func init() {
 		subCmd, aclCmd, rulesCmd, statusCmd, modeCmd, routingCmd, postureCmd, finalCmd,
 		dnsCmd, tunCmd, groupsCmd, endpointsCmd, proxiesCmd, autoBlockCmd,
 		profileCmd, detectionsCmd, historyCmd, nodeCmd, detectCmd, quarantineCmd, netcheckCmd,
-		authCmd, apikeyCmd, userCmd, requestCmd,
+		authCmd, apikeyCmd, userCmd, requestCmd, envCmd,
 	}
 	addClientFlags(clients...)
-	rootCmd.AddCommand(append(clients, serveCmd, connCmd, proxyCmd, serviceCmd, selftestCmd, versionCmd)...)
+	// install/uninstall are local, privileged and machine-shaped: they deliberately
+	// take no --api-addr pointing elsewhere, because they have to work when no
+	// gateway is running at all.
+	local := []*cobra.Command{
+		newInstallCmd(false), newUninstallCmd(false),
+		serveCmd, connCmd, proxyCmd, serviceCmd, selftestCmd, versionCmd,
+	}
+	rootCmd.AddCommand(append(clients, local...)...)
 	versionCmd.Flags().BoolVar(&jsonOut, "json", false, "print the raw JSON response instead of a table")
 }

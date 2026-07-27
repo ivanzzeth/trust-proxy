@@ -99,9 +99,14 @@ var embeddedUI fs.FS
 // SetEmbeddedUI registers the embedded dashboard filesystem.
 func SetEmbeddedUI(f fs.FS) { embeddedUI = f }
 
+// serve runs the gateway in the foreground. It is what the service manager
+// execs, and it is hidden from the command list on purpose: a human installs the
+// gateway with `trust-proxy install` and never types this. Leaving it advertised
+// is how people ended up with a second, unprivileged, TUN-less gateway.
 var serveCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "Run the gateway: sing-box data plane + detection + backend API",
+	Use:    "serve",
+	Short:  "Run the gateway in the foreground (what the system service execs; use `install`)",
+	Hidden: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		dir, err := resolveDataDir(serveDataDir)
 		if err != nil {
@@ -182,35 +187,72 @@ func resolveConsoleDir() string {
 	return dir
 }
 
-// resolveDataDir returns the data directory (the per-user default when --data is
-// empty), expanding a leading ~, and ensures it exists.
+// resolveDataDir returns the machine-wide data directory, expanding a leading ~
+// on an explicit override, and ensures it exists.
 //
-// serve always defaults to the *per-user* directory even when run as root: `sudo
-// trust-proxy serve` is how a human runs TUN by hand, and it must keep using the
-// policy they configured, not start from an empty root-owned store. The
-// machine-wide directory is for the installed service, which passes --data
-// explicitly (see `service install`).
+// There is one data directory and it is machine-wide, because there is one
+// gateway and it runs as root under the service manager. The per-user default
+// this used to have (~/.trust-proxy) is gone: it produced a second gateway that
+// could not do TUN, and when anyone ran it with sudo it left a root-owned
+// directory in a home that the unprivileged desktop app could no longer write.
+//
+// --data survives as an operator/test override, not as a deployment shape.
 func resolveDataDir(dir string) (string, error) {
-	if dir == "" {
-		d, err := paths.UserData()
-		if err != nil {
-			return "", err
-		}
-		dir = d
+	explicit := dir != ""
+	if !explicit {
+		dir = paths.Data()
 	} else {
 		dir = paths.ExpandHome(dir)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
+		if os.IsPermission(err) && !paths.Privileged() {
+			return "", notYourGatewayError(dir)
+		}
 		return "", err
 	}
+	// Existing but unwritable is the case that matters, and MkdirAll says nothing
+	// about it: once the service has run, /var/lib/trust-proxy is there and owned
+	// by root, so an unprivileged `serve` sails past the check above and dies
+	// several steps later on "open …/clash-secret: permission denied" — an errno
+	// about a file nobody has heard of, for a command they should not be running.
+	// Measured in the Linux e2e.
+	if err := writable(dir); err != nil {
+		if !paths.Privileged() {
+			return "", notYourGatewayError(dir)
+		}
+		return "", fmt.Errorf("cannot write to %s: %w", dir, err)
+	}
 	return dir, nil
+}
+
+// notYourGatewayError is what an ordinary user gets for running the daemon by
+// hand. There is exactly one supported way to put a gateway on a machine, and
+// naming it is more use than any permission error.
+func notYourGatewayError(dir string) error {
+	return fmt.Errorf("cannot write to %s — that directory belongs to the system gateway, and this is not root.\n\n"+
+		"`serve` is what the service manager runs. You almost certainly want:\n"+
+		"    sudo %s install\n\n"+
+		"which sets the gateway up as a system service: root, starts at boot, survives logout,\n"+
+		"and can capture all traffic with TUN. To run a throwaway gateway somewhere else, pass --data.",
+		dir, os.Args[0])
+}
+
+// writable reports whether this process can actually create files in dir.
+func writable(dir string) error {
+	f, err := os.CreateTemp(dir, ".writable-")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	_ = f.Close()
+	return os.Remove(name)
 }
 
 func init() {
 	f := serveCmd.Flags()
 	f.StringVarP(&serveConfig, "config", "c", "", "sing-box config path (default <data>/config.json, seeded on first run)")
 	f.StringVar(&serveAPIAddr, "api-addr", "127.0.0.1:21585", "trust-proxy backend API listen address")
-	f.StringVar(&serveDataDir, "data", "", "data directory (subscriptions, cache, etc.); default ~/.trust-proxy")
+	f.StringVar(&serveDataDir, "data", "", "data directory override (default: the machine-wide one, "+paths.Data()+")")
 	f.StringVar(&serveConsoleDir, "console", "dashboard/dist", "dashboard static dir (shadcn build output)")
 	f.StringVar(&serveClashAddr, "clash-addr", "127.0.0.1:21586", "Clash API address (proxied to the console)")
 	f.StringVar(&serveClashSecret, "clash-secret", "", "Clash API secret (empty = load/generate a random one in the data dir)")
@@ -581,6 +623,7 @@ func runServe() error {
 		GWApplier:    mgr,
 		CMApplier:    mgr,
 		Token:        serveAPIToken,
+		Version:      version,
 		Clash:        clash.New(serveClashAddr, secret),
 		ConsoleDir:   resolveConsoleDir(),
 		ConsoleFS:    embeddedUI,
@@ -685,7 +728,10 @@ func announceBootstrap(store *users.Store, auth *authn.Authn, dataDir, apiAddr s
 	}
 	log := logging.L()
 	log.Warn().Msg("no accounts yet: this gateway is UNCLAIMED and its API is open until you create the first admin")
-	log.Info().Msgf("  on this machine:  trust-proxy user add <name> --admin --data %s", dataDir)
+	// Two lines, because claiming is only half of it: the account exists but the
+	// CLI is still anonymous, and the next command would answer "unauthorized".
+	log.Info().Msgf("  on this machine:  trust-proxy auth bootstrap <name>")
+	log.Info().Msgf("  then, for the CLI: eval \"$(trust-proxy auth login <name> | grep ^export)\"")
 	log.Info().Msgf("  or in a browser:  http://%s/", apiAddr)
 	if auth == nil || loopbackAddr(apiAddr) {
 		return

@@ -24,23 +24,31 @@ import (
 // vmName is the tart VM these tests drive. Override with TP_TART_VM.
 const defaultVM = "macos-base"
 
+// consoleNone is what the VM binary needs: it is built without the UI embedded
+// (embedding it would drag pnpm into a Go test), and `install` refuses such a
+// binary rather than producing a service whose every page says "dashboard not
+// built".
+const consoleNone = " --console none"
+
 func TestMacOSSystemServiceLifecycle(t *testing.T) {
 	vm := requireTart(t)
 	vm.ship(t)
 
 	dataDir := "/tmp/tp-e2e-service"
 	vm.run(t, "pkill -f 'trust-proxy serve' || true")
-	vm.sudo(t, "~/trust-proxy service uninstall || true")
+	vm.sudo(t, "~/trust-proxy uninstall || true")
 	// The data directory belongs to root once the service has run, so a previous
-	// run's leftovers need root to clear.
+	// run's leftovers need root to clear. The credential too: a stale one from an
+	// earlier run would make this run look authenticated when it is not.
 	vm.sudo(t, "rm -rf "+dataDir)
+	vm.run(t, "rm -f ~/.config/trust-proxy/credentials.json")
 
 	// A LaunchDaemon must not point inside an .app bundle: trashing the app would
 	// leave launchd retrying a missing program at every boot. Install from a path
 	// shaped like a bundle and assert the plist points at the managed copy.
 	bundle := "~/FakeApp/Trust Proxy.app/Contents/MacOS"
 	vm.run(t, "rm -rf ~/FakeApp && mkdir -p '"+bundle+"' && cp ~/trust-proxy '"+bundle+"/trust-proxy'")
-	vm.sudo(t, "'"+bundle+"/trust-proxy' service install --data "+dataDir+" --api-addr 127.0.0.1:21585")
+	vm.sudo(t, "'"+bundle+"/trust-proxy' install --data "+dataDir+" --api-addr 127.0.0.1:21585"+consoleNone)
 
 	status := vm.out(t, "~/trust-proxy service status --json")
 	if !strings.Contains(status, `"program": "/usr/local/libexec/trust-proxy"`) {
@@ -53,6 +61,16 @@ func TestMacOSSystemServiceLifecycle(t *testing.T) {
 		t.Fatalf("the service runs as uid %s, so TUN would be impossible", uid)
 	}
 
+	// The install ran under sudo, so the account it claimed the gateway for is the
+	// human who typed it — not root. A credential left in /var/root is one nobody
+	// at the keyboard will ever find, and the CLI would 401 with no explanation.
+	if out := vm.out(t, "ls -l ~/.config/trust-proxy/credentials.json"); !strings.Contains(out, "admin") {
+		t.Fatalf("the API key did not land in the invoking user's home:\n%s", out)
+	}
+	if out := vm.out(t, "~/trust-proxy auth whoami"); !strings.Contains(out, "admin") {
+		t.Fatalf("the CLI is not authenticated straight after install:\n%s", out)
+	}
+
 	// Trash the app: the daemon keeps working, which is the whole point of the copy.
 	vm.run(t, "rm -rf ~/FakeApp")
 	vm.sudo(t, "launchctl kickstart -k system/io.trust-proxy.gateway")
@@ -63,7 +81,7 @@ func TestMacOSSystemServiceLifecycle(t *testing.T) {
 	vm.waitAPI(t, "21585")
 
 	// Uninstall removes the plist, the managed binary and the process.
-	vm.sudo(t, "~/trust-proxy service uninstall")
+	vm.sudo(t, "~/trust-proxy uninstall")
 	time.Sleep(3 * time.Second)
 	if out := vm.out(t, "test -f /Library/LaunchDaemons/io.trust-proxy.gateway.plist && echo present || echo gone"); !strings.Contains(out, "gone") {
 		t.Fatal("the plist outlived uninstall")
@@ -82,17 +100,22 @@ func TestMacOSTUNCaptureWithDeadMansSwitch(t *testing.T) {
 
 	dataDir := "/tmp/tp-e2e-tun"
 	vm.run(t, "pkill -f 'trust-proxy serve' || true")
-	vm.sudo(t, "~/trust-proxy service uninstall || true")
+	vm.sudo(t, "~/trust-proxy uninstall || true")
 	vm.sudo(t, "rm -rf "+dataDir)
+	vm.run(t, "rm -f ~/.config/trust-proxy/credentials.json")
 	// TUN needs root, which is what the service is for.
-	vm.sudo(t, "~/trust-proxy service install --data "+dataDir+" --api-addr 127.0.0.1:21585")
+	vm.sudo(t, "~/trust-proxy install --data "+dataDir+" --api-addr 127.0.0.1:21585"+consoleNone)
 	vm.waitAPI(t, "21585")
-	defer func() { vm.sudo(t, "~/trust-proxy service uninstall || true") }()
+	defer func() { vm.sudo(t, "~/trust-proxy uninstall || true") }()
 
 	// Switch to TUN with a short dead-man's switch and deliberately do not confirm:
 	// the gateway must put itself back, which is the guarantee that makes remote
 	// TUN switches safe at all.
-	vm.run(t, `curl -s -X POST http://127.0.0.1:21585/api/mode -H 'content-type: application/json' -d '{"mode":"tun","guard_seconds":20}'`)
+	//
+	// Through the CLI, with the credential the install left behind — the gateway is
+	// claimed now, so a bare curl gets 401. This is also the path the console takes
+	// when someone flips the TUN switch, minus the browser.
+	vm.run(t, "~/trust-proxy mode set tun --guard 20 -y")
 	time.Sleep(4 * time.Second)
 	if mode := vm.mode(t, "21585"); mode != "tun" {
 		t.Fatalf("mode = %q, want tun (root service should be able to create a utun)", mode)
@@ -208,9 +231,13 @@ func (v *tartVM) waitAPI(t *testing.T, port string) {
 	t.Fatalf("the gateway never answered on :%s\n%s", port, v.out(t, "tail -20 /tmp/tp-e2e-*/serve.log 2>/dev/null"))
 }
 
+// mode asks through the CLI rather than curl: the gateway is claimed as soon as
+// it is installed, so an unauthenticated request to /api/status is a 401. The
+// CLI reads the credential the install left in this user's home.
 func (v *tartVM) mode(t *testing.T, port string) string {
 	t.Helper()
-	out := v.out(t, "curl -s -m 3 http://127.0.0.1:"+port+`/api/status | tr ',' '\n' | grep '"mode"' | cut -d'"' -f4`)
+	out := v.out(t, "~/trust-proxy mode get --json --api-addr 127.0.0.1:"+port+
+		` | tr ',' '\n' | grep '"mode"' | cut -d'"' -f4`)
 	return strings.TrimSpace(out)
 }
 

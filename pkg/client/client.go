@@ -6,6 +6,7 @@ package client
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -121,6 +122,33 @@ func (c *Client) Kill(id string) error {
 	return c.Clash.CloseConnection(id)
 }
 
+// APIError is a non-2xx response, carrying the status so callers can react to
+// *which* failure it was.
+//
+// Specifically so nobody has to grep the message for "unauthorized" again: the
+// CLI decorates a 401 with how to authenticate, and a substring match on prose
+// both misses rewordings and fires on unrelated errors that happen to contain the
+// word. The rendered text is unchanged, so existing output is the same.
+type APIError struct {
+	Method  string
+	Path    string
+	Status  int
+	Message string
+}
+
+func (e *APIError) Error() string {
+	return fmt.Sprintf("%s %s: %s", e.Method, e.Path, e.Message)
+}
+
+// Unauthorized reports a 401 — no credential, or one the gateway refused.
+func (e *APIError) Unauthorized() bool { return e.Status == http.StatusUnauthorized }
+
+// IsUnauthorized reports whether err is a 401 from the API, at any wrap depth.
+func IsUnauthorized(err error) bool {
+	var ae *APIError
+	return errors.As(err, &ae) && ae.Unauthorized()
+}
+
 func (c *Client) do(method, path string, in, out any) error {
 	var body io.Reader
 	if in != nil {
@@ -149,10 +177,11 @@ func (c *Client) do(method, path string, in, out any) error {
 		var e apitypes.ErrorResponse
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
 		_ = json.Unmarshal(raw, &e)
-		if e.Error != "" {
-			return fmt.Errorf("%s %s: %s", method, path, e.Error)
+		msg := e.Error
+		if msg == "" {
+			msg = fmt.Sprintf("HTTP %d", resp.StatusCode)
 		}
-		return fmt.Errorf("%s %s: HTTP %d", method, path, resp.StatusCode)
+		return &APIError{Method: method, Path: path, Status: resp.StatusCode, Message: msg}
 	}
 	if out == nil {
 		return nil

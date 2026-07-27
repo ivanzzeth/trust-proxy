@@ -96,9 +96,9 @@ func TestFleetGatewayAsExit(t *testing.T) {
 	// Claiming it from inside the container is loopback, so no bootstrap code is
 	// needed — the headless path the design promises.
 	gw.exec("sh", "-c", "printf '"+adminPass+"\\n' | /trust-proxy auth bootstrap root --api-addr 127.0.0.1:"+gwAPI)
+	// Once. Logging in again rotates this machine's key — that is the point of it
+	// — so a second, discarded login would revoke the one held here.
 	key := loginKey(gw, "root", adminPass, gwAPI)
-	_ = strings.TrimSpace(gw.execOut("sh", "-c",
-		"printf '"+adminPass+"\\n' | /trust-proxy auth login root --api-addr 127.0.0.1:"+gwAPI+" --json | grep -o '\"key\": *\"[^\"]*\"' | cut -d'\"' -f4"))
 	if !strings.HasPrefix(key, "tp_") {
 		t.Fatalf("did not get an API key from login: %q", key)
 	}
@@ -350,11 +350,23 @@ func requireDocker(t *testing.T) {
 // buildLinuxBinary compiles a static linux binary for the container's arch.
 func buildLinuxBinary(t *testing.T) string {
 	t.Helper()
+	return buildLinuxBinaryVersioned(t, "")
+}
+
+// buildLinuxBinaryVersioned stamps a version, so a test can play the part of a
+// *different build* looking at a running gateway — which is what an upgraded
+// desktop app is, and the only way to exercise the stale-daemon path without
+// shipping two releases.
+func buildLinuxBinaryVersioned(t *testing.T, version string) string {
+	t.Helper()
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "trust-proxy")
-	cmd := exec.Command("go", "build",
-		"-tags", "with_clash_api with_quic with_utls with_gvisor",
-		"-o", bin, ".")
+	args := []string{"build", "-tags", "with_clash_api with_quic with_utls with_gvisor"}
+	if version != "" {
+		args = append(args, "-ldflags", "-X github.com/ivanzzeth/trust-proxy/cmd.version="+version)
+	}
+	args = append(args, "-o", bin, ".")
+	cmd := exec.Command("go", args...)
 	cmd.Dir = repoRoot(t)
 	cmd.Env = append(os.Environ(), "GOOS=linux", "GOARCH="+runtime.GOARCH, "CGO_ENABLED=0")
 	if out, err := cmd.CombinedOutput(); err != nil {

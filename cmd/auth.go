@@ -9,8 +9,10 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/ivanzzeth/trust-proxy/internal/credentials"
 	"github.com/ivanzzeth/trust-proxy/internal/users"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
+	"github.com/ivanzzeth/trust-proxy/pkg/client"
 )
 
 // Accounts from the command line, in two flavours — because a remote gateway has
@@ -76,9 +78,13 @@ var authBootstrapCmd = &cobra.Command{
 
 var authLoginCmd = &cobra.Command{
 	Use:   "login <username>",
-	Short: "Log in and store an API key for this gateway",
-	Long: "Prompts for the password, then mints an API key and saves it to\n" +
-		"<data>/cli-credentials.json (0600) so later commands need no --api-key.",
+	Short: "Log in and save an API key for this gateway",
+	Long: "Prompts for the password, then trades the session for an API key and saves it\n" +
+		"for this gateway's address. Later commands need no flag and no environment\n" +
+		"variable.\n\n" +
+		"The key replaces this machine's previous one rather than piling up beside it:\n" +
+		"logging in five times used to leave five live keys on the account, all named\n" +
+		"the same, none of them removable without reading their ids.",
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		pw, err := readPassword("password: ")
@@ -90,17 +96,79 @@ var authLoginCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		// Trade the session for an API key: sessions expire in hours, and the CLI
-		// carries no state, so the key is what makes the next command work.
-		created, err := c.CreateAPIKey(sess.User.ID, "cli@"+hostname(), 0)
+		label := "cli@" + hostname()
+		// Rotate this machine's stored key rather than piling another one beside it.
+		// A session expires in hours and the CLI carries no session, so every login
+		// has to mint a key; without this the account collects one per login,
+		// forever, all with the same label.
+		//
+		// Only the key this machine had *stored* is revoked — not every key sharing
+		// the label. Someone who exported a key into a script keeps it; taking that
+		// out from under them because they logged in again would be a worse bug than
+		// the one being fixed.
+		revokeStoredKey(c)
+		created, err := c.CreateAPIKey(sess.User.ID, label, 0)
 		if err != nil {
 			return fmt.Errorf("logged in, but minting an API key failed: %w", err)
 		}
-		return out(map[string]any{"user": sess.User, "key": created.Key}, func() {
-			fmt.Printf("✓ logged in as %s (%s)\n\n", sess.User.Username, sess.User.Role)
-			fmt.Printf("export TP_API_KEY=%s\n\n", created.Key)
-			fmt.Printf("The key is shown only here. Revoke it with: trust-proxy apikey rm %s\n", created.ID)
+		// The gateway id goes in with the key so a later 401 can distinguish "this
+		// gateway was reinstalled" from "your key was revoked".
+		var gatewayID string
+		if st, err := c.AuthState(); err == nil {
+			gatewayID = st.GatewayID
+		}
+		path, saveErr := rememberCredential(credentials.Entry{
+			GatewayID: gatewayID,
+			Key:       created.Key,
+			KeyID:     created.ID,
+			UserID:    sess.User.ID,
+			Username:  sess.User.Username,
 		})
+		return out(map[string]any{"user": sess.User, "key": created.Key, "credentials_path": path}, func() {
+			fmt.Printf("✓ logged in as %s (%s)\n", sess.User.Username, sess.User.Role)
+			if saveErr != nil {
+				// Do not swallow it: the key is only shown once, and a user who
+				// believes it was saved has just lost it.
+				fmt.Printf("\n⚠ could not save the key (%v). Use it by hand:\n\n", saveErr)
+				fmt.Printf("    export TP_API_KEY=%s\n", created.Key)
+				return
+			}
+			fmt.Printf("  saved to %s — the CLI will use it automatically.\n", path)
+			fmt.Printf("  revoke it with: trust-proxy apikey rm %s\n", created.ID)
+		})
+	},
+}
+
+// revokeStoredKey retires the key this machine had saved for this gateway.
+//
+// Best effort on purpose: the stored key may already be gone, or belong to
+// another account this session cannot administer, and neither should turn a
+// successful login into a failure. The worst case is the old behaviour — one
+// spare key left behind.
+func revokeStoredKey(c *client.Client) {
+	old, ok := storedCredential()
+	if !ok || old.KeyID == "" || old.UserID == "" {
+		return
+	}
+	_ = c.DeleteAPIKey(old.UserID, old.KeyID)
+}
+
+var authTicketCmd = &cobra.Command{
+	Use:   "ticket",
+	Short: "Mint a one-time URL that opens the console already logged in",
+	Long: "Turns the API key this CLI already holds into a single-use link. Following it\n" +
+		"sets a session cookie and lands on the console.\n\n" +
+		"This is how the desktop app opens the console: it holds a key (the one\n" +
+		"`install` wrote into your home directory) but a web view needs a *cookie*, and\n" +
+		"only the gateway's own origin can set one. Handing the key to the page instead\n" +
+		"would leave an admin credential sitting inside a web view. The ticket is good\n" +
+		"for one redirect and one minute.",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		t, err := sdk().ConsoleTicket()
+		if err != nil {
+			return err
+		}
+		return out(t, func() { fmt.Println(t.URL) })
 	},
 }
 
@@ -523,7 +591,8 @@ func hostname() string {
 func init() {
 	authRegistrationCmd.Flags().BoolVarP(&yesToAll, "yes", "y", false, "skip the confirmation")
 	authBootstrapCmd.Flags().StringVar(&authBootstrapCode, "code", "", "one-time bootstrap code (required off-loopback; printed in the gateway's log)")
-	authCmd.AddCommand(authBootstrapCmd, authLoginCmd, authWhoamiCmd, authStateCmd, authRegisterCmd, authRegistrationCmd)
+	authCmd.AddCommand(authBootstrapCmd, authLoginCmd, authTicketCmd, authWhoamiCmd,
+		authStateCmd, authRegisterCmd, authRegistrationCmd)
 
 	userAddCmd.Flags().BoolVar(&userAdmin, "admin", false, "create an administrator")
 	userAddCmd.Flags().StringVar(&userRole, "role", "", "role: admin | user (default user; the first account is always admin)")

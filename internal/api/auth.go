@@ -93,6 +93,17 @@ func isSelfService(r *http.Request) (id string, ok bool) {
 // requirement returns the access level a request needs.
 func requirement(r *http.Request) access {
 	p := path0(r.URL.Path)
+	// A console ticket is asymmetric: minting one proves you are already
+	// authenticated, redeeming one is how a browser that has nothing becomes
+	// logged in. The redeem side has to be reachable without a credential — that
+	// is the entire point — and is safe because the ticket is single-use, expires
+	// in a minute, and is only ever handed out to an authenticated caller.
+	if p == "/api/auth/ticket" {
+		if r.Method == http.MethodGet {
+			return accessPublic
+		}
+		return accessUser
+	}
 	// Asking for a destination to be permitted is the one write a client has, and
 	// it is a proposal: the rule it creates is disabled and grants nothing (see
 	// requests.go). Approving one is admin.
@@ -244,11 +255,20 @@ func (s *Server) authenticate(r *http.Request) (*apitypes.User, error) {
 	if keyErr != nil {
 		return nil, keyErr
 	}
-	// No accounts and no token configured: an unclaimed gateway is open, which is
-	// what makes bootstrap possible at all. The console pushes you to create the
-	// first admin immediately, and `serve` says so in the log.
+	// No accounts and no token configured: an unclaimed gateway has to accept some
+	// unauthenticated call, or a fresh install could never be set up at all.
+	//
+	// **Only from loopback.** Being on the machine is the credential. Over the
+	// network this was a hole and not a small one: the one-time claim code guards
+	// `/api/auth/bootstrap` and nothing else, so a remote caller never had to
+	// claim anything — it simply got this synthetic admin and drove the whole
+	// policy API. An exposed, not-yet-claimed gateway belonged to whoever scanned
+	// the port first. Off-loopback callers now get 401 for everything except
+	// `/api/auth/state` and the code-gated bootstrap (see publicPaths).
 	if s.users == nil || (s.users.Empty() && s.token == "") {
-		return &apitypes.User{ID: "unclaimed", Username: "unclaimed", Role: users.RoleAdmin}, nil
+		if isLoopback(r.RemoteAddr) {
+			return &apitypes.User{ID: "unclaimed", Username: "unclaimed", Role: users.RoleAdmin}, nil
+		}
 	}
 	return nil, nil
 }
@@ -281,6 +301,11 @@ func (s *Server) handleAuthState(w http.ResponseWriter, r *http.Request) {
 		AllowRegistration: s.users.Settings().AllowRegistration,
 	}
 	st.NeedsBootstrapCode = st.NeedsBootstrap && !isLoopback(r.RemoteAddr)
+	if s.authn != nil {
+		// Lets a stored CLI credential tell "this gateway was reinstalled" apart
+		// from "your key was revoked" — same 401, opposite advice.
+		st.GatewayID = s.authn.GatewayID()
+	}
 	if u, err := s.authenticate(r); err == nil && u != nil && u.ID != "unclaimed" {
 		st.Authenticated = true
 		st.User = u
@@ -367,6 +392,62 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.issueSession(w, u)
+}
+
+// handleMintTicket hands an authenticated caller a single-use token it can turn
+// into a browser session by following a URL.
+//
+// The desktop shell is the caller: it holds the API key `install` wrote into its
+// owner's home, and it needs the webview to arrive at the console already logged
+// in. Passing the key into the page instead would leave an admin credential
+// inside a web view for the life of the window.
+func (s *Server) handleMintTicket(w http.ResponseWriter, r *http.Request) {
+	u := s.caller(r)
+	if u == nil || s.authn == nil {
+		writeErr(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	tok, err := s.authn.MintTicket(u.ID)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, apitypes.ConsoleTicket{
+		Ticket:     tok,
+		URL:        "http://" + r.Host + "/api/auth/ticket?t=" + url.QueryEscape(tok),
+		ExpiresInS: int(authn.TicketTTL.Seconds()),
+	})
+}
+
+// handleRedeemTicket turns a ticket into a session cookie and sends the browser
+// to the console.
+//
+// A redirect rather than JSON: the caller here is a webview being pointed at a
+// URL, and what it must end up with is a same-origin cookie plus the console.
+func (s *Server) handleRedeemTicket(w http.ResponseWriter, r *http.Request) {
+	if s.authn == nil || s.users == nil {
+		writeErr(w, http.StatusServiceUnavailable, "authentication not available")
+		return
+	}
+	id, ok := s.authn.RedeemTicket(r.URL.Query().Get("t"))
+	if !ok {
+		// Deliberately terse and deliberately not a login page: a bad ticket is
+		// either expired or replayed, and both mean "ask the app again".
+		writeErr(w, http.StatusForbidden, "this console ticket is expired or already used")
+		return
+	}
+	u, found := s.users.ByID(id)
+	if !found || u.Disabled {
+		writeErr(w, http.StatusForbidden, "the account this ticket belongs to is gone or disabled")
+		return
+	}
+	token, exp, err := s.authn.Issue(u)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.authn.SetCookie(w, token, exp)
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {

@@ -37,6 +37,12 @@ func (c *Client) Me() (apitypes.User, error) {
 // Bootstrap creates the first admin. code is required only when the gateway is
 // reached off-loopback (it is printed in the gateway's log at startup).
 func (c *Client) Bootstrap(username, password, code string) (apitypes.Session, error) {
+	// Keep the session the server issues, exactly as Login does. Bootstrap did not,
+	// and the very next call — minting the new admin's first API key — went out
+	// unauthenticated against a registry that had just stopped being empty, so it
+	// 401'd. Claiming a gateway and then being unable to use it is not a state
+	// worth having.
+	c.ensureJar()
 	var out apitypes.Session
 	body := map[string]string{"username": username, "password": password}
 	if code != "" {
@@ -51,6 +57,18 @@ func (c *Client) Login(username, password string) (apitypes.Session, error) {
 	c.ensureJar()
 	var out apitypes.Session
 	err := c.do(http.MethodPost, "/api/auth/login", apitypes.LoginRequest{Username: username, Password: password}, &out)
+	return out, err
+}
+
+// ConsoleTicket mints a single-use token that turns into a browser session by
+// following its URL.
+//
+// For a caller that holds an API key but needs a *cookie*: the desktop shell
+// opening the console in its webview. Short-lived and one-shot, so the key itself
+// never enters the page.
+func (c *Client) ConsoleTicket() (apitypes.ConsoleTicket, error) {
+	var out apitypes.ConsoleTicket
+	err := c.do(http.MethodPost, "/api/auth/ticket", nil, &out)
 	return out, err
 }
 

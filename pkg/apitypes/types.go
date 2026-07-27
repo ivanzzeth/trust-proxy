@@ -545,6 +545,19 @@ type AuthState struct {
 	// has to know before showing the form: on a cloud gateway — the normal case
 	// for a remote console — a form without that field can only ever 403.
 	NeedsBootstrapCode bool `json:"needs_bootstrap_code,omitempty"`
+	// GatewayID is a stable, non-secret fingerprint of this installation. A stored
+	// CLI credential carries the id it was minted against, so a 401 can say "this
+	// gateway was reinstalled" instead of leaving you to guess.
+	GatewayID string `json:"gateway_id,omitempty"`
+}
+
+// ConsoleTicket is a single-use token that buys one browser session, for a
+// caller that holds an API key but needs a *cookie* (the desktop shell opening
+// the console in its webview).
+type ConsoleTicket struct {
+	Ticket     string `json:"ticket"`
+	URL        string `json:"url"`
+	ExpiresInS int    `json:"expires_in_s"`
 }
 
 // PatchUserRequest is the PATCH /api/users/{id} body. Every field is optional; a

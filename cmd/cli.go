@@ -3,11 +3,13 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/ivanzzeth/trust-proxy/pkg/client"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ivanzzeth/trust-proxy/internal/credentials"
+	"github.com/ivanzzeth/trust-proxy/pkg/client"
 )
 
 // Shared client-side plumbing for every CLI subcommand: where the backend is,
@@ -37,17 +39,77 @@ func addClientFlags(cmds ...*cobra.Command) {
 	}
 }
 
-// resolveToken picks the credential to present: the --api-token flag, else
-// TP_API_KEY from the environment.
+// resolveToken picks the credential to present, most explicit first: the
+// --api-token flag, then TP_API_KEY, then the stored one for this gateway.
 //
-// Nothing is read from disk on purpose. A cached credential file was the first
-// design, and it went stale against a rebuilt registry and then turned an
-// unclaimed gateway into a 401 — a secret at rest buying a footgun.
+// The stored file is back, and this time it carries the gateway id it was minted
+// against. Its first incarnation was deleted because it went stale against a
+// rebuilt registry and produced a 401 nobody could explain — but the answer to
+// that was never "keep no credential and make everyone paste
+// `eval "$(… | grep ^export)"` into their shell forever". It is to notice the
+// staleness and say so, which is what decorateAuthError does below.
 func resolveToken() string {
 	if apiToken != "" {
 		return apiToken
 	}
-	return os.Getenv("TP_API_KEY")
+	if k := os.Getenv("TP_API_KEY"); k != "" {
+		return k
+	}
+	e, ok := storedCredential()
+	if !ok {
+		return ""
+	}
+	return e.Key
+}
+
+// storedCredential is the saved entry for the gateway this command is aimed at.
+func storedCredential() (credentials.Entry, bool) {
+	path, err := credentials.Path()
+	if err != nil {
+		return credentials.Entry{}, false
+	}
+	return credentials.Get(path, apiAddr)
+}
+
+// rememberCredential saves a freshly minted key for this gateway, so the next
+// command needs no flag, no environment variable and no ceremony.
+func rememberCredential(e credentials.Entry) (string, error) {
+	path, err := credentials.Path()
+	if err != nil {
+		return "", err
+	}
+	if err := credentials.Put(path, apiAddr, e); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// decorateAuthError turns a 401 into something the caller can act on.
+//
+// Three different situations produce the same status code and want opposite
+// advice: nothing to present, a key that belongs to a gateway that has since been
+// reinstalled, and a key that was revoked. Telling them apart costs one public
+// request on the failure path, and saves the guessing that this project has
+// already paid for twice.
+func decorateAuthError(err error, credential string) error {
+	if err == nil || !client.IsUnauthorized(err) {
+		return err
+	}
+	if credential == "" {
+		return fmt.Errorf("%w\n\nnot authenticated, and nothing is stored for %s.\n"+
+			"    trust-proxy auth login <name> --api-addr %s\n"+
+			"which saves the key for next time. On the gateway's own machine, an unclaimed\n"+
+			"one is claimed with:  sudo trust-proxy install", err, apiAddr, apiAddr)
+	}
+	if stored, ok := storedCredential(); ok && stored.Key == credential && stored.GatewayID != "" {
+		if st, sErr := sdkAnonymous().AuthState(); sErr == nil && st.GatewayID != "" && st.GatewayID != stored.GatewayID {
+			return fmt.Errorf("%w\n\nthe gateway on %s is not the one this key was minted against —\n"+
+				"it has been reinstalled, or its data directory was replaced. Log in again:\n"+
+				"    trust-proxy auth login <name> --api-addr %s", err, apiAddr, apiAddr)
+		}
+	}
+	return fmt.Errorf("%w\n\nthe credential in use was refused — it may have been revoked, or belong to a "+
+		"deleted account. Log in again: trust-proxy auth login <name> --api-addr %s", err, apiAddr)
 }
 
 // loginToken is the credential `auth login` and `auth bootstrap` start from:
@@ -63,6 +125,12 @@ func loginToken() string { return apiToken }
 // use one.
 func loginSDK() *client.Client {
 	return client.New(client.Options{APIBaseURL: apiAddr, Token: loginToken()})
+}
+
+// sdkAnonymous carries no credential, for the public endpoints used while
+// working out *why* a credential was refused.
+func sdkAnonymous() *client.Client {
+	return client.New(client.Options{APIBaseURL: apiAddr})
 }
 
 // emit prints v as indented JSON. Every command routes its result through

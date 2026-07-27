@@ -15,13 +15,16 @@ package authn
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -47,6 +50,9 @@ type Authn struct {
 	bootstrap string // one-time code for creating the first admin over the network
 	ttl       time.Duration
 	now       func() time.Time
+
+	mu      sync.Mutex
+	tickets map[string]ticket
 }
 
 // Claims is our JWT payload.
@@ -84,6 +90,22 @@ func New(dir string) (*Authn, error) {
 		return nil, err
 	}
 	return a, nil
+}
+
+// GatewayID is a stable, non-secret fingerprint of this installation.
+//
+// It exists so a cached CLI credential can tell "this gateway was reinstalled"
+// apart from "your key was revoked". Those produce the same 401 and want opposite
+// advice, and guessing wrong is how a credentials file earns its reputation for
+// going stale. Derived from the signing key rather than kept in another file:
+// a fresh data directory already means a fresh key, which is exactly the event
+// that invalidates every credential anyone holds.
+//
+// Truncated sha256 with a domain separator — 64 bits is plenty to notice a
+// different machine, and none of it walks back to the secret.
+func (a *Authn) GatewayID() string {
+	sum := sha256.Sum256(append([]byte("trust-proxy gateway id\x00"), a.secret...))
+	return hex.EncodeToString(sum[:8])
 }
 
 // SetTTL overrides the session lifetime.
@@ -179,6 +201,70 @@ func SessionToken(r *http.Request) string {
 		return strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
 	}
 	return ""
+}
+
+// ---- one-time console tickets --------------------------------------------
+
+// TicketTTL is how long a console ticket is good for. Seconds, not minutes: it
+// exists to survive one redirect.
+const TicketTTL = 60 * time.Second
+
+type ticket struct {
+	userID  string
+	expires time.Time
+}
+
+// MintTicket issues a single-use token that can be exchanged for a session
+// cookie by following a URL.
+//
+// This is how the desktop shell opens the console already logged in. The shell
+// holds an API key (the one `install` wrote into its owner's home) but the
+// webview must end up with a cookie, and a cookie can only be set by the origin
+// that owns it. Handing the *key* to the page instead would put an admin
+// credential inside a web view for as long as the page lives; a ticket is worth
+// one redirect and then nothing.
+func (a *Authn) MintTicket(userID string) (string, error) {
+	raw := make([]byte, 24)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	tok := base64.RawURLEncoding.EncodeToString(raw)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.tickets == nil {
+		a.tickets = map[string]ticket{}
+	}
+	// Opportunistic sweep: there is no background goroutine here, and without it
+	// a long-running gateway accumulates one dead entry per app launch.
+	now := a.now()
+	for k, t := range a.tickets {
+		if now.After(t.expires) {
+			delete(a.tickets, k)
+		}
+	}
+	a.tickets[tok] = ticket{userID: userID, expires: now.Add(TicketTTL)}
+	return tok, nil
+}
+
+// RedeemTicket consumes a ticket and returns whose session it buys.
+//
+// Single use, enforced by deleting before checking expiry: a replayed ticket must
+// fail even if it is replayed inside the TTL.
+func (a *Authn) RedeemTicket(tok string) (string, bool) {
+	if tok == "" {
+		return "", false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	t, ok := a.tickets[tok]
+	if !ok {
+		return "", false
+	}
+	delete(a.tickets, tok)
+	if a.now().After(t.expires) {
+		return "", false
+	}
+	return t.userID, true
 }
 
 // ---- remote bootstrap ----------------------------------------------------
