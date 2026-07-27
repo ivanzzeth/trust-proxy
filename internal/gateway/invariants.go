@@ -48,7 +48,101 @@ func applyInvariants(cfg map[string]json.RawMessage, mode string, loopback map[s
 	if err := repairProxyGroupLoopbacks(cfg, loopback); err != nil {
 		return fmt.Errorf("invariant proxy-groups: %w", err)
 	}
+	if err := assertResolverReferences(cfg); err != nil {
+		return fmt.Errorf("invariant resolver-refs: %w", err)
+	}
 	return nil
+}
+
+// assertResolverReferences fails the build when anything names a DNS server that
+// does not exist.
+//
+// One injector wrote `domain_resolver: dns-direct` on every remote rule set;
+// another creates that server, but only when the default resolver sits behind
+// the proxy. On a fresh install — resolver `local`, no detour — nothing created
+// it, and sing-box refused to start the box with eight repetitions of "domain
+// resolver not found: dns-direct". Switching to Split was what surfaced it,
+// because that is what seeds the catalog's remote rule sets, so *every fresh
+// install* hit it and the machines that worked were the ones somebody had
+// configured a proxied resolver on.
+//
+// The rule that prevents the whole class: whoever creates a tag owns every
+// reference to it. This is the enforcement — a dangling reference now fails
+// where the config is built, naming the tag and who pointed at it, instead of
+// eight lines deep in a box that will not start.
+func assertResolverReferences(cfg map[string]json.RawMessage) error {
+	declared := map[string]bool{}
+	if raw, ok := cfg["dns"]; ok {
+		var dns map[string]any
+		if err := json.Unmarshal(raw, &dns); err != nil {
+			return err
+		}
+		for _, s := range mapSlice(dns["servers"]) {
+			if tag, _ := s["tag"].(string); tag != "" {
+				declared[tag] = true
+			}
+		}
+	}
+	report := func(who, ref string) error {
+		return fmt.Errorf("%s names DNS server %q, which nothing declares "+
+			"(declared: %v) — the injector that creates a resolver must be the one that "+
+			"references it", who, ref, sortedTags(declared))
+	}
+
+	var outs []map[string]any
+	if raw, ok := cfg["outbounds"]; ok {
+		if err := json.Unmarshal(raw, &outs); err != nil {
+			return err
+		}
+	}
+	for _, o := range outs {
+		ref, _ := o["domain_resolver"].(string)
+		if ref != "" && !declared[ref] {
+			tag, _ := o["tag"].(string)
+			return report(fmt.Sprintf("outbound %q", tag), ref)
+		}
+	}
+
+	if raw, ok := cfg["route"]; ok {
+		var route map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &route); err != nil {
+			return err
+		}
+		var base string
+		_ = json.Unmarshal(route["default_domain_resolver"], &base)
+		if base != "" && !declared[base] {
+			return report("route.default_domain_resolver", base)
+		}
+		var sets []map[string]any
+		if rsRaw, ok := route["rule_set"]; ok {
+			if err := json.Unmarshal(rsRaw, &sets); err != nil {
+				return err
+			}
+		}
+		for _, rs := range sets {
+			hc, _ := rs["http_client"].(map[string]any)
+			ref, _ := hc["domain_resolver"].(string)
+			if ref != "" && !declared[ref] {
+				tag, _ := rs["tag"].(string)
+				return report(fmt.Sprintf("rule set %q", tag), ref)
+			}
+		}
+	}
+	return nil
+}
+
+// sortedTags renders a tag set for an error message, stably.
+func sortedTags(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for t := range set {
+		out = append(out, t)
+	}
+	for i := 1; i < len(out); i++ {
+		for j := i; j > 0 && out[j] < out[j-1]; j-- {
+			out[j], out[j-1] = out[j-1], out[j]
+		}
+	}
+	return out
 }
 
 // ensureTunHijackAndInterface guarantees the TUN prelude pieces exist even if

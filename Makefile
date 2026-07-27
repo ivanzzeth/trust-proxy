@@ -15,7 +15,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
 .PHONY: help run app build build-ui build-go build-embed build-app check-build-owner tidy \
-	e2e-fleet e2e-linux e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
+	e2e-fleet e2e-linux e2e-policy e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
 	deps clean e2e redeploy desktop desktop-dev desktop-sidecar app-service-hint \
 	release version-check
 
@@ -220,6 +220,12 @@ e2e-macos:
 ## and a local machine egresses through it with its own account — and cleans up.
 e2e-fleet:
 	go test -tags docker_e2e -run TestFleetGatewayAsExit -v -timeout 10m ./test/
+
+## Every command that rewrites policy, under a real systemd: each one rebuilds
+## the sing-box config, and a config the box refuses is a gateway that enforces
+## nothing. Asserts the change took *and* that the data plane survived it.
+e2e-policy:
+	go test -tags docker_e2e -run TestLinuxPolicyRebuilds -v -timeout 15m ./test/
 
 ## Linux service lifecycle under a real systemd (privileged container, pid 1 =
 ## systemd): install, restart after kill -9, TUN, and a clean uninstall.

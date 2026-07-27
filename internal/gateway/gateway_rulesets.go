@@ -73,13 +73,25 @@ func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir s
 			desc["url"] = rs.URL
 			// http_client replaces both deprecations sing-box 1.14 warns about and
 			// 1.16 removes: the legacy `download_detour` option, and relying on the
-			// implicit default HTTP client. Pinning domain_resolver here also keeps
-			// the .srs fetch off the exit-node resolver, same rule as every other
-			// direct dial (see injectDirectDNS).
-			desc["http_client"] = map[string]any{
-				"detour":          detour,
-				"domain_resolver": directResolverTag,
+			// implicit default HTTP client.
+			//
+			// No domain_resolver here. It used to pin dns-direct unconditionally —
+			// but that server only exists when injectDirectDNS synthesizes it, which
+			// it does only when the default resolver sits behind the proxy. On a
+			// fresh install (resolver `local`, no detour) the reference dangled and
+			// the box refused to start: "domain resolver not found: dns-direct",
+			// once per rule set. Whoever creates the server pins the reference —
+			// see injectDirectDNS, which does the same for outbounds.
+			// An omitted detour *is* "dial directly". Naming the plain direct
+			// outbound instead is rejected outright — "detour to an empty direct
+			// outbound makes no sense" — which the deprecated `download_detour`
+			// used to accept, so the migration to http_client turned a working
+			// config into one the box refuses to start.
+			hc := map[string]any{}
+			if detour != "" && detour != "direct" {
+				hc["detour"] = detour
 			}
+			desc["http_client"] = hc
 			desc["update_interval"] = rs.UpdateInterval
 		}
 		raw, err := json.Marshal(desc)

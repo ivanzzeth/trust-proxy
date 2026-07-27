@@ -426,3 +426,124 @@ CMD ["/lib/systemd/systemd"]
 	}
 	return tag
 }
+
+// Every command that rewrites policy rebuilds the sing-box config, and a config
+// the box refuses is a gateway that stops enforcing anything. The service
+// lifecycle test above covers install and uninstall; it exercises none of that
+// surface — about twenty commands, all uncovered, until one of them shipped
+// broken: switching to Split emitted a rule-set http_client pointing at a DNS
+// server that only exists in some configurations, so `posture set split` failed
+// on every fresh install and nothing in this repo noticed.
+//
+// So: walk the surface. Each step changes policy, then asserts the gateway is
+// still up *and* that its last rebuild actually produced a running box —
+// "reverted" is a survivable failure and an invisible one, because the API
+// returns an error while the console keeps showing the old, working state.
+func TestLinuxPolicyRebuilds(t *testing.T) {
+	requireDocker(t)
+	img := buildSystemdImage(t)
+	bin := buildLinuxBinary(t)
+
+	c := &systemdBox{t: t, name: "tp-e2e-policy", image: img, binary: bin}
+	c.boot()
+	if out := c.exec("trust-proxy install" + consoleNone); !strings.Contains(out, "installed") {
+		t.Fatalf("install failed:\n%s", out)
+	}
+	c.waitAPI("21585")
+
+	// A node to route to, imported rather than fetched: this container has no
+	// route to the internet and the point is the config rebuild, not the network.
+	const node = "ss://YWVzLTI1Ni1nY206cGFzc3dvcmQ@203.0.113.9:8388#e2e-node"
+	if out := c.exec("printf '%s' '" + node + "' | trust-proxy sub import --name e2e"); !strings.Contains(out, "1 nodes") {
+		t.Fatalf("importing a node failed:\n%s", out)
+	}
+	subID := strings.TrimSpace(c.exec(`trust-proxy sub ls | awk 'NR==2{print $1}'`))
+	if subID == "" {
+		t.Fatal("no subscription id back from `sub ls`")
+	}
+
+	for _, step := range []struct {
+		what string
+		cmd  string
+		// want is a substring the *verification* command must produce; verify is
+		// how to read the change back. Reading it back matters: an API that
+		// accepted a change and a gateway that applied it are different claims,
+		// and this whole suite exists because of the gap between them.
+		verify, want string
+	}{
+		{"apply a subscription", "trust-proxy sub apply " + subID, "trust-proxy proxies ls", "e2e-node"},
+		{"permit a domain", "trust-proxy acl add permit example.com", "trust-proxy acl ls permit", "example.com"},
+		{"permit an ip", "trust-proxy acl add permit 198.51.100.7 --type ip", "trust-proxy acl ls permit", "198.51.100.7"},
+		{"deny a domain", "trust-proxy acl add deny ads.example", "trust-proxy acl ls deny", "ads.example"},
+		{"bypass a domain", "trust-proxy acl add no-proxy intranet.example", "trust-proxy acl ls no-proxy", "intranet.example"},
+		{"remove a permit", "trust-proxy acl rm permit example.com", "trust-proxy acl ls permit", "198.51.100.7"},
+		{"a custom rule", "trust-proxy rules custom add corp.example --egress direct", "trust-proxy rules custom ls", "corp.example"},
+		{"the direct resolver", "trust-proxy dns set --direct-server 119.29.29.29", "trust-proxy dns get", "119.29.29.29"},
+		{"routing mode Global", "trust-proxy routing set Global -y", "trust-proxy routing get", "Global"},
+		{"routing mode Rule", "trust-proxy routing set Rule -y", "trust-proxy routing get", "Rule"},
+		{"the final route", "trust-proxy final set direct", "trust-proxy final get", "direct"},
+		{"capture mode tun", "trust-proxy mode set tun --guard 0 -y", "trust-proxy status", "mode:              tun"},
+		{"capture mode manual", "trust-proxy mode set manual --guard 0 -y", "trust-proxy status", "mode:              manual"},
+		{"save a profile", "trust-proxy profile save e2e-snapshot", "trust-proxy profile ls", "e2e-snapshot"},
+	} {
+		out := c.exec(step.cmd)
+		if strings.Contains(out, "error:") {
+			t.Fatalf("%s: %s\n%s", step.what, step.cmd, out)
+		}
+		if got := c.exec(step.verify); !strings.Contains(got, step.want) {
+			t.Fatalf("%s: %q did not show %q\n%s", step.what, step.verify, step.want, got)
+		}
+		c.assertBoxAlive(step.what)
+	}
+
+	// Activating a saved profile is a single atomic rebuild of everything at once
+	// — the widest config change there is, and the one most likely to produce
+	// something the box rejects.
+	profID := strings.TrimSpace(c.exec(`trust-proxy profile ls | awk '/e2e-snapshot/{print $1}'`))
+	if profID != "" {
+		if out := c.exec("trust-proxy profile activate " + profID); strings.Contains(out, "error:") {
+			t.Fatalf("activating a profile failed:\n%s", out)
+		}
+		c.assertBoxAlive("profile activate")
+	}
+
+	// Split seeds the catalog's *remote* rule sets, so it cannot fully succeed in
+	// a container with no route to the internet. What it must never do is fail for
+	// a reason of our own making: a reference to a DNS server nothing creates, or
+	// a detour naming the plain direct outbound. Both shipped, both looked exactly
+	// like this, and both are invisible to every other test in this repo.
+	out := c.exec("trust-proxy posture set split -y")
+	for _, ours := range []string{"domain resolver not found", "makes no sense", "missing", "unknown"} {
+		if strings.Contains(out, ours) {
+			t.Fatalf("switching to Split built a config the box rejects (%q):\n%s", ours, out)
+		}
+	}
+	if strings.Contains(out, "error:") && !strings.Contains(out, "initial rule-set") {
+		t.Fatalf("Split failed for something other than the unreachable .srs download:\n%s", out)
+	}
+	c.assertBoxAlive("posture set split")
+}
+
+// assertBoxAlive checks the gateway is answering *and* still has a data plane.
+//
+// The API surviving is not the claim: it is served by the process, not by the
+// box, so a rebuild that fails after closing the previous instance leaves a
+// responsive console in front of nothing. The inbound listener is the honest
+// signal — either traffic can still reach the gateway or it cannot.
+//
+// Deliberately not a grep for the "no running box" line: that message is emitted
+// the moment a rebuild fails and stays in the log afterwards, so it also fires
+// for a failure that then rolled back successfully — which is the *designed*
+// behaviour and not something to fail a test over. Measured: it reported a dead
+// gateway while 21584 was listening the whole time.
+func (c *systemdBox) assertBoxAlive(after string) {
+	c.t.Helper()
+	if !strings.Contains(c.exec(`curl -s -m 3 http://127.0.0.1:21585/api/health || true`), `"ok"`) {
+		c.t.Fatalf("after %s: the gateway stopped answering", after)
+	}
+	if !strings.Contains(c.exec("ss -ltn || true"), ":21584") {
+		c.t.Fatalf("after %s: the API answers but the proxy inbound is gone — "+
+			"a rebuild left the console in front of no data plane:\n%s",
+			after, c.exec("tail -20 /var/lib/trust-proxy/serve.log"))
+	}
+}

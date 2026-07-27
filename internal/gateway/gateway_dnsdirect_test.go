@@ -361,11 +361,66 @@ func TestRuleSetsFetchViaExplicitHTTPClient(t *testing.T) {
 		if !ok {
 			t.Fatalf("%v has no http_client: %v", rs["tag"], rs)
 		}
-		if hc["detour"] == nil || hc["detour"] == "" {
-			t.Fatalf("%v: http_client without an explicit detour: %v", rs["tag"], hc)
+		// An omitted detour *is* "dial directly". Naming the plain direct outbound
+		// is rejected outright — "detour to an empty direct outbound makes no
+		// sense" — which the deprecated download_detour accepted. This assertion
+		// used to require a non-empty detour, so it was holding the broken shape in
+		// place: the box would not start and the test was green.
+		if d, _ := hc["detour"].(string); d == "direct" {
+			t.Fatalf("%v: http_client detours to the plain direct outbound, which the box refuses: %v", rs["tag"], hc)
 		}
+		// This config resolves through a proxied DoH, so the direct split exists
+		// and the fetch must use it rather than the exit node's resolver.
 		if hc["domain_resolver"] != directResolverTag {
 			t.Fatalf("%v: rule-set fetch resolves via %v, want %q", rs["tag"], hc["domain_resolver"], directResolverTag)
+		}
+	}
+}
+
+// A fresh install resolves through `local` with no detour, so injectDirectDNS
+// never synthesizes dns-direct — and nothing may reference it.
+//
+// This is the shape that shipped broken. The reference was written
+// unconditionally by injectRuleSets while the server was created conditionally
+// by injectDirectDNS, so every fresh gateway that switched to Split built a
+// config sing-box refused: "domain resolver not found: dns-direct", once per
+// rule set. The machines it worked on were the ones where somebody had picked a
+// proxied resolver in the console.
+//
+// Remove the fix and this fails twice: once here, once in the invariant.
+func TestFreshInstallRuleSetsDoNotReferenceAResolverNobodyCreates(t *testing.T) {
+	// The default DNS: one `local` server, no detour, exactly as `install` seeds it.
+	fresh := apitypes.DNSConfig{Servers: []apitypes.DNSServer{{Tag: "local", Type: "local"}}}
+	merged := buildDNS(t, ModeManual, fresh, directlist.Rules{}, customrules.Rules{}, cnDirectSets(), nil)
+	parseValidate(t, merged)
+
+	var cfg map[string]json.RawMessage
+	if err := json.Unmarshal(merged, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	// The invariant is the general guard; running it here proves it covers this.
+	if err := assertResolverReferences(cfg); err != nil {
+		t.Fatalf("the merged config references a resolver nothing declares: %v", err)
+	}
+
+	var route map[string]json.RawMessage
+	if err := json.Unmarshal(cfg["route"], &route); err != nil {
+		t.Fatal(err)
+	}
+	var sets []map[string]any
+	if err := json.Unmarshal(route["rule_set"], &sets); err != nil {
+		t.Fatal(err)
+	}
+	if len(sets) == 0 {
+		t.Fatal("no rule-set descriptors emitted — this test needs a remote one to be meaningful")
+	}
+	for _, rs := range sets {
+		hc, _ := rs["http_client"].(map[string]any)
+		if res, _ := hc["domain_resolver"].(string); res != "" {
+			t.Fatalf("%v pins resolver %q, but a fresh install never creates one", rs["tag"], res)
+		}
+		if d, _ := hc["detour"].(string); d == "direct" {
+			t.Fatalf("%v: http_client detours to the plain direct outbound: %v", rs["tag"], hc)
 		}
 	}
 }

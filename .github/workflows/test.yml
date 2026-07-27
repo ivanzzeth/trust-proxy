@@ -66,6 +66,20 @@ jobs:
           go-version-file: go.mod
       - run: make e2e-linux
 
+  # Every command that rewrites policy rebuilds the sing-box config, and a config
+  # the box refuses is a gateway that stops enforcing anything. About twenty such
+  # commands had no e2e coverage at all until one of them shipped broken.
+  linux-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - run: make e2e-policy
+
   shell:
     runs-on: ubuntu-latest
     steps:

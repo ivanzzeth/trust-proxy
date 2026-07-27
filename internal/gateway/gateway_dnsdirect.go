@@ -217,6 +217,9 @@ func injectDirectDNS(cfg map[string]json.RawMessage, d apitypes.DNSConfig, dnsSa
 	cfg["dns"] = nd
 
 	// (4) every dialing outbound resolves via the resolver its own dial can reach.
+	if err := pinRuleSetDomainResolver(cfg); err != nil {
+		return err
+	}
 	return pinDirectDomainResolver(cfg)
 }
 
@@ -255,6 +258,65 @@ func catchAllOutbound(rules []json.RawMessage) string {
 	}
 	ob, _ := m["outbound"].(string)
 	return ob
+}
+
+// pinRuleSetDomainResolver keeps the .srs fetch off the exit node's resolver,
+// for the same reason every other direct dial is kept off it: a resolver behind
+// the proxy answers from wherever the exit is.
+//
+// It lives here, next to the code that *creates* dns-direct, and runs only after
+// it has. injectRuleSets used to write the reference itself, unconditionally —
+// and this server is conditional, so on a fresh install (resolver `local`, no
+// detour) nothing created it and sing-box refused to start the box: "domain
+// resolver not found: dns-direct", once per rule set. It only surfaced when
+// switching to Split, because that is what seeds the catalog's remote rule sets
+// in the first place. One rule: the injector that creates a tag owns every
+// reference to it.
+func pinRuleSetDomainResolver(cfg map[string]json.RawMessage) error {
+	var route map[string]json.RawMessage
+	raw, ok := cfg["route"]
+	if !ok {
+		return nil
+	}
+	if err := json.Unmarshal(raw, &route); err != nil {
+		return err
+	}
+	rsRaw, ok := route["rule_set"]
+	if !ok {
+		return nil
+	}
+	var sets []map[string]any
+	if err := json.Unmarshal(rsRaw, &sets); err != nil {
+		return err
+	}
+	changed := false
+	for i, rs := range sets {
+		hc, isMap := rs["http_client"].(map[string]any)
+		if !isMap {
+			continue // a local rule set has no fetch to route
+		}
+		if _, set := hc["domain_resolver"]; set {
+			continue
+		}
+		hc["domain_resolver"] = directResolverTag
+		rs["http_client"] = hc
+		sets[i] = rs
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	nrs, err := json.Marshal(sets)
+	if err != nil {
+		return err
+	}
+	route["rule_set"] = nrs
+	nr, err := json.Marshal(route)
+	if err != nil {
+		return err
+	}
+	cfg["route"] = nr
+	return nil
 }
 
 // pinDirectDomainResolver sets domain_resolver=dns-direct on every outbound that
