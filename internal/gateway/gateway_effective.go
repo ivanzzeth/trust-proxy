@@ -164,11 +164,6 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 			allowBits = append(allowBits, fmt.Sprintf("%s:%s=%s", src, r.Match, r.Value))
 		}
 		allowBits = append(allowBits, "private-CIDRs")
-		// The gateway's own policy-input fetches are in the permit set too, and an
-		// exemption nobody can see is the kind of hole this view exists to expose.
-		if hosts := ruleSetSourceHosts(sets); len(hosts) > 0 {
-			allowBits = append(allowBits, "rule-set-sources("+strings.Join(hosts, ",")+")")
-		}
 		add(apitypes.RuleView{Layer: "L3", Source: "permit-gate", Action: "route:blocked", Matcher: "logical (inverted)", Values: truncVals(allowBits, 40), Note: "anything NOT permitted is blocked; Route never opens this gate"})
 	}
 

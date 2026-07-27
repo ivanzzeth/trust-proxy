@@ -103,6 +103,28 @@ func assertResolverReferences(cfg map[string]json.RawMessage) error {
 		}
 	}
 
+	// http_clients is a third namespace that can dangle the same way, and it also
+	// declares the tags rule-set descriptors point at — so both directions are
+	// checked here: its resolver must exist, and the clients it declares are the
+	// only ones a descriptor may name.
+	httpClients := map[string]bool{}
+	if raw, ok := cfg["http_clients"]; ok {
+		var clients []map[string]any
+		if err := json.Unmarshal(raw, &clients); err != nil {
+			return err
+		}
+		for _, c := range clients {
+			tag, _ := c["tag"].(string)
+			if tag != "" {
+				httpClients[tag] = true
+			}
+			ref, _ := c["domain_resolver"].(string)
+			if ref != "" && !declared[ref] {
+				return report(fmt.Sprintf("http client %q", tag), ref)
+			}
+		}
+	}
+
 	if raw, ok := cfg["route"]; ok {
 		var route map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &route); err != nil {
@@ -120,15 +142,42 @@ func assertResolverReferences(cfg map[string]json.RawMessage) error {
 			}
 		}
 		for _, rs := range sets {
-			hc, _ := rs["http_client"].(map[string]any)
-			ref, _ := hc["domain_resolver"].(string)
-			if ref != "" && !declared[ref] {
-				tag, _ := rs["tag"].(string)
-				return report(fmt.Sprintf("rule set %q", tag), ref)
+			tag, _ := rs["tag"].(string)
+			switch hc := rs["http_client"].(type) {
+			case map[string]any:
+				// An empty object is not a dangling reference, it is a silent one: it
+				// means "use the default outbound", and route.final is `blocked`, so the
+				// gateway dials its own policy downloads into the block outbound and
+				// refuses to start. Schema-valid, released three times.
+				if len(hc) == 0 {
+					return fmt.Errorf("rule set %q has an empty http_client, which upstream reads as "+
+						"\"use the default outbound\" — and the default outbound is route.final (%q), so the "+
+						"fetch is dialed into it instead of out", tag, routeFinalTag(route))
+				}
+				if ref, _ := hc["domain_resolver"].(string); ref != "" && !declared[ref] {
+					return report(fmt.Sprintf("rule set %q", tag), ref)
+				}
+			case string:
+				if !httpClients[hc] {
+					return fmt.Errorf("rule set %q fetches via http client %q, which no http_clients entry "+
+						"declares (declared: %v) — the injector that creates a client must be the one that "+
+						"references it", tag, hc, sortedTags(httpClients))
+				}
 			}
 		}
 	}
 	return nil
+}
+
+// routeFinalTag reports the configured catch-all outbound, for error messages
+// that need to name the outbound a fetch would otherwise be dialed into.
+func routeFinalTag(route map[string]json.RawMessage) string {
+	var final string
+	_ = json.Unmarshal(route["final"], &final)
+	if final == "" {
+		return "the first outbound"
+	}
+	return final
 }
 
 // sortedTags renders a tag set for an error message, stably.

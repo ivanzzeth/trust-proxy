@@ -802,7 +802,7 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	}
 	// L1: register rule_set descriptors + emit block-role rejects (allow-role
 	// egress moved to injectAllow/L4). Anchors on the network-matcher catch-all.
-	if err := injectRuleSets(cfg, sets, dataDir, len(nodes) > 0 || len(epTags) > 0); err != nil {
+	if err := injectRuleSets(cfg, sets, dataDir); err != nil {
 		return nil, err
 	}
 	// L1: process/device invert rejects (opt-in anti-exfil gates).

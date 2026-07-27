@@ -79,26 +79,21 @@ func clashAPI(t *testing.T, cfg map[string]json.RawMessage) map[string]any {
 	return ca
 }
 
-// The gateway has to be allowed to fetch its own policy inputs.
+// Adding a rule set must not permit user traffic to the host it is fetched from.
 //
-// Remote rule sets are downloaded by sing-box through its *default* outbound,
-// which means the download goes through route.rules — straight into our own
-// Permit gate. Under default-deny that is a reject, and the log said exactly
-// that: "outbound/block[blocked]: blocked connection to
-// raw.githubusercontent.com:443", surfaced to the user as six lines of
-// "operation not permitted". The gateway was refusing to start because it had
-// blocked itself.
+// A previous version of this file asserted the opposite, and the assertion was
+// wrong twice over. It was there to fix "the gateway blocks its own rule-set
+// download", which the Permit gate does not cause: the fetch dials the transport
+// named in the descriptor and never consults route.rules at all (proved
+// hermetically in TestRuleSetFetchesWithNoExitNode — blocked with route.rules
+// empty). So the exemption fixed nothing.
 //
-// The old `download_detour` bypassed route.rules entirely. Its replacement,
-// http_client.detour, is rejected when it names an outbound with no dialer
-// options ("detour to an empty direct outbound makes no sense") — and whether our
-// direct outbound has any depends on whether the DNS split is on, which is not a
-// coupling to build on.
-//
-// So: an explicit exemption for the hosts the enabled rule sets are fetched
-// from, below the deny floor and above the gate, where it is visible in
-// `rules ls` and auditable.
-func TestRuleSetSourcesAreExemptFromTheOwnGate(t *testing.T) {
+// What it did do was widen default-deny. route.rules cannot express "only the
+// gateway's own fetch", so permitting cdn.jsdelivr.net for the downloader
+// permitted it for every process and device on any port — via the Rules page,
+// i.e. reachable by an operator who thinks they are only adding a rule set. An
+// implant that can reach a CDN with attacker-controlled paths is a channel.
+func TestRuleSetSourceHostIsNotPermittedForUserTraffic(t *testing.T) {
 	sets := ruleset.Sets{Sets: []apitypes.RuleSet{{
 		Tag: "geosite-cn", Type: "remote", Format: "binary",
 		URL:  "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
@@ -107,32 +102,12 @@ func TestRuleSetSourcesAreExemptFromTheOwnGate(t *testing.T) {
 	merged := buildDNS(t, ModeManual, dohViaProxy(), directlist.Rules{}, customrules.Rules{}, sets, nil)
 	parseValidate(t, merged)
 
-	// The assertion is about the outcome, not the mechanism: the gate is the only
-	// thing that rejects an unlisted destination, so being inside its allow-list
-	// is exactly "this download is not blocked". Where the traffic then goes is
-	// L4's business — proxy when an exit exists, direct when it does not.
 	gate := findPermitGate(t, routeRules(t, merged))
 	if gate == nil {
 		t.Fatal("no Permit gate in a strict config — this test would prove nothing")
 	}
-	if !allowListCovers(gate, "cdn.jsdelivr.net") {
-		t.Fatalf("the rule-set source host is not permitted, so the gateway blocks its own download:\n%v", gate)
-	}
-}
-
-// A rule set the operator disabled is not fetched, so it must not widen the
-// allow-list. An exemption that outlives its reason is just a hole.
-func TestDisabledRuleSetSourceIsNotPermitted(t *testing.T) {
-	sets := ruleset.Sets{Sets: []apitypes.RuleSet{{
-		Tag: "geosite-cn", Type: "remote", Format: "binary",
-		URL:  "https://cdn.jsdelivr.net/gh/SagerNet/sing-geosite@rule-set/geosite-cn.srs",
-		Role: apitypes.RuleRoleRouteDirect, UpdateInterval: "1d", Enabled: false,
-	}}}
-	merged := buildDNS(t, ModeManual, dohViaProxy(), directlist.Rules{}, customrules.Rules{}, sets, nil)
-	parseValidate(t, merged)
-
-	if gate := findPermitGate(t, routeRules(t, merged)); gate != nil && allowListCovers(gate, "cdn.jsdelivr.net") {
-		t.Fatal("a disabled rule set still permitted its source host")
+	if allowListCovers(gate, "cdn.jsdelivr.net") {
+		t.Fatalf("adding a rule set silently permitted all traffic to its source host:\n%v", gate)
 	}
 }
 

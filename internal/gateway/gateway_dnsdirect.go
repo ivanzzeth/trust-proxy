@@ -291,9 +291,13 @@ func pinRuleSetDomainResolver(cfg map[string]json.RawMessage) error {
 	}
 	changed := false
 	for i, rs := range sets {
+		// Two shapes reach here. A string names the shared declared client, and the
+		// resolver is pinned on the declaration instead (below) — one place, not one
+		// per set. An inline object is the operator's own download_detour, and gets
+		// pinned in place.
 		hc, isMap := rs["http_client"].(map[string]any)
 		if !isMap {
-			continue // a local rule set has no fetch to route
+			continue // a local rule set, or the shared client referenced by tag
 		}
 		if _, set := hc["domain_resolver"]; set {
 			continue
@@ -302,6 +306,9 @@ func pinRuleSetDomainResolver(cfg map[string]json.RawMessage) error {
 		rs["http_client"] = hc
 		sets[i] = rs
 		changed = true
+	}
+	if err := pinDeclaredHTTPClientResolver(cfg); err != nil {
+		return err
 	}
 	if !changed {
 		return nil
@@ -316,6 +323,41 @@ func pinRuleSetDomainResolver(cfg map[string]json.RawMessage) error {
 		return err
 	}
 	cfg["route"] = nr
+	return nil
+}
+
+// pinDeclaredHTTPClientResolver pins the direct resolver on the shared rule-set
+// HTTP client, which is where the reference belongs now that the descriptors name
+// the client by tag instead of carrying a copy of its options each.
+func pinDeclaredHTTPClientResolver(cfg map[string]json.RawMessage) error {
+	raw, ok := cfg["http_clients"]
+	if !ok {
+		return nil
+	}
+	var clients []map[string]any
+	if err := json.Unmarshal(raw, &clients); err != nil {
+		return err
+	}
+	changed := false
+	for i, c := range clients {
+		if tag, _ := c["tag"].(string); tag != ruleSetHTTPClientTag {
+			continue
+		}
+		if _, set := c["domain_resolver"]; set {
+			continue
+		}
+		c["domain_resolver"] = directResolverTag
+		clients[i] = c
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	nc, err := json.Marshal(clients)
+	if err != nil {
+		return err
+	}
+	cfg["http_clients"] = nc
 	return nil
 }
 

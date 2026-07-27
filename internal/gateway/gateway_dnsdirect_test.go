@@ -357,23 +357,44 @@ func TestRuleSetsFetchViaExplicitHTTPClient(t *testing.T) {
 		if _, legacy := rs["download_detour"]; legacy {
 			t.Fatalf("%v still uses the removed download_detour option", rs["tag"])
 		}
-		hc, ok := rs["http_client"].(map[string]any)
+		// A *declared* client referenced by tag. The two inline shapes both failed:
+		// {"detour":"direct"} is refused outright ("detour to an empty direct
+		// outbound makes no sense"), and {} is IsEmpty() upstream, which silently
+		// dials the default outbound — route.final, i.e. blocked. This assertion has
+		// held each of those broken shapes in place in turn, which is why the real
+		// proof now lives in TestRuleSetFetchesWithNoExitNode, where the box starts.
+		tag, ok := rs["http_client"].(string)
 		if !ok {
-			t.Fatalf("%v has no http_client: %v", rs["tag"], rs)
+			t.Fatalf("%v: http_client should name the shared declared client, got %#v", rs["tag"], rs["http_client"])
 		}
-		// An omitted detour *is* "dial directly". Naming the plain direct outbound
-		// is rejected outright — "detour to an empty direct outbound makes no
-		// sense" — which the deprecated download_detour accepted. This assertion
-		// used to require a non-empty detour, so it was holding the broken shape in
-		// place: the box would not start and the test was green.
-		if d, _ := hc["detour"].(string); d == "direct" {
-			t.Fatalf("%v: http_client detours to the plain direct outbound, which the box refuses: %v", rs["tag"], hc)
+		if tag != ruleSetHTTPClientTag {
+			t.Fatalf("%v: http_client = %q, want %q", rs["tag"], tag, ruleSetHTTPClientTag)
 		}
-		// This config resolves through a proxied DoH, so the direct split exists
-		// and the fetch must use it rather than the exit node's resolver.
-		if hc["domain_resolver"] != directResolverTag {
-			t.Fatalf("%v: rule-set fetch resolves via %v, want %q", rs["tag"], hc["domain_resolver"], directResolverTag)
+	}
+
+	// This config resolves through a proxied DoH, so the direct split exists and
+	// the fetch must use it rather than the exit node's resolver — pinned once on
+	// the declaration now, not once per descriptor.
+	var clients []map[string]any
+	if err := json.Unmarshal(cfg["http_clients"], &clients); err != nil {
+		t.Fatalf("no http_clients declared, so the tag above dangles: %v", err)
+	}
+	found := false
+	for _, c := range clients {
+		if c["tag"] != ruleSetHTTPClientTag {
+			continue
 		}
+		found = true
+		if _, hasDetour := c["detour"]; hasDetour {
+			t.Fatalf("the rule-set client has a detour (%v): the fetch must not depend on a node being alive, "+
+				"because a rule set that cannot be fetched on initial load is fatal", c["detour"])
+		}
+		if c["domain_resolver"] != directResolverTag {
+			t.Fatalf("rule-set fetch resolves via %v, want %q", c["domain_resolver"], directResolverTag)
+		}
+	}
+	if !found {
+		t.Fatalf("http_clients declares no %q, so every rule-set descriptor names a client that does not exist", ruleSetHTTPClientTag)
 	}
 }
 

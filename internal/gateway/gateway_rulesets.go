@@ -10,11 +10,42 @@ import (
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
+// ruleSetHTTPClientTag names the declared HTTP client that remote rule sets are
+// fetched with. See the comment at its use below for why it has to be a declared
+// tag rather than an inline object.
+const ruleSetHTTPClientTag = "rule-set-fetch"
+
+// declareRuleSetHTTPClient adds the http_clients entry that ruleSetHTTPClientTag
+// refers to, unless the operator's own config already declares that tag.
+//
+// No detour: dial directly. No other options either — every field would have to
+// be justified, and the tag alone is enough to keep the entry non-empty.
+func declareRuleSetHTTPClient(cfg map[string]json.RawMessage) error {
+	var clients []map[string]any
+	if raw, ok := cfg["http_clients"]; ok {
+		if err := json.Unmarshal(raw, &clients); err != nil {
+			return err
+		}
+		for _, c := range clients {
+			if tag, _ := c["tag"].(string); tag == ruleSetHTTPClientTag {
+				return nil // theirs wins; a duplicate tag is a hard parse error
+			}
+		}
+	}
+	clients = append(clients, map[string]any{"tag": ruleSetHTTPClientTag})
+	raw, err := json.Marshal(clients)
+	if err != nil {
+		return err
+	}
+	cfg["http_clients"] = raw
+	return nil
+}
+
 // injectRuleSets registers enabled rule_set descriptors in route.rule_set and
 // emits block-role rejects into the L1 security floor (right after the prelude).
 // Allow-role rule_sets are NOT routed here — injectAllow (L3/L4) owns both the
 // allow decision and the egress choice for them.
-func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir string, hasExit bool) error {
+func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir string) error {
 	var enabled []apitypes.RuleSet
 	for _, rs := range sets.Sets {
 		if rs.Enabled && rs.Tag != "" {
@@ -50,6 +81,7 @@ func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir s
 			seen[m.Tag] = true
 		}
 	}
+	needsSharedClient := false
 	for _, rs := range enabled {
 		if seen[rs.Tag] {
 			continue
@@ -58,40 +90,42 @@ func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir s
 		if rs.Type == "local" {
 			desc["path"] = rs.Path
 		} else {
-			// The .srs fetch dials download_detour directly (it bypasses route.rules),
-			// so under default-deny it isn't the whitelist that blocks it — a direct
-			// dial to e.g. raw.githubusercontent.com is what fails behind the GFW.
-			// When an exit is configured, download THROUGH the proxy group so the
-			// fetch crosses the GFW; otherwise fall back to direct.
-			detour := rs.DownloadDetour
-			if detour == "" {
-				detour = "direct"
-			}
-			if detour == "direct" && hasExit {
-				detour = ProxyGroupTag
-			}
 			desc["url"] = rs.URL
-			// http_client replaces both deprecations sing-box 1.14 warns about and
-			// 1.16 removes: the legacy `download_detour` option, and relying on the
-			// implicit default HTTP client.
+			// The fetch does NOT traverse route.rules — it dials whatever transport
+			// this descriptor names, so no allow-list, gate or exemption is involved.
+			// That is the whole reason this line has been wrong three times:
 			//
-			// No domain_resolver here. It used to pin dns-direct unconditionally —
-			// but that server only exists when injectDirectDNS synthesizes it, which
-			// it does only when the default resolver sits behind the proxy. On a
-			// fresh install (resolver `local`, no detour) the reference dangled and
-			// the box refused to start: "domain resolver not found: dns-direct",
-			// once per rule set. Whoever creates the server pins the reference —
-			// see injectDirectDNS, which does the same for outbounds.
-			// An omitted detour *is* "dial directly". Naming the plain direct
-			// outbound instead is rejected outright — "detour to an empty direct
-			// outbound makes no sense" — which the deprecated `download_detour`
-			// used to accept, so the migration to http_client turned a working
-			// config into one the box refuses to start.
-			hc := map[string]any{}
-			if detour != "" && detour != "direct" {
-				hc["detour"] = detour
+			//  1. `download_detour: "direct"` worked, but 1.16 removes the option.
+			//  2. `http_client: {"detour": "direct"}` is refused outright — "detour to
+			//     an empty direct outbound makes no sense".
+			//  3. `http_client: {}` parses, starts on an existing install, and dials
+			//     into `blocked` on a fresh one. Empty is load-bearing upstream:
+			//     IsEmpty() (option/http.go:54) sends resolveTransport to
+			//     DefaultTransport(), whose fallback sets DefaultOutbound (box.go:415)
+			//     — and the default outbound is route.final (adapter/outbound/
+			//     manager.go:303), which for us is `blocked`. Hence "operation not
+			//     permitted", six times, on the first switch to Split.
+			//
+			// A *declared* client referenced by tag is none of those: the tag alone
+			// makes it non-empty, and omitting detour means dial directly. It also
+			// becomes the config's default HTTP client (httpclient.NewManager falls
+			// back to clients[0]), which retires the implicit-default deprecation for
+			// every other consumer too, not just rule sets.
+			//
+			// Direct, not through the proxy group, even when an exit exists. Routing
+			// the fetch through the exit reads like an improvement (it crosses the
+			// GFW) and is a startup hazard: a rule set that cannot be fetched on
+			// *initial* load is fatal, so one dead node in an applied subscription
+			// means the gateway does not come up at all — with the reason in a log
+			// file. Reachability is handled where it belongs, by picking a mirror
+			// that answers (ruleset.ResolveSources), and an operator who really
+			// wants the proxy path can still say so per set via download_detour.
+			if d := rs.DownloadDetour; d != "" && d != "direct" {
+				desc["http_client"] = map[string]any{"detour": d}
+			} else {
+				desc["http_client"] = ruleSetHTTPClientTag
+				needsSharedClient = true
 			}
-			desc["http_client"] = hc
 			desc["update_interval"] = rs.UpdateInterval
 		}
 		raw, err := json.Marshal(desc)
@@ -106,6 +140,12 @@ func injectRuleSets(cfg map[string]json.RawMessage, sets ruleset.Sets, dataDir s
 		return err
 	}
 	route["rule_set"] = nrs
+
+	if needsSharedClient {
+		if err := declareRuleSetHTTPClient(cfg); err != nil {
+			return err
+		}
+	}
 
 	// (2) deny-role rule_sets -> reject (L1 floor), inserted right after the
 	// prelude so they sit above the ACL gate. Permit/route roles are handled
