@@ -14,7 +14,7 @@ TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
-.PHONY: help run app build build-ui build-go build-embed build-app tidy \
+.PHONY: help run app build build-ui build-go build-embed build-app check-build-owner tidy \
 	e2e-fleet e2e-linux e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
 	deps clean e2e redeploy desktop desktop-dev desktop-sidecar app-service-hint
 
@@ -89,10 +89,25 @@ ifeq ($(shell uname -s),Darwin)
 	@# of having it owned by launchd.
 	@osascript -e 'quit app "Trust Proxy"' >/dev/null 2>&1 || true
 	@pkill -f "$(APP_INSTALL)/Contents/MacOS/trust-proxy-desktop" >/dev/null 2>&1 || true
+	@# The bundle is only worth installing if its gateway carries the console: a
+	@# sidecar without one serves "dashboard not built" on every page, and there is
+	@# no dashboard/dist next to a .app for it to fall back to. The dependency
+	@# chain (app -> build-app -> desktop-sidecar -> build-embed) already ensures
+	@# this; the check is here because "the chain is right" is what everyone
+	@# believes right up until it is not.
+	@"$(APP_BUNDLE)/Contents/MacOS/trust-proxy" version --json | grep -q '"console": *true' || { \
+		echo "the bundled gateway has no console in it — refusing to install a blank app"; \
+		echo "  (that binary should come from build-embed; check desktop-sidecar)"; exit 1; }
 	@# Only ever delete something that is actually our bundle: APP_INSTALL is
 	@# overridable, and a typo must not take a directory with it.
 	@if [ -e "$(APP_INSTALL)" ] && [ ! -x "$(APP_INSTALL)/Contents/MacOS/trust-proxy-desktop" ]; then \
 		echo "refusing to replace $(APP_INSTALL): that is not a trust-proxy bundle"; exit 1; fi
+	@# An installed copy owned by root (someone ran this under sudo once) cannot be
+	@# replaced, and `rm -rf` would spray three permission errors instead of saying so.
+	@if [ -e "$(APP_INSTALL)" ] && [ ! -O "$(APP_INSTALL)" ]; then \
+		echo "$(APP_INSTALL) is owned by someone else — an earlier sudo install left it that way."; \
+		echo "remove it once, then re-run this:"; \
+		echo "    sudo rm -rf \"$(APP_INSTALL)\""; exit 1; fi
 	@rm -rf "$(APP_INSTALL)"
 	@cp -R "$(APP_BUNDLE)" "$(APP_DIR)/" || { \
 		echo "could not write to $(APP_DIR) — install it by hand:"; \
@@ -130,8 +145,28 @@ app-service-hint:
 run: build-embed
 	./trust-proxy serve
 
+## Fail early when the tree holds build output this user cannot replace.
+##
+## One `sudo make` poisons every later build: vite empties dashboard/dist and
+## Tauri removes the old .app, and neither can touch root-owned files. The error
+## you get otherwise names a file nobody recognises, three layers into a bundler.
+## Only the *daemon* needs root; building never does.
+check-build-owner:
+	@if [ "$$(id -u)" = "0" ]; then \
+		echo "don't build as root: it leaves root-owned files in the tree that your next"; \
+		echo "ordinary build cannot replace. Build as yourself; only the daemon needs root"; \
+		echo "(sudo ./trust-proxy serve / sudo ./trust-proxy service install)."; exit 1; fi
+	@bad=$$(find dashboard/dist desktop/src-tauri/target/release/bundle \
+		! -user "$$(id -un)" -print -quit 2>/dev/null); \
+	if [ -n "$$bad" ]; then \
+		echo "build output owned by someone else (a previous sudo build), e.g."; \
+		echo "    $$bad"; \
+		echo "the bundlers have to delete these and cannot. Remove them once:"; \
+		echo "    sudo rm -rf dashboard/dist desktop/src-tauri/target/release/bundle"; \
+		exit 1; fi
+
 ## Just the console -> dashboard/dist
-build-ui:
+build-ui: check-build-owner
 	cd dashboard && corepack pnpm install && corepack pnpm build
 
 ## Just the Go binary, no console inside it (fast inner loop; pair with
@@ -220,7 +255,7 @@ desktop-sidecar: build-embed
 ## a real "Developer ID Application: …" to sign for distribution.
 APPLE_SIGNING_IDENTITY ?= -
 
-build-app: desktop-sidecar
+build-app: check-build-owner desktop-sidecar
 	cd desktop && corepack pnpm install && APPLE_SIGNING_IDENTITY="$(APPLE_SIGNING_IDENTITY)" corepack pnpm build
 
 ## Older names, kept because fingers remember them.

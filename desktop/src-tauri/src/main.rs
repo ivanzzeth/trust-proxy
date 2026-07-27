@@ -150,15 +150,28 @@ fn main() {
 fn start_gateway(app: AppHandle) {
     let rt = app.state::<Runtime>();
     let api = rt.api.clone();
+    // Say what is being decided, on stderr. A GUI app that sits on its splash is
+    // otherwise a black box: twice now the only way to find out what it thought
+    // was happening was to reason about the source. Run the binary from a
+    // terminal and it explains itself.
+    log(&format!("probing {api} (data {}, sidecar {})", rt.data_dir.display(), rt.binary.display()));
 
     if healthy(&api, Duration::from_millis(700)) {
         set(&app, |s| {
             s.attached = true;
             s.healthy = true;
         });
+        log("attached to a gateway that was already running");
+        if let Some(why) = console_complaint(&api) {
+            log(&format!("refusing to show it: {why}"));
+            set(&app, |s| s.error = Some(why));
+            return;
+        }
+        log("opening the console");
         show_console(&app, &api);
         return;
     }
+    log("nothing answered; starting our own gateway");
 
     match spawn_gateway(&rt) {
         Ok(child) => {
@@ -179,6 +192,11 @@ fn start_gateway(app: AppHandle) {
     while Instant::now() < deadline {
         if healthy(&api, Duration::from_millis(500)) {
             set(&app, |s| s.healthy = true);
+            log("our gateway answered");
+            if let Some(why) = console_complaint(&api) {
+                set(&app, |s| s.error = Some(why));
+                return;
+            }
             show_console(&app, &api);
             return;
         }
@@ -209,6 +227,7 @@ fn start_gateway(app: AppHandle) {
         }
         std::thread::sleep(Duration::from_millis(300));
     }
+    log(&format!("gave up waiting for {api}"));
     set(&app, |s| {
         s.error = Some(format!("the gateway did not answer on {api} within 20s"))
     });
@@ -258,14 +277,55 @@ fn spawn_gateway(rt: &Runtime) -> Result<Child, String> {
         })
 }
 
+/// console_complaint is the message for a gateway that runs but cannot show a
+/// console, or None when there is nothing to complain about.
+fn console_complaint(api: &str) -> Option<String> {
+    if !console_is_missing(api, Duration::from_millis(1500)) {
+        return None;
+    }
+    Some(format!(
+        "the gateway on {api} is running but has no console in it \u{2014} it was built without \
+         the UI embedded. If it is the installed system service, update it:\n\n\
+         \u{20}   sudo trust-proxy service install\n\n\
+         (build it with `make build`, which embeds the console.)"
+    ))
+}
+
+/// log writes one line to stderr, which is where someone running the binary from
+/// a terminal will look, and where `macOS Console` picks it up for a bundled app.
+fn log(msg: &str) {
+    eprintln!("[trust-proxy shell] {msg}");
+}
+
+/// show_console points the window at the gateway's console.
+///
+/// It hops to the main thread first. Everything that decides *whether* to show it
+/// — probing, spawning, waiting — runs on a worker thread, because it blocks; but
+/// the webview is a WKWebView, and touching one from another thread is not an
+/// error, it simply does nothing. That is the whole "stuck on the splash" bug:
+/// the shell attached to a healthy gateway, called navigate, logged success, and
+/// the window never moved.
 fn show_console(app: &AppHandle, api: &str) {
-    if let Some(window) = app.get_webview_window("main") {
-        let url = format!("http://{api}/");
-        if let Ok(parsed) = url.parse() {
-            // Navigate the existing window rather than opening a second one: the
-            // console is the app, the splash was only ever a waiting room.
-            let _ = WebviewWindow::navigate(&window, parsed);
+    let url = format!("http://{api}/");
+    let handle = app.clone();
+    let target = url.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        let Some(window) = handle.get_webview_window("main") else {
+            log("no window to navigate — the console cannot be shown");
+            return;
+        };
+        match target.parse() {
+            Ok(parsed) => {
+                // Navigate the existing window rather than opening a second one:
+                // the console is the app, the splash was only a waiting room.
+                if let Err(e) = WebviewWindow::navigate(&window, parsed) {
+                    log(&format!("navigate to {target} failed: {e}"));
+                }
+            }
+            Err(e) => log(&format!("not a usable URL {target}: {e}")),
         }
+    }) {
+        log(&format!("could not reach the main thread to open {url}: {e}"));
     }
 }
 
@@ -339,27 +399,39 @@ fn strip_ansi(s: &str) -> String {
 }
 
 fn healthy(api: &str, timeout: Duration) -> bool {
-    // A hand-rolled probe keeps an HTTP client out of the dependency tree for one
-    // request: connect, ask, look for a 2xx status line.
+    match http_get(api, "/api/health", timeout, 64) {
+        Some(head) => head.starts_with("HTTP/1.") && (head.contains(" 200") || head.contains(" 204")),
+        None => false,
+    }
+}
+
+/// console_is_missing reports that the gateway we attached to answers, but has no
+/// console to show.
+///
+/// This happens to a gateway installed as a service from a binary built without
+/// the UI: it is healthy, the API works, and the window fills with the words
+/// "dashboard not built". Detecting it here turns that into one sentence with the
+/// command that fixes it, instead of a page the user has to interpret.
+fn console_is_missing(api: &str, timeout: Duration) -> bool {
+    match http_get(api, "/", timeout, 512) {
+        Some(body) => body.contains("dashboard not built"),
+        None => false,
+    }
+}
+
+/// http_get is a hand-rolled request: one HTTP client is not worth a dependency,
+/// and both callers only need the first few hundred bytes of the response.
+fn http_get(api: &str, path: &str, timeout: Duration, limit: usize) -> Option<String> {
     use std::io::{Read, Write};
     use std::net::TcpStream;
-    let addr = match api.parse() {
-        Ok(a) => a,
-        Err(_) => return false,
-    };
-    let mut stream = match TcpStream::connect_timeout(&addr, timeout) {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
+    let addr = api.parse().ok()?;
+    let mut stream = TcpStream::connect_timeout(&addr, timeout).ok()?;
     let _ = stream.set_read_timeout(Some(timeout));
-    let req = format!("GET /api/health HTTP/1.0\r\nHost: {api}\r\nConnection: close\r\n\r\n");
-    if stream.write_all(req.as_bytes()).is_err() {
-        return false;
-    }
-    let mut buf = [0u8; 64];
+    let req = format!("GET {path} HTTP/1.0\r\nHost: {api}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).ok()?;
+    let mut buf = vec![0u8; limit];
     let n = stream.read(&mut buf).unwrap_or(0);
-    let head = String::from_utf8_lossy(&buf[..n]);
-    head.starts_with("HTTP/1.") && (head.contains(" 200") || head.contains(" 204"))
+    Some(String::from_utf8_lossy(&buf[..n]).into_owned())
 }
 
 fn data_dir() -> PathBuf {
@@ -479,7 +551,7 @@ fn open_console(app: AppHandle, rt: State<Runtime>) {
 /// install_service hands the privileged half to the CLI, through exactly one
 /// admin prompt. The shell itself never runs as root.
 #[tauri::command]
-fn install_service(rt: State<Runtime>) -> Result<String, String> {
+fn install_service(app: AppHandle, rt: State<Runtime>) -> Result<String, String> {
     let cmd = format!(
         "{} service install -c {} --data {} --api-addr {} --json",
         shell_quote(&rt.binary.display().to_string()),
@@ -487,7 +559,55 @@ fn install_service(rt: State<Runtime>) -> Result<String, String> {
         shell_quote(&rt.data_dir.display().to_string()),
         shell_quote(&rt.api),
     );
-    admin(&cmd)
+
+    // Stand aside first. If this window started the gateway, that process holds
+    // the API port and the data directory — the service would fail to bind, and
+    // KeepAlive would then retry a doomed exec at every boot while the app still
+    // looked fine, because our own gateway was answering all along.
+    let ours = app.state::<Gateway>();
+    let we_had_one = ours.0.lock().map(|g| g.is_some()).unwrap_or(false);
+    if we_had_one {
+        log("stopping the gateway this window started, so the service can take the port");
+        ours.shutdown();
+    }
+
+    match admin(&cmd) {
+        Ok(out) => {
+            // The service is what owns the data plane now; wait for it and show its
+            // console, rather than leaving the window on a gateway that just exited.
+            let deadline = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < deadline && !healthy(&rt.api, Duration::from_millis(500)) {
+                std::thread::sleep(Duration::from_millis(300));
+            }
+            set(&app, |s| {
+                s.spawned = false;
+                s.attached = true;
+                s.healthy = true;
+                s.service_installed = true;
+                s.service_running = true;
+                s.error = None;
+            });
+            log("installed; attached to the service's gateway");
+            show_console(&app, &rt.api);
+            Ok(out)
+        }
+        Err(e) => {
+            // Declined or failed: put back what was there, or the user is left with
+            // no gateway at all because they said no to a prompt.
+            if we_had_one {
+                log("install failed; restarting the gateway this window had");
+                match spawn_gateway(&rt) {
+                    Ok(child) => {
+                        if let Ok(mut slot) = app.state::<Gateway>().0.lock() {
+                            *slot = Some(child);
+                        }
+                    }
+                    Err(e2) => log(&format!("could not restart it: {e2}")),
+                }
+            }
+            Err(e)
+        }
+    }
 }
 
 #[tauri::command]
@@ -667,6 +787,41 @@ mod tests {
         // PowerShell strings also interpolate nothing, which is what a path wants.
         assert_eq!(powershell_string("it's"), "'it''s'");
         assert_eq!(powershell_string("$env:PATH"), "'$env:PATH'");
+    }
+
+    // A gateway that is up but has no console is the failure this catches; the
+    // page it serves is the only signal, so the detection is a string match and
+    // deserves a test that the string is the right one.
+    #[test]
+    fn a_console_less_gateway_is_recognised_and_explained() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        let server = TcpListener::bind("127.0.0.1:0").unwrap();
+        let api = server.local_addr().unwrap().to_string();
+        std::thread::spawn(move || {
+            for conn in server.incoming().take(1) {
+                let mut c = conn.unwrap();
+                let mut buf = [0u8; 256];
+                let _ = c.read(&mut buf);
+                let body = "trust-proxy dashboard not built.\nRun: make dashboard";
+                let _ = c.write_all(
+                    format!(
+                        "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .as_bytes(),
+                );
+            }
+        });
+        let why = console_complaint(&api).expect("a console-less gateway must be reported");
+        assert!(why.contains("service install"), "no fix offered: {why}");
+    }
+
+    #[test]
+    fn a_gateway_that_is_not_there_is_not_reported_as_console_less() {
+        // Nothing listening: that is the "still starting" path, not a complaint.
+        assert!(console_complaint("127.0.0.1:9").is_none());
     }
 
     #[test]

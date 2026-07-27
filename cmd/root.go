@@ -30,5 +30,6 @@ func init() {
 		authCmd, apikeyCmd, userCmd, requestCmd,
 	}
 	addClientFlags(clients...)
-	rootCmd.AddCommand(append(clients, serveCmd, connCmd, proxyCmd, serviceCmd, selftestCmd)...)
+	rootCmd.AddCommand(append(clients, serveCmd, connCmd, proxyCmd, serviceCmd, selftestCmd, versionCmd)...)
+	versionCmd.Flags().BoolVar(&jsonOut, "json", false, "print the raw JSON response instead of a table")
 }

@@ -16,6 +16,15 @@ make desktop-dev # 开发运行（贴附已在跑的网关）
     update it too:  sudo ./trust-proxy service install --mode tun -y
 ```
 
+**`make app` 不带 sudo，那 TUN 还能用吗？能 —— TUN 不是 app 给的。** 壳以你的身份跑（GUI 不该是 root），网关才需要 root：
+
+| 机器上的状态 | app 做什么 | TUN |
+|---|---|---|
+| 已有 root 网关在跑（系统服务，或你 `sudo serve`） | **贴附**上去 | ✅ 由那个网关提供 |
+| 什么都没跑 | 以**你的身份**拉起一个 sidecar | ❌ `can_tun:false`，控制台里 TUN 按钮直接给提权引导，而不是切到一半失败 |
+
+所以要长期用 TUN 就装系统服务：launchd 拿着 root 网关，app 只是窗口，关窗不掉策略、重启自恢复。壳上那个「Install system service…」按钮就是拿一次管理员授权去跑同一条 CLI。**装之前它会先停掉自己拉起的那个网关** —— 否则端口和数据目录被占着，服务起不来，`KeepAlive` 会永远重试一个注定失败的进程，而窗口里一切正常（因为你看的是它自己那个网关）。装失败/你点了取消，它把原来那个再拉回来。
+
 **同一个壳，三种提权方式**——壳本身在哪都不是 root，它只是请系统以 root 跑同一条 CLI 命令，再读回 CLI 自己的 JSON。这样「装出来的东西」不取决于是谁问的：
 
 | 平台 | 提权 | 服务 | 机器级数据目录 |

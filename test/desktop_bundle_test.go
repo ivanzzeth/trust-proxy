@@ -162,6 +162,33 @@ func TestDesktopShellAttachesToARunningGateway(t *testing.T) {
 	if code := status(t, "http://"+api+"/api/health"); code != http.StatusOK {
 		t.Fatalf("the gateway we started is no longer answering (%d) — the shell interfered with it", code)
 	}
+	// Attaching is not the deliverable — showing the console is. This assertion is
+	// here because its absence hid a real bug: the shell probed, attached, logged
+	// "opening the console" and left the user on the splash forever, because
+	// navigate() was called from a worker thread and a WKWebView touched off the
+	// main thread simply does nothing. "No second gateway" was true the whole time.
+	if !consoleLoaded(t, api, 20*time.Second) {
+		t.Fatalf("nothing ever connected to %s from the app: the window attached but never "+
+			"loaded the console", api)
+	}
+}
+
+// consoleLoaded waits for something other than this test to hold a connection to
+// the gateway's API — which, with a console open, is the webview polling it.
+func consoleLoaded(t *testing.T, api string, within time.Duration) bool {
+	t.Helper()
+	port := api[strings.LastIndex(api, ":")+1:]
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		out, _ := exec.Command("lsof", "-nP", "-iTCP:"+port).CombinedOutput()
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(line, "ESTABLISHED") {
+				return true
+			}
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
 }
 
 // ---- helpers --------------------------------------------------------------
