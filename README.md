@@ -4,38 +4,63 @@
 
 出网流量经 trust-proxy → **默认拒绝**（黑名单追不完，只有许可制才卡死木马向任意 C2 回传）→ **检测**异常出网（威胁情报、beaconing、DGA/DNS 隧道、异常大上传=疑似外泄、JA4 指纹）→ 经订阅或自建节点出口。
 
-一个二进制，三种角色：
+一个二进制，两种角色：
 
 | 角色 | 命令 | 说明 |
 |---|---|---|
-| **客户端网关** | `trust-proxy serve` | mixed 入站(:21584) + 策略 + 检测 + 控制台/API(:21585) |
-| **TUN 全流量网关** | `sudo trust-proxy serve -c configs/config.tun.json` | 网络层接管**所有**流量（木马裸 socket 也逃不掉），需 root |
+| **网关** | `sudo trust-proxy install` | 装成系统服务：mixed 入站(:21584) + 策略 + 检测 + 控制台/API(:21585)，可切 TUN 全流量接管 |
 | **代理服务端（出口节点）** | `trust-proxy proxy gen` / `proxy run` | 自建任意协议出口节点 |
 
 ## 快速开始
 
-依赖：Go 1.24.7+、Node 20+ / pnpm（构建控制台）。
+拿到二进制（[Releases](https://github.com/ivanzzeth/trust-proxy/releases) 里的单文件已自带控制台），**一条命令**：
+
+```bash
+sudo trust-proxy install
+```
+
+装完就是：以 root 跑、数据在机器级目录、**开机自启**、挂了自动重启，而且**已经认领好了** —— 第一个管理员账号建好，它的 API key 写进你（`sudo` 背后那个人）的家目录，所以下一条命令不用 export 任何东西：
+
+```
+✓ installed /etc/systemd/system/trust-proxy.service
+  program: /usr/local/libexec/trust-proxy
+  data:    /var/lib/trust-proxy
+
+✓ claimed as "ivan"; the API key is in /home/ivan/.config/trust-proxy/credentials.json
+  the CLI works now — try:  trust-proxy status
+
+  console: http://127.0.0.1:21585/
+  remove it with: sudo trust-proxy uninstall
+```
+
+控制台 **http://127.0.0.1:21585/**，TUN 在里面一键切换（服务是 root，所以真的切得动，且有死亡开关自动回滚）。要开机就进 TUN：`sudo trust-proxy install --mode tun`。
+
+**只有一个网关，只有一个数据目录**，机器级：`/var/lib/trust-proxy`（Linux）/ `/Library/Application Support/trust-proxy`（macOS）/ `%ProgramData%\trust-proxy`（Windows）。里面有订阅、策略、历史、`cache.db`，**以及配置本身**（`<data>/config.json`，首启从编译进二进制的默认值种下，之后就是你的，升级绝不覆盖）。家目录里唯一的东西是那份**凭据**（`~/.config/trust-proxy/credentials.json`），它是密钥不是状态。
+
+> 早先有过「用户级网关」（`~/.trust-proxy` + `trust-proxy serve`），**已删除**。它做不了 TUN（要 root）、关掉终端就没了，而任何人 `sudo` 跑过一次，那个目录就归 root，之后非 root 的进程再也写不进去。升级时 `install` 会把旧目录里的策略**拷**过来一次（拷贝，不移动）。`serve` 还在，但它是服务管理器调用的内部命令。
+
+从源码构建（Go 1.24.7+、Node 22+ / pnpm）：
 
 ```bash
 make deps            # 首次：git submodule update --init --recursive（拉 sing-box）
-make build           # 一键出全套：控制台 → 内嵌 UI 的单二进制 → 桌面 app
+make build           # 全套：控制台 → 内嵌 UI 的单二进制 → 桌面 app
                      #（机器上没有 cargo 就只出二进制并说明，服务器上正合适）
-make app             # 构建 + 装进 /Applications + 打开（桌面端一条命令）
-make                 # 不带参数 = 列出所有目标，build-* 是各个单独的部分
-./trust-proxy serve            # 前台
-./trust-proxy serve --daemon   # 后台（停止：proxy stop --pid ~/.trust-proxy/serve.pid）
+make                 # 不带参数 = 列出所有目标
 ```
 
-控制台：**http://127.0.0.1:21585/**（`serve` 启动日志会打印）。第一次打开先**建首个管理员**（自动成为 admin）；在网关本机上填用户名密码即可，从别的机器打开还需要启动日志里那个一次性认领码。没有浏览器的服务器上用 CLI：
+### 账号
+
+`install` 已经把第一个管理员建好了。它的登录密码是随机的（工作凭据是那把 API key），想从别的浏览器登录就自己设一个：`trust-proxy user passwd <你>`。
+
+没有 `install` 的场景（比如一台已经在跑、还没人认领的远程网关）：
 
 ```bash
-trust-proxy auth bootstrap <用户名>                            # 本机（密码交互输入）
-trust-proxy auth bootstrap <用户名> --api-addr <host>:21585 --code …   # 远程（码在启动日志里）
+trust-proxy auth bootstrap <用户名>                                   # 在网关本机上（loopback 即凭据）
+trust-proxy auth bootstrap <用户名> --api-addr <host>:21585 --code …  # 远程，码在启动日志里
+trust-proxy auth login <用户名>                                       # 换一把 key 存到本机
 ```
 
-**在有人认领之前 `/api/*` 是开放的**（否则全新安装没法初始化），`serve` 会把这件事明说在日志里。账号、两种密码（登录 / 走代理）、API key、注册开关见 [docs/operations.md](docs/operations.md#账号与权限)。
-
-**数据目录**默认 `~/.trust-proxy`：订阅/策略/历史/`cache.db`/`clash-secret`，**以及配置本身**（`<data>/config.json`，首启自动种下，仓库里 `configs/config.json` 是它唯一的来源模板）。`--data <dir>` 换目录，`-c` 显式指定别的配置（如 `configs/config.tun.json`）。**同一数据目录勿并跑两实例**（bolt 单写锁）。
+**未认领的网关只对 loopback 开放** —— 在机器上就是凭据；从网络上只有 `/api/auth/state` 和带一次性码的 bootstrap 能通，其余一律 401。账号、两种密码（登录 / 走代理）、API key、注册开关见 [docs/operations.md](docs/operations.md#账号与权限)。
 
 ## 安全模型：Permit ⊥ Route
 
@@ -50,38 +75,39 @@ trust-proxy auth bootstrap <用户名> --api-addr <host>:21585 --code …   # �
 
 **铁律**：Route 永不开闸，Permit 永不选出口。第三条铁律是 **DNS 必须跟随 Route**——解析器的出网路径要和流量一致，否则国内站点会被解析到境外边缘节点再直连过去（实测 taobao 15.8s → 修复后 0.2s）。详见 [CLAUDE.md](./CLAUDE.md)。
 
-## 桌面端（macOS / Linux / Windows）
+## 桌面端
+
+壳很薄：一个窗口加一次授权。**它不自己跑网关** —— 打开时问二进制 `env --json`，然后只有四种结局：
+
+| 机器上是什么 | 壳做什么 |
+|---|---|
+| 系统服务在跑，版本一致 | 贴附，**零提示**直接进已登录的控制台 |
+| 服务在跑但比 app 旧 | 「Update」按钮 —— 一次系统授权就换掉 daemon（否则升级是静默空操作：新 app 贴到旧 daemon 上，每一页看起来都对） |
+| 端口上有网关但不是服务 | 「接管并装成系统服务」 |
+| 什么都没有 | 「Set up」 |
+
+三种结局都是同一条 `install`，所以都是一次系统授权、零敲命令。提权方式各平台不同（macOS `osascript` / Linux `pkexec` / Windows UAC），壳本身从不是 root。
 
 ```bash
-make build-app   # 只打包 app（`make build` 已经包含它）：.app+.dmg / .deb+.AppImage / .msi+.nsis
+make build-app   # .app+.dmg / .deb+.AppImage / .msi+.nsis
 ```
 
-壳只负责开窗和生命周期，UI 就是网关 serve 的控制台；已有网关在跑则**贴附**而不再起一个。
+**macOS 已在真机验证**（`make e2e-macos` 在 tart VM 里跑真 launchd + 真 TUN）。**Linux / Windows 桌面尚未验证，CI 也还不出桌面包** —— 这两个平台今天请走上面那条命令行，装好之后 app 打开就是零提示贴附。细节与状态见 [docs/desktop.md](docs/desktop.md)。
 
 **app 未签名**（也不打算签）：自己构建的双击即开；下载来的需放行一次 —— `xattr -dr com.apple.quarantine "/Applications/Trust Proxy.app"`，或系统设置 → 隐私与安全性 →「仍要打开」。
-
-同一个壳，各平台各自提权（macOS `osascript` / Linux `pkexec` / Windows UAC）——壳本身从不是 root，只请系统以 root 跑同一条 CLI。
-
-TUN 需要 root → 装成系统服务（服务管理器拥有 daemon，关窗不掉策略）：
-
-```bash
-sudo trust-proxy service install     # launchd / systemd / SCM，取决于平台
-sudo trust-proxy service uninstall   # 逃生口
-```
-
-服务默认用**机器级**数据目录（`/Library/Application Support/trust-proxy`、`/var/lib/trust-proxy`、`%ProgramData%\trust-proxy`）；已有 `~/.trust-proxy` 数据时会问一句要不要拷过去（拷贝，不移动）。
-
-细节见 [docs/desktop.md](docs/desktop.md)。
 
 ## CLI / SDK
 
 控制台能做的，命令行都能做；每个子命令都有 `--json`，`--api-addr`/`--api-token` 可指向本机或远程探针。
 
 ```
-status | auth | user | apikey | request | acl | rules | dns | mode | routing | posture | final | profile | proxies | groups
+install | uninstall | env | status | auth | user | apikey | request
+acl | rules | dns | mode | routing | posture | final | profile | proxies | groups
 endpoints | tun | inbound | autoblock | detect | detections | quarantine | netcheck | history
-node | sub | conn | proxy gen|run|stop | service install|uninstall|status
+node | sub | conn | proxy gen|run|stop | service status
 ```
+
+`env` 是这台机器的唯一事实源（目录、权限、`can_tun`、服务状态、跑的是哪个 build、本平台怎么提权、**下一步该干什么**）。桌面壳就是读它，不自己算。
 
 SDK 两层：`pkg/clash`（标准 Clash API 原语，可复用于任何 sing-box/mihomo/clash）+ `pkg/client`（本项目 `/api` 的易用封装，组合 clash）；wire 类型只在 `pkg/apitypes`。
 

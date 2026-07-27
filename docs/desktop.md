@@ -1,52 +1,43 @@
 # 桌面端（macOS / Linux / Windows）
 
+> **状态**：macOS 在真机验证过（`make e2e-macos` 在 tart VM 里跑真 launchd + 真 TUN，`make e2e-desktop` 检查打出来的 `.app`）。**Linux / Windows 桌面尚未验证**，CI 也还不出桌面包 —— 这两个平台今天请用 `sudo trust-proxy install`，装完 app 打开就是零提示贴附。见文末「还没做」。
+
 ```bash
-make app         # 构建 + 安装 + 打开（用 app 就这一条）
+make app         # 构建 + 安装 + 打开（目前只有 macOS 会真的安装；其它平台只跑一下 target/release 里的开发二进制）
 make build       # 全套：控制台 → 内嵌 UI 的单二进制 → 当前平台的 app
 make build-app   # 只重打 app（macOS: .app + .dmg / Linux: .deb + .AppImage / Windows: .msi + .nsis）
 make desktop-dev # 开发运行（贴附已在跑的网关）
 ```
 
-`make app` 会先**退掉正在跑的那份再替换** —— `open` 一个已经在运行的 bundle 只是把旧进程调到前台，你会对着旧代码以为是新的（端口改号后那个卡在启动页的 app 就是这么来的）。装完还会检查一件事：**系统服务里跑的二进制如果比刚构建的旧**，就把这行打出来，因为壳会贴附到那个旧网关、窗口里一切看起来都正常：
+`make app` 会先**退掉正在跑的那份再替换** —— `open` 一个已经在运行的 bundle 只是把旧进程调到前台，你会对着旧代码以为是新的（端口改号后那个卡在启动页的 app 就是这么来的）。它还会在装完提醒一句「系统服务里跑的二进制比刚构建的旧」；这个提醒后来长进了产品本身，见下面的 `update` 一态 —— 开发机上的 Makefile 提示解决不了用户下载一个新版本的情况。
 
-```
-==> note: the installed service still runs an older gateway:
-      /usr/local/libexec/trust-proxy (v0.8.0-12-ge257201-dirty)
-    the app attaches to that one, so the window would show the old code.
-    update it too:  sudo ./trust-proxy service install --mode tun -y
-```
+**app 从不以 root 跑，TUN 也不是它给的。** 壳是一个窗口加一次授权；网关是系统服务，root 由服务管理器持有。
 
-**`make app` 不带 sudo，那 TUN 还能用吗？能 —— TUN 不是 app 给的。** 壳以你的身份跑（GUI 不该是 root），网关才需要 root：
+打开 app 之后只有四种结局，全部由 `trust-proxy env --json` 的 `action` 字段决定 —— **壳不自己判断**：
 
-| 机器上的状态 | app 做什么 | TUN |
+| `action` | 机器上是什么 | 壳给什么 |
 |---|---|---|
-| 已有 root 网关在跑（系统服务，或你 `sudo serve`） | **贴附**上去 | ✅ 由那个网关提供 |
-| 什么都没跑 | 以**你的身份**自动拉起一个 sidecar（`--exit-with-pid`，关窗即停，不留孤儿） | ❌ `can_tun:false`，控制台里 TUN 按钮直接给提权引导，而不是切到一半失败 |
+| `attach` | 系统服务在跑，且和这个 app 同一个 build | 直接开控制台，**零提示**，而且是已登录的（一次性 ticket 换 cookie） |
+| `update` | 服务在跑，但**比这个 app 旧** | 「Update the gateway…」 |
+| `takeover` | 端口上有网关，但不是托管副本（终端里手起的、或旧版本留下的） | 「Take over and set up…」 |
+| `install` | 什么都没有 | 「Set up…」／「Set up, with TUN capture…」 |
+| `repair` / `unsupported` | 装了没跑 / 本平台没实现服务 | 说清楚，并给出唯一能做的事 |
 
-自动拉起用的数据目录就是 CLI 那个（`~/.trust-proxy`）。**如果你以前 sudo 跑过网关**，那个目录属于 root，app 写不进去、起不来 —— 这时它不会甩 `Permission denied (os error 13)`，而是把两条出路都说出来：装系统服务（让 root 名正言顺地拥有它），或 `sudo chown -R "$USER" ~/.trust-proxy` 把目录要回来。
+后四种跑的是**同一条 `sudo trust-proxy install`**（它幂等，重跑就是升级），所以一律是**一次系统授权、零敲命令**。任何时候都还有一个「Open the console anyway」—— 一个陈旧或陌生的网关是在跑着的、能用的，不该变成一堵墙。
 
-所以要长期用 TUN 就装系统服务：launchd 拿着 root 网关，app 只是窗口，关窗不掉策略、重启自恢复。壳上那个「Install system service…」按钮就是拿一次管理员授权去跑同一条 CLI。**装之前它会先停掉自己拉起的那个网关** —— 否则端口和数据目录被占着，服务起不来，`KeepAlive` 会永远重试一个注定失败的进程，而窗口里一切正常（因为你看的是它自己那个网关）。装失败/你点了取消，它把原来那个再拉回来。
+为什么 `update` 值得单独一态：没有它，升级是**静默空操作** —— 新 app 探到健康网关就贴附，显示旧 daemon 的控制台，每一页都对，新二进制一次没被用上。`/api/health` 因此对 loopback 报自己的 version 和「我是不是托管副本」（对外网不报：给未认证的扫描器一个精确版本号是白送打靶信息）。
 
-**同一个壳，三种提权方式**——壳本身在哪都不是 root，它只是请系统以 root 跑同一条 CLI 命令，再读回 CLI 自己的 JSON。这样「装出来的东西」不取决于是谁问的：
+**壳不跑网关。** 它曾经会：没人应答就以登录用户身份拉起 sidecar。那个网关是假的——没有 TUN（要 root）、关窗即死、还往 `~/.trust-proxy` 写文件，于是任何人 `sudo` 跑过一次之后，目录归 root，app 再也起不来。整条路径连同那段「你的数据目录不可写」的道歉信一起删了 —— 那个状态本来就是它自己造的。
 
-| 平台 | 提权 | 服务 | 机器级数据目录 |
-|---|---|---|---|
-| macOS | `osascript … with administrator privileges` | launchd LaunchDaemon | `/Library/Application Support/trust-proxy` |
-| Linux | **`pkexec`**（polkit） | systemd unit | `/var/lib/trust-proxy` |
-| Windows | **RunAs**（UAC） | 服务控制管理器(SCM) | `%ProgramData%\trust-proxy` |
+## 一条不变量：一台机器一个网关
 
-Linux 上**故意不拿 `sudo` 兜底**：GUI 里没有终端可以问密码，结果要么静默失败，要么在配了免密 sudo 的机器上**不弹任何提示就提权**。没有 pkexec 时壳直接告诉你去终端敲哪条命令。
+两个 `serve` 共用一个数据目录会抢 `cache.db`（bolt 单写锁）和端口，而你看着的那个不一定是正在管流量的那个。所以壳只贴附或安装，从不新起；`install` 会把占着 API 端口的那个先停掉，并且等它**进程真的退出** —— 只等端口释放的话，旧网关还在收尾、新服务已经绑上，中间那段两个进程共用一把锁。
 
-壳很薄：**只负责开窗和进程生命周期**，UI 就是网关自己在 `:21585` serve 的那个控制台。策略/检测一行都不在 Rust 里——否则一周内就会和 CLI 漂移。
+停它的时候按可靠性依次问三处：**问网关自己**（`/api/health` 对 loopback 报 pid）→ pid 文件 → 问操作系统谁在监听。以前只有中间那一条，而终端里手起的网关根本不写 pid 文件，**且失败时会把已有的那份删掉** —— 单向棘轮，每重试一次少一条线索，最后把人赶回命令行。
 
-## 两条不变量
+（以前还有第二条「绝不留孤儿」，靠 `serve --exit-with-pid` 让子进程盯着壳的 pid。壳不再有子进程了，这条随之消失 —— 最好的不变量是**没有那个东西**。）
 
-| 不变量 | 为什么 | 怎么做 |
-|---|---|---|
-| **绝不起第二个网关** | 两个 `serve` 同数据目录会抢 `cache.db`（bolt 单写锁）和端口 | 先探 `/api/health`：有网关在跑就**贴附**（launchd 装的、终端里手起的都算），只有没人应答才拉起自己的 sidecar |
-| **绝不留孤儿** | 关窗/强退后数据面还在跑 = 用户以为关了其实还在管流量 | 正常退出杀子进程；**SIGKILL/崩溃根本不跑回调**（实测 SIGTERM 掉壳后网关还活着），故 `serve --exit-with-pid <ppid>` 让子进程盯父进程 |
-
-配置由**网关自己**解析和种下（`<data>/config.json`，已存在绝不覆盖）——壳既不传 `-c` 也不自带一份默认 JSON。它曾经两样都做，于是 CLI 和 app 各有一套默认值；见 [`operations.md`](operations.md)「配置在哪」。起不来时把网关日志里最后一条错误**原样引到界面上**——最常见的是 21584 被别的代理占了，说清楚十秒能修。
+想连那一次授权都省掉：走系统安装器（`.pkg` / `.deb` / `.msi`），安装器本身是提权的，服务在**装的时候**就位，之后双击 app 永远零提示。这也是 CI 该出的包（还没出，见文末）。
 
 ## 安装：app 没有签名（也不打算签）
 
@@ -73,12 +64,12 @@ ad-hoc 签名形态、真要签名/公证的完整流程见 [`release-macos.md`]
 GUI 不该是 root，所以提权交给系统 —— launchd 拥有 daemon，壳只贴附（关窗不掉策略、开机自启）：
 
 ```bash
-sudo trust-proxy service install     # LaunchDaemon；配置默认 <data>/config.json
-trust-proxy service status        # 装了没 / 在跑没 / 指向哪个二进制
-sudo trust-proxy service uninstall   # 逃生口，任何状态都能收干净、幂等
+sudo trust-proxy install      # 装 + 启动 + 开机自启 + 认领（幂等，重跑就是升级）
+trust-proxy env               # 这台机器是什么状态、下一步该干什么
+sudo trust-proxy uninstall    # 逃生口，任何半装状态都能收干净、幂等，数据一行不动
 ```
 
-app 上的按钮就是拿一次管理员授权跑上面这条 CLI（`osascript ... with administrator privileges`）。
+app 上的按钮就是拿一次管理员授权跑上面第一条 CLI（macOS 走 `osascript ... with administrator privileges`）——**同一条命令**，所以装出来的东西不取决于是谁问的。
 
 **防板砖三条**：
 
@@ -93,14 +84,16 @@ app 上的按钮就是拿一次管理员授权跑上面这条 CLI（`osascript .
 三条路径共用同一套 `Config` 和同一批防板砖规则（托管副本、一条命令卸干净、install 不会顺手开 TUN）：
 
 ```bash
-sudo trust-proxy service install     # macOS launchd / Linux systemd / Windows SCM（Windows 需管理员命令行）
-trust-proxy service status           # 装了没 / 在跑没 / 指向哪个二进制（--json 里字段名是 file）
-sudo trust-proxy service uninstall   # 逃生口
+sudo trust-proxy install      # macOS launchd / Linux systemd / Windows SCM（Windows 需管理员命令行）
+trust-proxy service status    # 装了没 / 在跑没 / 指向哪个二进制（--json 里字段名是 file）
+sudo trust-proxy uninstall    # 逃生口
 ```
+
+（`service install` / `service uninstall` 作为隐藏别名保留，老笔记和脚本还能用。）
 
 - **Linux**：写 `/etc/systemd/system/trust-proxy.service` 并 `enable --now`。`Restart=always` 对应 launchd 的 `KeepAlive`；只挂 `After=network.target`，**绝不等 `network-online.target`**——在「我们就是网络出口」的机器上那个 target 可能永远不到，网关就永远不启动。ExecStart 里的路径是**带引号**的：systemd 按空白拆参数并展开 `%` 说明符，`/home/ivan/My Gateway/data` 不加引号会被拆成两个参数，然后网关用错的数据目录起来了，还不报错。TUN 所需能力用 `AmbientCapabilities` 精确给（`CAP_NET_ADMIN`/`NET_RAW`/`NET_BIND_SERVICE`），其余丢掉。
 - **Windows**：SCM 服务不是「系统帮你起的进程」——它必须回报 Running 并处理 Stop，否则启动超时后被 SCM 杀掉（表现为「服务起不来」，且哪个日志里都没线索）。所以服务是用 `serve --windows-service` 启的；Stop 时先让网关收尾再报 Stopped（TUN 模式下有一张网要还原，中途被杀就是一台没有路由的机器）。失败自动重启 = SCM 的 recovery actions。
-- **数据目录**：`service install` 默认用**机器级**目录（boot 时可能还没人登录，家目录未必可读）。若检测到你已有 `~/.trust-proxy` 数据，会**问一句要不要拷过去**——拷贝而非移动，服务不合用时你还有一个能跑的个人网关；`cache.db`（bolt 单写锁）和 pid/log 刻意不拷。
+- **数据目录**：只有机器级一个（boot 时可能还没人登录，家目录未必可读）。旧的 `~/.trust-proxy` 会被 `install` **一次性收编**（拷贝不移动，已有的不覆盖，只拷 `*.json` 策略）。**不问**——这条命令一半时间跑在没有终端的授权框后面，一个没人能回答的问题就是一次失败的安装。
 
 回归测试（缺依赖一律 **skip 而非失败**）：
 
@@ -114,4 +107,12 @@ sudo trust-proxy service uninstall   # 逃生口
 
 ## 还没做
 
-代码签名/公证（**已决定不做**）、自动更新、菜单栏/托盘常驻。**Windows 的提权与服务代码尚未在真 Windows 上跑过**（这里没有 Windows 机器）——三平台都能编译、vet 通过，纯字符串部分（参数表、引号处理）有跨平台单测。见 `docs/TODO.md` #4。
+代码签名/公证（**已决定不做**）、自动更新、菜单栏/托盘常驻。
+
+**Linux / Windows 桌面还不算做完**，三件事：
+
+1. **CI 不出桌面包** —— 只出 4 个 CLI 二进制，所以没有可下载的 Linux/Windows app。
+2. **`.deb` / `.msi` 的 postinst 里应该顺手把服务装好** —— 安装器本身是提权的，那样 app 首次打开也是零提示，比 macOS 的拖拽安装还顺。
+3. **AppImage + pkexec 没验证**：sidecar 在 `/tmp/.mount_*` 的 FUSE 挂载里，root 大概率读不到（推断，未实测）。`bundle.targets` 现在是 `"all"`，会出一个可能打不开的包 —— 要么验证要么去掉。
+
+`cargo test` 已经进 CI（`.github/workflows/test.yml`），因为壳的提权是 `cfg(target_os)` 分支：**Linux 那段 pkexec 代码在 macOS 开发机上一次都没被编译过**。Windows 的提权与服务代码同样没在真 Windows 上跑过。见 `docs/TODO.md` #4。

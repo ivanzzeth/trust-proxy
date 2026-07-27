@@ -110,9 +110,23 @@ sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 
 **为什么单进程**：深度检测（挂 tracker、镜像连接、自定义 outbound）必须和 sing-box 同进程；
 纯元数据检测才可跨机。将来若要「一个控制台管多节点」，用「探针(数据面)+大脑(分析/UI)」分离，探针仍是本二进制。
 
+### 一台机器一个网关（**铁律**）
+
+网关以 **root/SYSTEM** 跑、由服务管理器托管、开机自启，数据在**机器级**目录（`/var/lib/trust-proxy` / `/Library/Application Support/trust-proxy` / `%ProgramData%\trust-proxy`）。这不是若干形态里的一种，是唯一一种，入口只有 `sudo trust-proxy install`。
+
+曾经还有一种「用户级网关」（`~/.trust-proxy` + `trust-proxy serve`），**已删除**。它做不了 TUN（要 root）、随起它的终端/窗口而死，而只要有人 `sudo` 跑过一次，那个目录就归 root——之后非 root 的进程（桌面壳）再也写不进去，症状是「app 打不开」而原因在三步之外。「macOS 能用、Linux 一碰就炸」就是它：Linux 上 TUN 基本只能 root，所以那条被污染的路径是常态而不是边角。
+
+由此派生的规矩：
+- `paths.Data()` 是唯一数据目录，`paths.UserData()` **不存在**。家目录里只剩**凭据**（`paths.CredentialsFileFor`），是密钥不是状态。
+- `serve` 是 hidden 的，它是服务管理器 exec 的东西。非特权直接敲它会指向 `install`。`--data` 只作运维/测试覆盖。
+- `install` **幂等，重跑就是升级**（换托管副本 + 重启服务）；它要**把活干完**——收编旧数据、注册服务、等它应答、认领并把 API key 交给 `SUDO_USER`。半装的机器不算装好。
+- 任何会 refuse 的检查都排在任何写操作**之前**。（踩过：console 检查排在种配置之后，于是被拒绝的 install 仍留下一个 config.json，害得下次收编被跳过。）
+
 ### 单一二进制 + CLI/SDK 分层
-一个二进制既是后端也是 CLI 客户端，靠子命令区分：
-- `trust-proxy serve` — 跑网关（sing-box 数据面 + detection + 我们的后端 `/api`）。
+一个二进制既是网关也是 CLI 客户端，靠子命令区分：
+- `install` / `uninstall` — 把网关装上这台机器 / 拆干净（本地、特权，不接受 `--api-addr` 指向别处）。
+- `env` — **这台机器的唯一事实源**：目录、权限、`can_tun`、服务状态、端口上跑的是哪个 build、本平台怎么提权、以及 `action`（下一步该干什么：attach/update/takeover/install/repair/unsupported）。桌面壳只读它，不自己算——壳里长出第二份「文件放哪」的判断，是这个项目最贵的一类 bug，因为壳出错时只会显示一个启动页。
+- `serve` — 跑网关本体（hidden，服务管理器用）。
 - 其余子命令 = **CLI 客户端**，经 **Go SDK** 调运行中的后端。
 
 **SDK 两层**（回应「先封装标准接口为底层原语，上层再易用封装」）：
@@ -121,7 +135,7 @@ sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 
 - `pkg/apitypes` — 共享 wire 类型（无内部依赖，避免 import 环）。
 
 **CLI 覆盖全部 API**（控制台能做的，命令行都能做；每个子命令都有 `--json` 供脚本消费，`--api-addr`/`--api-token` 指向本机或探针）：
-`status` | `acl ls|add|rm <permit|deny|no-proxy>` | `rules ls`(生效视图) `rules custom|packs|sets …` | `dns get|set`（`--direct-server` 等单项 patch，`-f` 整档替换）| `mode get|set|confirm`（`--guard` 死亡开关）| `routing get|set`(Rule/Global) | `posture get|set` | `final get|set` | `profile ls|save|activate|rm` | `proxies ls|select|delay` | `groups get|set` | `endpoints ls|add|toggle|rm` | `tun get|set` | `inbound get|set` | `autoblock on|off` | `detections ls|stats` | `history ls|stats` | `node ls|add|rm`(fleet) | `sub add|import|ls|apply|rm|refresh` | `service install|uninstall|status`(**本地 root**,macOS launchd) | `conn ls|kill`(底层 Clash 原语→:21586) | `proxy gen|run|stop`(**本地离线**,不经 SDK——出口机上没有网关在跑；`--json` 与 `POST /api/proxy-gen` 同形)。
+`install|uninstall`(**本地 root**;`service install|uninstall` 是隐藏别名,老笔记还能用) | `env`(机器事实源+`action`) | `service status` | `status` | `auth bootstrap|login|ticket|whoami|state|register|registration` | `user`/`apikey`/`request` | `acl ls|add|rm <permit|deny|no-proxy>` | `rules ls`(生效视图) `rules custom|packs|sets …` | `dns get|set`（`--direct-server` 等单项 patch，`-f` 整档替换）| `mode get|set|confirm`（`--guard` 死亡开关）| `routing get|set`(Rule/Global) | `posture get|set` | `final get|set` | `profile ls|save|activate|rm` | `proxies ls|select|delay` | `groups get|set` | `endpoints ls|add|toggle|rm` | `tun get|set` | `inbound get|set` | `autoblock on|off` | `detections ls|stats` | `history ls|stats` | `node ls|add|rm`(fleet) | `sub add|import|ls|apply|rm|refresh` | `conn ls|kill`(底层 Clash 原语→:21586) | `proxy gen|run|stop`(**本地离线**,不经 SDK——出口机上没有网关在跑；`--json` 与 `POST /api/proxy-gen` 同形)。
 **坑**：`/api/customrules` 与 `/api/rulesets` 返回的是**整份 store 文档**（`{"rules":[…]}` / `{"sets":[…]}`），不是裸数组——SDK 里 `customRulesDoc`/`ruleSetsDoc` 负责解包（`pkg/client/policy_test.go` 有回归）。
 
 ### 桌面端（macOS 切片，✅）
@@ -129,22 +143,30 @@ sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 
 `desktop/`：**Tauri v2 壳 + Go 网关做 sidecar**。壳里没有任何策略/检测逻辑——它是一个窗口加一段生命周期，
 UI 就是网关自己在 `:21585` serve 的那个控制台（故 sidecar **必须**是 `embed_ui` 构建，`.app` 里没有 `dashboard/dist`）。
 
-两条不变量（都在真机上验过，不是设想）：
+**壳不跑网关。** 它曾经会：没人应答就以登录用户身份拉起 sidecar。那个网关是假的——没有 TUN、关窗即死、还往家目录写文件，于是真正的 root 安装再也没法和它共处。整条路径（`spawn_gateway`、子进程状态、`--exit-with-pid`、那段「你的数据目录不可写」的道歉信）已删除。壳要么贴附系统服务，要么提议装一个。
 
-| 不变量 | 为什么 | 怎么做 |
+**壳不判断，只渲染。** 全部事实来自 `trust-proxy env --json`，包括 `action` 这一个字段：
+
+| action | 含义 | 壳给什么 |
 |---|---|---|
-| **绝不起第二个网关** | 两个 `serve` 同数据目录会抢 `cache.db`（bolt 单写锁）和端口 | 先探 `/api/health`：有人在跑就**贴附**（launchd 装的、终端里手起的都算），只有没人应答才拉起自己的 |
-| **绝不留孤儿** | 关窗/强退后数据面还在跑＝用户以为关了其实还在管流量 | 正常退出杀子进程；**SIGKILL/崩溃没有回调**（实测 SIGTERM 掉壳后网关活着），故 `serve --exit-with-pid <ppid>` 让**子进程盯父进程**（`cmd/parentwatch.go`，signal 0 探活 + 被 reparent 也算父亲已死） |
+| `attach` | 系统服务在跑且版本一致 | 直接开控制台，零提示 |
+| `update` | 在跑，但**比这个 app 旧** | 「Update」按钮 |
+| `takeover` | 端口上有网关，但不是托管副本 | 「接管并装成系统服务」 |
+| `install` / `repair` / `unsupported` | 没装 / 装了没跑 / 本平台没实现 | 对应文案 |
 
-**提权不放在壳里**：TUN 要 root，GUI 不该是 root。`internal/service` + `trust-proxy service install`（macOS **LaunchDaemon**，
+四态是从「有没有人应答」一个问题扩出来的，因为那一个问题在四种情况里只对一种，而错的那两种**都是静默的**：升级后新 app 贴到旧 daemon 上（每一页看起来都对，新二进制一次没用上），以及手起的网关被永久收养、服务永远装不上。`update`/`takeover`/`install` 跑的是**同一条 `install`**（它幂等），所以都是一次系统授权、零敲命令。
+
+壳里绝不能再长出第二份 Go 侧的规则。已经踩过三次：自己那份 `data_dir()`、自己猜 sidecar 在哪、自己拼 `install` 参数（还悄悄传了 `--data <home>`，把「root daemon 不写家目录」这条规矩整个绕过去）。壳是最坏的漂移场所——它出错时显示的是一个启动页，不是错误。
+
+**提权不放在壳里**：TUN 要 root，GUI 不该是 root。`internal/service` + `sudo trust-proxy install`（macOS **LaunchDaemon**，
 `/Library/LaunchDaemons/io.trust-proxy.gateway.plist`）让 **launchd 拥有 daemon**，壳只贴附；壳上的按钮就是拿一次
 管理员授权（`osascript ... with administrator privileges`）去跑这条 CLI。
 **plist 绝不指向 `.app` 内部**（第三条防板砖）：install 把二进制拷到 **`/usr/local/libexec/trust-proxy`**（root:wheel，
 临时文件→chmod/chown→sha256 校验→rename）再写 plist——否则 app 被拖进废纸篓/升级替换后，`KeepAlive` 会每次开机
 重启一个不存在的程序，只写日志不报错。按内容拷贝还顺带丢掉 `com.apple.quarantine`（xattr 不属内容），治了
 未公证 sidecar 被 SIGKILL。`uninstall` 先读 plist 的 program 再删，**只删我们那份托管副本**；`--keep-binary-path`
-留给 Homebrew 这类稳定路径；`service status` 显式报 `program_missing`。防板砖同调：`service uninstall` 一条命令、
-任意半装状态都能收干净且幂等；install **不会顺手打开 TUN**（`--mode` 不给就不写）；`RunAtLoad`+`KeepAlive`（kill -9 后自愈）。
+留给 Homebrew 这类稳定路径；`service status` 显式报 `program_missing`。防板砖同调：`uninstall` 一条命令、
+任意半装状态都能收干净且幂等、**数据一行不动**；install **不会顺手打开 TUN**（`--mode` 不给就不写）；`RunAtLoad`+`KeepAlive`（kill -9 后自愈）。
 plist 里所有路径必须绝对（launchd 不解析相对路径，否则每次开机静默失败）。
 
 构建：`make build`（一键全套：控制台 → embed_ui 单二进制 → `.app` + `.dmg`；没有 cargo 的机器只出二进制并说明）/ `make build-app` 只重打 app / `make desktop-dev`。**默认目标故意是「全套」**：旧的 `make build` 产出不带 UI 的二进制，装成服务后每页都是「dashboard not built」——不假思索敲的那个名字必须是不会出错的那个。
@@ -184,7 +206,8 @@ internal/logging/          日志栈：**zerolog**(编码) → **diode**(无锁 
 internal/nodes/            多网关注册表（data/nodes.json；反代 /api/nodes/{id}/* → 各探针 /api，注入 token）。每条既可以是**管理对象**也可以是**出口**（`AsExit`+`ProxyHost/Port/User/Pass` → socks outbound 进 proxy 组）；`local` 是本机自己那条（Gateway/Client 模式）。`Public()` 剥掉 token/代理密码——**连 admin 也拿不到**，服务端保存、API 只回形状
 internal/users/            账号registry（data/users.json，**唯一写者是运行中的 API**）：角色 admin|client、argon2id 账号密码、**明文代理密码**（sing-box 自己校验，没得选）、API key（存 sha256，`tp_` 前缀）、`Settings.AllowRegistration`。入站多用户就是这份名单里「有代理密码的人」——不存在第二套用户系统
 internal/authn/            会话：HS256 JWT（钉死 alg + issuer）、httpOnly+SameSite=Strict cookie、off-loopback bootstrap 的一次性认领码
-internal/paths/            每个 OS 想把文件放哪，只有这一处答案：UserData（~/.trust-proxy；Windows %LOCALAPPDATA%）/ SystemData（/Library/Application Support、/var/lib、%ProgramData%）/ ManagedBinary（**有测试断言它绝不在 .app 内部**）/ Privileged / **CanTUN**（≠ root：setcap 过的 Linux 非 root 可以，UAC 下未提权的 Windows 管理员不行）
+internal/paths/            每个 OS 想把文件放哪，只有这一处答案：**Data()**（唯一数据目录，机器级：/var/lib、/Library/Application Support、%ProgramData%；**没有 UserData**）/ CredentialsFileFor（家目录里唯一的东西，是密钥不是状态）/ LegacyUserData（只给 install 一次性收编）/ Owner+InvokingOwner+LookupOwner（这次提权是替谁做的——凭据落在 /var/root 等于没有凭据）/ ManagedBinary（**有测试断言它绝不在 .app 内部**）/ Privileged / **CanTUN**（≠ root：setcap 过的 Linux 非 root 可以，UAC 下未提权的 Windows 管理员不行）
+internal/credentials/       CLI 的 API key（~/.config/trust-proxy/credentials.json，0600，按 api-addr 分条）。每条带 **gateway_id**：凭据文件第一版就是因为会陈旧被删掉的，而陈旧的解法是**认出它**（「这台网关被重装过」vs「你的 key 被吊销了」是同一个 401、相反的建议），不是让所有人永远 `eval "$(… | grep ^export)"`。root 写别人家目录时 chown（只 chown 自己创建的目录）
 internal/api/              我们自己的后端 /api（stdlib mux；订阅/白名单/规则集/配置档 CRUD + 模式/状态/自动阻断 + 代理 Clash connections/proxies/logs + serve dashboard）
 dashboard/                 我们自建的控制台（shadcn/ui + Tailwind v4 + React19 + Vite，走 /api 单一 origin）
 desktop/                   Tauri v2 桌面壳（macOS 切片）：src-tauri/src/main.rs 贴附/拉起/杀子 + ui/index.html 等待页；sidecar = embed_ui 的 trust-proxy
@@ -264,9 +287,9 @@ make build-ui    # 只构建自研控制台 -> dashboard/dist
 
 **端到端自测（`cmd/selftest.go`，`trust-proxy selftest`，hidden 子命令）**：**离线、确定性、可扔进 VM 跑**的核心引擎 e2e。自起两个本地「origin」（direct-origin 返回 `direct` / node-origin 返回 `node`）+ 一个 http CONNECT「node」上游，用**真实 `gateway.Manager`** 跑遍：默认拒绝拦截 / 白名单→node / no-proxy→direct / 黑名单胜 / 自定义规则 direct·proxy·block·node / system 模式；`sudo trust-proxy selftest` 额外覆盖 tun（loopback 不被 tun 捕获，故 tun 分支只断言 box 能在 tun 模式起来）。任一场景失败则非零退出。**改引擎后务必 `make build-go && ./trust-proxy selftest`**（VM 里 `sudo` 跑覆盖全部）。
 
-**配置只有一处**：`<data>/config.json`（默认 `~/.trust-proxy/config.json`），**首启自动种下**——种子是 `main.go` 用 `go:embed` 编进二进制的 `configs/config.json`（仓库里就这一份，不存副本故不会漂移）；若 cwd 有老默认路径 `configs/config.json` 则**以它为种子**（保住用户在仓库里的编辑）。`-c` 只作显式覆盖。**为什么改**：`-c` 原先默认 `configs/config.json` 是**仓库相对路径**，只在 checkout 里成立，于是桌面壳只能另挑位置并在 Rust 里**重写一遍种配置逻辑**——同一件事两份实现、两个默认值，同机上 CLI daemon 与 app 会落到不同配置（连 mode 都不同）。修法是回上游改 `serve`（`cmd/configseed.go` 的 `resolveConfig`，`serve` 与 `service install` 共用），Rust 侧那份删掉。
+**配置只有一处**：`<data>/config.json`，**首启自动种下**——种子是 `main.go` 用 `go:embed` 编进二进制的 `configs/config.json`（仓库里就这一份，不存副本故不会漂移）。`-c` 只作显式覆盖。**cwd 里的 `configs/config.json` 只会被提一句，绝不采用**：它曾经会，而发布包正好带着一个 `configs/` 目录，于是解压后 `cd` 进去 `sudo ./trust-proxy install` 的种子来自压缩包那份——特权命令不该依赖你在哪个目录敲它。**为什么改**：`-c` 原先默认 `configs/config.json` 是**仓库相对路径**，只在 checkout 里成立，于是桌面壳只能另挑位置并在 Rust 里**重写一遍种配置逻辑**——同一件事两份实现、两个默认值，同机上 CLI daemon 与 app 会落到不同配置（连 mode 都不同）。修法是回上游改 `serve`（`cmd/configseed.go` 的 `resolveConfig`，`serve` 与 `service install` 共用），Rust 侧那份删掉。
 
-**数据目录**：`serve` 默认把所有运行时数据放 **`~/.trust-proxy`**（`--data` 可覆盖；`~` 会展开）。含 subscriptions/whitelist/blacklist/events/history + **`cache.db`（clash mode/urltest/rule_set 缓存）** + `ts-<tag>`（Tailscale 状态）+ `clash-secret`。注意 `cache.db`/`ts-*` 的路径由 `gateway.Manager.dataDir` 注入（不再是 cwd 相对的 `data/`）。**旧部署迁移**：`mv ./data/* ~/.trust-proxy/` 或显式 `--data ./data`。
+**数据目录**：唯一一个，机器级（`paths.Data()`）。含 subscriptions/whitelist/blacklist/events/history + **`cache.db`（clash mode/urltest/rule_set 缓存）** + `ts-<tag>`（Tailscale 状态）+ `clash-secret` + `jwt-secret` + `users.json` + `config.json`。`cache.db`/`ts-*` 的路径由 `gateway.Manager.dataDir` 注入。`--data` 是运维/测试覆盖，不是部署形态。**从旧的 `~/.trust-proxy` 升级**：`install` 自动收编一次（只拷 `*.json` 策略；`cache.db` 单写锁、pid/log 属于别的进程、`jwt-secret`/`clash-secret` 是这次安装自己的，都不拷）。
 **后台守护**：`serve --daemon`（`-d`）re-exec 脱离终端（`daemonize`，`TP_DAEMON=1` 标记子进程），`--log`/`--pid` 默认 `<data>/serve.{log,pid}`；停止 `trust-proxy proxy stop --pid <data>/serve.pid`（`proxy stop` 通用杀 pid 文件）。同目录勿并跑两实例（`cache.db` 单写锁）。
 
 **日志（`internal/logging`）**：`zerolog` → `diode` → `lumberjack`，全部用现成库，不手搓。轮转参数：`--log-max-size`(MB,默认 32)、`--log-keep`(默认 3)、`--log-max-age`(天,0=只按个数)、`--log-compress`(默认开)；`--log-max-size 0` 关闭轮转。
@@ -303,10 +326,10 @@ curl -x socks5h://127.0.0.1:21584 https://example.com            # 正常 -> 200
 - **坑：VM 里量不出真实解析结果**。宿主机跑着 TUN 网关时，VM 的**所有** 53 端口查询都会被宿主 hijack-dns 接管（`dig @223.5.5.5` 也返回宿主 DoH 的境外答案）。故 VM 里验证 DNS 行为必须用 **loopback stub 解析器**（不出 VM、不受宿主干扰）；真实地理答案只能在宿主机上读（read-only curl/ip-api）。
 
 ## 作为代理服务器 / TUN 网关运行
-同一个二进制三种角色：
-- **客户端网关**：`trust-proxy serve`（mixed 入站 :21584 + 检测 + 白名单 + dashboard/api :21585）。
+同一个二进制两种角色：
+- **网关**：`sudo trust-proxy install`（mixed 入站 :21584 + 检测 + 策略 + dashboard/api :21585，装成系统服务）。
 - **代理服务端（出口节点）**：`trust-proxy proxy run -c server.json`；一键生成：`trust-proxy proxy gen --type <ss|vless-reality|vless|vmess|trojan|anytls|hysteria2|tuic> --server <ip> --port <p>` → 输出服务端配置 + 客户端节点（Clash dict，可直接粘进 console）。TLS 协议自动内联自签证书（客户端 skip-cert-verify），vless-reality 免证书自动生成密钥对。
-- **TUN 全流量网关**：`sudo trust-proxy serve -c configs/config.tun.json`（`tun` 入站 + `auto_route` 网络层接管**所有**出入网流量——木马的裸 socket 也逃不掉）。需 **root**，且与其他 TUN 工具（Surge 增强模式等）互斥，用于**专用网关机/软路由**。检测与白名单逻辑不变（同一 route）。构建需 `with_gvisor`（已在默认 TAGS）。
+  **TUN 全流量**是它的一个模式而不是另一种部署：`install --mode tun` 开机就进，或运行时 `mode set tun`／控制台开关（都带死亡开关，不 confirm 就自动回滚）。`tun` 入站 + `auto_route` 网络层接管**所有**出入网流量——木马的裸 socket 也逃不掉。与其他 TUN 工具（Surge 增强模式等）互斥，用于**专用网关机/软路由**。检测与策略逻辑不变（同一 route）。构建需 `with_gvisor`（已在默认 TAGS）。
 - **里程碑 0（✅）** 全栈跑通：Go 嵌入 sing-box + 代理 + 官方监控 UI。
 - **里程碑 1（✅）** 白名单默认拒绝 + `AppendTracker` 检测器 + Clash API + 单一二进制 CLI/SDK 分层 + 订阅管理 + 订阅 apply + ✅**自动处置闭环**（`--auto-block`：威胁命中 → detector 直接断连，`internal/gateway/detector.go`）。
 - **里程碑 2（✅ 主体）** 自建 React 控制台 + 单一 origin + 订阅/节点管理 + 实时连接 + ✅白名单 UI + ✅检测/告警页 + ✅规则集/配置档页 + ✅侧边栏模式切换。**待做**：go:embed 单二进制。
@@ -335,7 +358,10 @@ curl -x socks5h://127.0.0.1:21584 https://example.com            # 正常 -> 200
 - **POST 静默丢字段（✅）** `POST /api/nodes` 只读 name/url/token，收到 `as_exit`/`proxy_*` 直接扔掉——回 201，然后没有出口。**静默忽略比拒绝更糟**；现在 create 接受与 patch 同形的字段，patch 被拒则回滚这次注册。
 - **里程碑 15（✅ 主体）** ✅**账号与权限**（`internal/users` + `internal/authn`）：第一个账号必然 admin；**认领前 /api 是开放的**（否则全新安装无法初始化），启动日志明说并给命令；off-loopback 认领要一次性码——`/api/auth/state` 因此多了 `needs_bootstrap_code`，**否则云上网关的控制台只能显示一个必然 403 的表单**（真浏览器跑一遍才发现）。角色只有 admin|client；停用/降权立即对已有会话生效（中间件每次重读账号记录，不信任 token 里的旧角色）；默认不开放注册，admin 可运行时开。**入站多用户 = 同一份名单**里有代理密码的人。
 - **里程碑 16（✅ 主体）** ✅**多网关的心智模型落地**：远程网关持有共享策略，本地只把流量推过去（`AsExit` 出口 + Client 模式强制 Split——两台机器各跑一套默认拒绝只会互相打架）。**client 的本地覆盖只有 Deny / 改 direct**：闸在网关上，本地 Permit 毫无作用却让人以为开通了，所以 UI 根本不给，取而代之是**一键申请 + 理由**（待批 = `enabled=false` 的规则，批准即启用，不存在「批了没生效」）。观测按调用者在**服务端**过滤，不靠前端藏。顶栏「出口」与「管理对象」是**两个**控件——合成一个的话，打开远程网关的配置就会把自己的流量甩到另一个国家。
-- **里程碑 17（✅ 主体）** ✅**跨平台**：`internal/paths` 收拢所有「文件放哪 / 有没有权限」，`internal/service` 补 systemd 与 Windows SCM，桌面壳一个壳三种提权（osascript / pkexec / UAC；**Linux 刻意不拿 sudo 兜底**——GUI 没终端可问密码，免密 sudo 机器上会不弹提示就提权）。`service install` 默认机器级数据目录，检测到既有个人数据会**问一句再拷**（拷贝不移动；`cache.db` 单写锁与 pid/log 不拷）。回归：`make e2e-linux`（特权容器 pid1=真 systemd）、`make e2e-macos`（tart）。**Windows 未在真机验证**。
+- **里程碑 17（✅ 主体）** ✅**跨平台**：`internal/paths` 收拢所有「文件放哪 / 有没有权限」，`internal/service` 补 systemd 与 Windows SCM，桌面壳一个壳三种提权（osascript / pkexec / UAC；**Linux 刻意不拿 sudo 兜底**——GUI 没终端可问密码，免密 sudo 机器上会不弹提示就提权）。回归：`make e2e-linux`（特权容器 pid1=真 systemd）、`make e2e-macos`（tart）。**Windows 未在真机验证**。（当时服务安装还会「问一句要不要拷个人数据」，里程碑 18 把这个交互删了——它跑在没有终端的授权框后面。）
+- **里程碑 18（✅）** **一台机器一个网关**。用户级网关整个删除，入口收敛成 `sudo trust-proxy install` 一条命令：拷托管副本 → 注册服务 → 启动 → 开机自启 → 一次性收编旧 `~/.trust-proxy` → 建第一个 admin 并把 API key 交给 `SUDO_USER`。`env --json` 成为机器事实源（含 `action` 四态），桌面壳删掉自己拉网关的整条路径、改为只渲染。鉴权收敛：未认领的开放 admin **只对 loopback**（补掉一个真洞——一次性码只守 bootstrap，暴露的未认领网关谁先扫到谁是管理员）、`credentials.json` 带 `gateway_id` 回归、`/api/auth/ticket` 一次性票换 cookie、401 类型化。升级不再静默：`/api/health` 对 loopback 报 version/pid/managed，新 app 遇到旧 daemon 会给「Update」而不是贴上去装作没事。
+  **这一轮 8 个缺陷是跑 e2e 跑出来的，读代码一个都没发现**：① 收编从未生效（种配置让目标目录「看起来已有数据」）② 被拒绝的 install 仍留下那份种子 ③ 非特权 `serve` 死在 `clash-secret: permission denied`（`MkdirAll` 对已存在目录成功，权限判断没触发）④ 重跑 install 被自己拦住，而 `--takeover` 救不了（服务托管的网关没有 pid 文件）⑤ `stopGatewayOn` 只等端口不等进程 ⑥ `auth login` 按 label 撤 key，连别人导出到脚本里的一起撤 ⑦ takeover 完全依赖 pid 文件，且**失败时先删了它**——单向棘轮，每重试一次少一条线索 ⑧ 发布包带 `configs/`，于是解压后 install 的种子来自 cwd。
+  规矩：**改 `cmd/` 之后必须 `go test ./cmd/...`**（`go build`/`go vet` 不执行 `init()`，我靠 VM 才发现一个重复注册 flag 的 init panic）。CI 现在跑 vet/test/selftest/e2e-linux/cargo test/控制台，以前一个都不跑。
 - **后续** DNS 查询级观测（TUN）、多节点聚合视图、**Segments**（按来源网段分层 split/strict 姿势,见 `docs/home-gateway-plan.md`）。
 
 ## 许可证

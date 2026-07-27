@@ -1,32 +1,36 @@
 # 运行时：配置位置 / 账号权限 / 抓取模式 / 路由模式 / 防板砖 / 检测处置 / 多网关
 
+## 一台机器上只有一个网关
+
+它以 root 跑、由服务管理器托管、开机自启，数据在**机器级**目录。这不是若干种部署形态里的一种，是唯一一种：
+
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| 数据 | `/var/lib/trust-proxy` | `/Library/Application Support/trust-proxy` | `%ProgramData%\trust-proxy` |
+| 托管副本 | `/usr/local/libexec/trust-proxy` | 同左 | `%ProgramData%\trust-proxy\bin\` |
+| 服务 | systemd unit | launchd LaunchDaemon | SCM |
+
+```bash
+sudo trust-proxy install     # 全部搞定：拷托管副本、注册服务、启动、开机自启、认领
+trust-proxy env              # 这台机器现在是什么状态、下一步该干什么
+sudo trust-proxy uninstall   # 逃生口，任何半装状态都能收干净；数据一行不动
+```
+
+`install` 是幂等的，**重跑就是升级**：换掉托管副本、重启服务，策略和账号不动。改抓取模式也是重跑它（`--mode tun`）。
+
+> **用户级网关已删除。** 曾经可以 `trust-proxy serve` 在 `~/.trust-proxy` 里跑一个自己的：它做不了 TUN（要 root），关掉终端就没了，而只要有人 `sudo` 跑过一次，那个目录就归 root——之后非 root 的进程（比如桌面 app）再也写不进去，症状是「app 打不开」而原因在三步之外。`install` 会把旧目录里的策略 **拷** 过来一次（拷贝，不移动，已有的不覆盖）。`serve` 还在，但已隐藏：它是服务管理器 exec 的东西，不是给人敲的。非 root 直接敲它会告诉你该用 `install`。
+
+家目录里唯一剩下的是**凭据**：`~/.config/trust-proxy/credentials.json`（0600）。`install` 以 root 跑，会把第一个管理员的 API key 写进 `SUDO_USER` 的家目录并 chown 给他——落在 `/var/root` 的密钥等于没有密钥。它是密钥，不是状态：删掉只需要重新 `auth login`，不会丢任何策略。
+
 ## 配置在哪（只有一处）
 
-`<data>/config.json`，默认即 `~/.trust-proxy/config.json`，**首次启动自动种下**（来源：编译进二进制的 `configs/config.json`）。之后那份文件就是用户的，升级**绝不覆盖**。
+`<data>/config.json`，**首次启动自动种下**（来源：编译进二进制的默认配置）。之后那份文件就是用户的，升级**绝不覆盖**。
 
 `-c` 只作显式覆盖（`configs/config.tun.json`、线上钉死的某份文件）。
 
-为什么要收进数据目录：`-c` 原先默认 `configs/config.json`——一个**仓库相对路径**，只在 checkout 里跑才有意义。于是桌面端（没有仓库、cwd 也不在仓库）只能另挑位置，还各自实现了一遍「首启种默认配置」，结果同一台机器上 CLI daemon 与桌面 app 可能读不同配置、连抓取模式都不一样。现在配置和它所属的数据在一起，三条路径（CLI / 桌面壳 / 系统服务）读同一个文件。
+为什么收进数据目录：`-c` 原先默认 `configs/config.json`——一个**仓库相对路径**，只在 checkout 里跑才有意义。于是桌面端只能另挑位置，还各自实现了一遍「首启种默认配置」，同一台机器上两条路径可能读不同配置、连抓取模式都不一样。
 
-**从旧版升级**：若当前目录存在老路径 `configs/config.json`，首启会**以它为种子**（打印 `seeded … from configs/config.json`），你在仓库里的改动跟着迁移，不会被内置默认悄悄取代。
-
-## 从旧端口 / 旧进程升级
-
-端口在这一轮换过（9095/9096/9090 → **21584/21585/21586**，见 README「端口」），配置的默认位置也从仓库相对路径挪进了数据目录。所以一台跑着旧构建的机器要这么过渡：
-
-```bash
-# 1. 停掉旧的（pid 文件在数据目录里；旧实例是 sudo 起的就得 sudo 停）
-sudo ./trust-proxy proxy stop --pid ~/.trust-proxy/serve.pid
-
-# 2a. 继续用 CLI daemon：不再需要 -c，首启会把默认配置种进 <data>/config.json
-sudo ./trust-proxy serve --daemon --mode tun         # 控制台 http://127.0.0.1:21585/
-
-# 2b. 或者交给系统服务 + 桌面 app（推荐 TUN 场景）
-sudo ./trust-proxy service install --mode tun -y     # 会问要不要把 ~/.trust-proxy 拷到机器级目录
-open "/Applications/Trust Proxy.app"                 # 壳探到已有网关就贴附，不会再起一个
-```
-
-**别混着跑 sudo 与非 sudo**：`~/.trust-proxy` 会变成 root 属主，之后以自己的身份启动（桌面 app 直接拉 sidecar 就是这种）会在 `cache.db` 上锁失败或干脆写不进去。要么全程 sudo（走系统服务），要么 `sudo chown -R "$USER" ~/.trust-proxy` 之后一直非 root（那就用不了 TUN）。
+**当前目录里的 `configs/config.json` 不会被采用**，只会被提一句。它曾经会：而发布包里正好带着一个 `configs/` 目录，于是解压后 `cd` 进去 `sudo ./trust-proxy install`，种子来自压缩包那份而不是编译进二进制的那份——任何恰好有同名文件的目录也一样。特权命令不该依赖你在哪个目录敲它。真要用那份就 `-c ./configs/config.json`。
 
 ## 账号与权限
 
@@ -99,12 +103,19 @@ trust-proxy auth bootstrap <用户名> --api-addr <host>:21585 --code <启动日
 **心智模型**：策略住在**远程网关**（云服务器/软路由）上，本地机器只是「把流量推过去」。这样一份配置多台机器共享，订阅链接、节点、规则都只在网关上，不复制到每台笔记本。
 
 ```bash
-# 网关（云服务器）：暴露 API，第一个管理员认领它
-trust-proxy serve --api-addr 0.0.0.0:21585
-trust-proxy auth bootstrap <用户名> --api-addr <host>:21585 --code <启动日志里的>
+# 网关（云服务器）：装成服务并暴露 API。在机器上跑，所以它自己就认领好了
+sudo trust-proxy install --api-addr 0.0.0.0:21585
 # 给每台要用它的机器建一个账号 + 代理密码
 trust-proxy user add laptop && trust-proxy user proxy-pass laptop
 ```
+
+从别的机器认领一台还没人认领的网关，要启动日志里那个一次性码：
+
+```bash
+trust-proxy auth bootstrap <用户名> --api-addr <host>:21585 --code <启动日志里的>
+```
+
+**未认领 ≠ 敞开。** 空账号表时那个「谁来都是 admin」的兜底**只对 loopback 生效**——在机器上就是凭据。从网络上只有 `/api/auth/state` 和这条带码的 bootstrap 能通，别的一律 401。（这一条以前不看来源地址，而一次性码只守着 bootstrap 这一个端点，于是一台暴露出去、还没人认领的网关，根本不需要认领就能被人直接驱动整个策略 API。）
 
 本地机器上：Gateways 页注册该网关（URL + token/账号）→ 勾「**作为出口**」并填代理端口与它的账号密码 → 顶栏「出口」选它。本机可以进一步切成 **Client 模式**：不再自己执行策略（姿势强制 Split），只把流量交给网关——两台机器同时执行两套默认拒绝，只会互相打架。
 
@@ -130,20 +141,18 @@ trust-proxy request ls | approve <id> | deny <id> # 管理员批（Users 页也�
 
 ## TUN 全流量网关
 
-```bash
-sudo ./trust-proxy serve -c configs/config.tun.json
-```
-
 `tun` 入站 + `auto_route` 网络层接管全部出入网流量（木马的裸 socket 也逃不掉）。需 **root**，与其它 TUN 工具（Surge 增强模式等）互斥 → 用于专用网关机 / 软路由。检测与策略逻辑不变（同一 route）。
 
-### 权限：sudo vs 非 sudo（建议默认 sudo）
+服务是 root，所以 TUN **随时可切**，三种等价方式：
 
-| 启动方式 | manual / system | **TUN**（含运行时切到 TUN） | 适用 |
-|---|---|---|---|
-| **`sudo` 启动（推荐）** | ✅ | ✅ | 网关机 / 想随时切 TUN |
-| 非 sudo | ✅ | ❌ 建 TUN 网卡报 `operation not permitted` | 只用代理模式 |
+```bash
+sudo trust-proxy install --mode tun     # 开机就进 TUN
+trust-proxy mode set tun                # 运行时切，默认 60s 死亡开关
+```
 
-- **Linux 想以非 root 常驻**：`sudo setcap 'cap_net_admin,cap_net_raw+ep' ./trust-proxy`（每次重编译要重授）。
+或者控制台顶栏的 CAPTURE 开关（同一条 API，同样有死亡开关）。**死亡开关**：切过去之后不 `trust-proxy mode confirm` 就自动回滚——远程机器上切 TUN 把自己网断了还能回来，靠的就是它。
+
+`can_tun` 由网关自己回答，UI 据此决定要不要给你按。它**不等于**「是不是 root」：Linux 上 setcap 过的非 root 二进制可以，Windows 上没提权的管理员不行。
+
 - **容器**：Docker 加 `--cap-add=NET_ADMIN --device=/dev/net/tun`；Proxmox 非特权 LXC 需宿主放行 `/dev/net/tun`。
-- **macOS 桌面端**：别用 sudo 跑 GUI，装成系统服务（见 [`desktop.md`](desktop.md)）。
-- **数据属主**：sudo 与非 sudo 混跑会让 `~/.trust-proxy` 下文件属主混乱（`cache.db` 锁失败）——**固定一种方式**。同一数据目录**勿并跑两实例**（bolt 单写锁）。
+- **同一数据目录勿并跑两实例**（`cache.db` 是 bolt，单写锁）。`install` 会先把占着 API 端口的那个停掉再装，并且等它**进程真的退出**——只等端口释放的话，旧网关还在收尾、新服务已经起来，中间那段两个进程共用一个锁。
