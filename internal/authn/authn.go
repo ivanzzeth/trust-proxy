@@ -285,6 +285,13 @@ func (a *Authn) RedeemTicket(tok string) (string, bool) {
 // the port, so the network path additionally demands a code that only someone
 // reading the gateway's log or its data directory has.
 func (a *Authn) BootstrapCode(dir string) (string, error) {
+	// Under the mutex, like every other field here. It was not: BootstrapCode,
+	// CheckBootstrapCode and ClearBootstrapCode all touched a.bootstrap unlocked
+	// while running on request goroutines, so a claim racing the clear was a data
+	// race on a credential — and two concurrent bootstrap POSTs could both read it
+	// as still valid.
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.bootstrap != "" {
 		return a.bootstrap, nil
 	}
@@ -309,16 +316,21 @@ func (a *Authn) BootstrapCode(dir string) (string, error) {
 
 // CheckBootstrapCode compares a supplied code in constant time.
 func (a *Authn) CheckBootstrapCode(got string) bool {
-	if a.bootstrap == "" || got == "" {
+	a.mu.Lock()
+	code := a.bootstrap
+	a.mu.Unlock()
+	if code == "" || got == "" {
 		return false
 	}
-	return subtle.ConstantTimeCompare([]byte(a.bootstrap), []byte(strings.TrimSpace(got))) == 1
+	return subtle.ConstantTimeCompare([]byte(code), []byte(strings.TrimSpace(got))) == 1
 }
 
 // ClearBootstrapCode removes the code once the first admin exists — a bootstrap
 // code that outlives bootstrap is a spare key under the mat.
 func (a *Authn) ClearBootstrapCode(dir string) {
+	a.mu.Lock()
 	a.bootstrap = ""
+	a.mu.Unlock()
 	_ = os.Remove(filepath.Join(dir, "bootstrap-code"))
 }
 

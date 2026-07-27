@@ -20,6 +20,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/paths"
@@ -137,7 +138,32 @@ func write(path string, f File, owner *paths.Owner) error {
 	// Write-then-rename: a half-written credentials file reads as a corrupt one,
 	// and the recovery for that is another login nobody expected to need.
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+	// O_NOFOLLOW, not os.WriteFile.
+	//
+	// This runs as root and writes into somebody else's home, named by --claim-for,
+	// which is an arbitrary untrusted account. os.WriteFile follows a symlink, so a
+	// user who pre-created credentials.json.tmp as a link to a file of their choosing
+	// had root truncate and write it for them — and the os.Chown that follows would
+	// then hand them ownership of it.
+	//
+	// O_EXCL as well: a leftover tmp from a crashed run is not something to write
+	// through blindly, and refusing is recoverable (remove it) while overwriting is
+	// the whole bug.
+	fh, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("%s already exists: remove it and try again (refusing to write "+
+				"through it, in case it is a symlink somebody left there)", tmp)
+		}
+		return err
+	}
+	if _, err := fh.Write(b); err != nil {
+		_ = fh.Close()
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := fh.Close(); err != nil {
+		_ = os.Remove(tmp)
 		return err
 	}
 	if err := chown(tmp, owner); err != nil {
@@ -151,7 +177,17 @@ func write(path string, f File, owner *paths.Owner) error {
 // actually created — an existing ~/.config belongs to the user already, and
 // re-chowning somebody's whole config directory is not ours to do.
 func mkdirChain(dir string, owner *paths.Owner) error {
-	if _, err := os.Stat(dir); err == nil {
+	// Lstat, not Stat: Stat resolves a symlink, so a link planted at
+	// ~/.config/trust-proxy was accepted as "already there" and the credentials went
+	// wherever it pointed — and got chowned there. One level up from the tmp-file
+	// trick, same trick.
+	if fi, err := os.Lstat(dir); err == nil {
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a symlink: refusing to write credentials through it", dir)
+		}
+		if !fi.IsDir() {
+			return fmt.Errorf("%s exists and is not a directory", dir)
+		}
 		return nil
 	}
 	parent := filepath.Dir(dir)
@@ -170,7 +206,10 @@ func chown(path string, owner *paths.Owner) error {
 	if owner == nil || owner.UID < 0 || owner.GID < 0 {
 		return nil // not applicable (Windows), or writing as ourselves
 	}
-	if err := os.Chown(path, owner.UID, owner.GID); err != nil {
+	// Lchown: the path was just created by us with O_NOFOLLOW/Mkdir, so it should not
+	// be a link — using the non-following call anyway means a race that made it one
+	// cannot turn this into "give them a file they did not own".
+	if err := os.Lchown(path, owner.UID, owner.GID); err != nil {
 		return fmt.Errorf("hand %s to %s: %w", path, owner.Username, err)
 	}
 	return nil

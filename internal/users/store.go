@@ -305,6 +305,12 @@ func (s *Store) List() []apitypes.User {
 // Create adds an account. The first account created is always an admin —
 // otherwise a fresh install would have a console nobody can administer.
 func (s *Store) Create(username, password, role string) (apitypes.User, error) {
+	// Trim before validating *and* before storing. validUsername trimmed only for
+	// its own check, so "bob " passed and was stored with the space — a second
+	// account beside "bob" whose name looks identical wherever it is displayed,
+	// while scope.go attributes traffic by the raw value and a permit request keys
+	// its pack off it. Ambiguity in the identifier the audit trail hangs on.
+	username = strings.TrimSpace(username)
 	if err := validUsername(username); err != nil {
 		return apitypes.User{}, err
 	}
@@ -630,9 +636,17 @@ func (s *Store) mutate(id string, f func(*User) error) error {
 	return s.save()
 }
 
+// findLocked matches a username case-insensitively and ignoring surrounding
+// whitespace — on both sides, because a record written before Create started
+// trimming may still carry padding, and the person typing it cannot see the
+// difference either way.
+func findMatch(stored, given string) bool {
+	return strings.EqualFold(strings.TrimSpace(stored), strings.TrimSpace(given))
+}
+
 func (s *Store) findLocked(username string) *User {
 	for i := range s.data.Users {
-		if strings.EqualFold(s.data.Users[i].Username, username) {
+		if findMatch(s.data.Users[i].Username, username) {
 			return &s.data.Users[i]
 		}
 	}

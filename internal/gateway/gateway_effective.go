@@ -28,11 +28,19 @@ func truncVals(vals []string, n int) []string {
 // asserts the layer sequence here matches a freshly built merged config.
 func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	m.mu.Lock()
-	wl, bl, dl, cr, pg, sets, mode, mgmt, nodes, eps, final, posture :=
-		m.wl, m.bl, m.dl, m.cr, m.pg, m.rulesets, m.mode, m.mgmtPorts, m.nodes, m.endpoints, m.final, m.posture
+	wl, bl, quar, dl, cr, pg, sets, mode, mgmt, nodes, eps, final, posture, clientMode :=
+		m.wl, m.bl, m.quar, m.dl, m.cr, m.pg, m.rulesets, m.mode, m.mgmtPorts, m.nodes,
+		m.endpoints, m.final, m.posture, m.clientMode
 	m.mu.Unlock()
 	if posture == "" {
 		posture = apitypes.PostureStrict
+	}
+	// What rebuild() does, not what the store holds. A client-mode gateway is forced
+	// to Split — two machines each running a default-deny of their own only fight —
+	// so reading the stored posture here showed a client a Permit gate the data plane
+	// did not have. This view exists to be trusted about exactly that.
+	if clientMode {
+		posture = apitypes.PostureSplit
 	}
 
 	var epTags []string
@@ -85,6 +93,18 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	}
 	if len(bl.IPs) > 0 {
 		add(apitypes.RuleView{Layer: "L1", Source: "blacklist", Action: "reject", Matcher: "ip_cidr", Values: truncVals(bl.IPs, 20)})
+	}
+	// The gateway's own blocks, injected right after the blacklist (see
+	// injectQuarantine) and previously absent from this view entirely — so a
+	// destination the gateway had quarantined itself appeared in no rule at all, on
+	// the one screen built to answer "why is this blocked".
+	if qd := quar.Domains(); len(qd) > 0 {
+		add(apitypes.RuleView{Layer: "L1", Source: "quarantine", Action: "reject", Matcher: "domain",
+			Values: truncVals(qd, 20), Note: "blocked by the gateway itself; release from Detection"})
+	}
+	if qi := quar.IPs(); len(qi) > 0 {
+		add(apitypes.RuleView{Layer: "L1", Source: "quarantine", Action: "reject", Matcher: "ip_cidr",
+			Values: truncVals(qi, 20), Note: "blocked by the gateway itself; release from Detection"})
 	}
 	for _, rs := range sets.Sets {
 		if rs.Enabled && rs.Tag != "" && apitypes.RuleRoleIsDeny(rs.Role) {

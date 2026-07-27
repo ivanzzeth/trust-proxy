@@ -572,7 +572,14 @@ func runServe() error {
 		}
 		return mgr.SetDirectList(dlStore.Get())
 	})
-	mgr.SetInitialManagementPorts(managementPorts(serveMgmtPorts, serveAPIAddr))
+	mgmt, err := managementPortsChecked(serveMgmtPorts, serveAPIAddr)
+	if err != nil {
+		// Refused at startup rather than warned about: this flag decides what is exempt
+		// from every security layer, so a value that widens it unpredictably is worth
+		// not starting over.
+		return err
+	}
+	mgr.SetInitialManagementPorts(mgmt)
 	// Auto-ban sink: threat-intel / non-permitted large upload → blacklist + hot reload.
 	// What the gateway blocks by itself goes to the quarantine list, not the
 	// operator's deny list: deny lives in the posture slot, so a Strict<->Split
@@ -809,6 +816,47 @@ func sliceHasFold(ss []string, want string) bool {
 // managementPorts parses the --management-ports csv and always appends the API
 // port, so remote management (SSH + the console/API) survives a TUN/system-proxy
 // capture under default-deny.
+// ephemeralFloor is the lowest port the kernel hands out to outgoing connections
+// on the platforms we run on: Linux defaults to 32768-60999, macOS to 49152-65535,
+// Windows to 49152-65535. The lowest of those is the safe line to draw.
+//
+// A management port inside that range is not a listener you chose, it is a number
+// the OS will assign to arbitrary *outbound* connections — and a source_port rule
+// at the top of the floor then exempts those connections from the blacklist,
+// quarantine, the process and device gates and the Permit gate, at whatever rate
+// the OS happens to reuse it. Nothing checked, and 50000 does not look wrong.
+const ephemeralFloor = 32768
+
+// managementPortsChecked parses the --management-ports csv and refuses a value that
+// would punch an unpredictable hole rather than a deliberate one.
+//
+// The API port is appended unconditionally and exempt from the check: the operator
+// chose it, it is a listener rather than an allocation, and refusing it would stop
+// the gateway from starting instead of warning about a flag.
+func managementPortsChecked(csv, apiAddr string) ([]int, error) {
+	for _, s := range strings.Split(csv, ",") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return nil, fmt.Errorf("--management-ports: %q is not a port number", s)
+		}
+		if n <= 0 || n > 65535 {
+			return nil, fmt.Errorf("--management-ports: %d is not a port number", n)
+		}
+		if n >= ephemeralFloor {
+			return nil, fmt.Errorf("--management-ports: refusing %d because it is in the "+
+				"ephemeral range (%d and above), which the kernel assigns to outgoing "+
+				"connections — a rule on it would exempt arbitrary outbound traffic from the "+
+				"blacklist, quarantine and the Permit gate. Use the port your service listens "+
+				"on (22 for SSH)", n, ephemeralFloor)
+		}
+	}
+	return managementPorts(csv, apiAddr), nil
+}
+
 func managementPorts(csv, apiAddr string) []int {
 	seen := map[int]bool{}
 	var out []int
