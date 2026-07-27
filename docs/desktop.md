@@ -1,7 +1,8 @@
 # 桌面端（macOS / Linux / Windows）
 
 ```bash
-make desktop     # 在当前平台上打包（macOS: .app + .dmg / Linux: .deb + .AppImage / Windows: .msi + .nsis）
+make build       # 全套：控制台 → 内嵌 UI 的单二进制 → 当前平台的 app
+make build-app   # 只重打 app（macOS: .app + .dmg / Linux: .deb + .AppImage / Windows: .msi + .nsis）
 make desktop-dev # 开发运行（贴附已在跑的网关）
 ```
 
@@ -32,7 +33,7 @@ Linux 上**故意不拿 `sudo` 兜底**：GUI 里没有终端可以问密码，�
 
 | 从哪儿拿到 | 怎么装 |
 |---|---|
-| 自己 `make desktop` 构建 | 没有隔离标记，**双击直接开**，零操作 |
+| 自己 `make build` 构建 | 没有隔离标记，**双击直接开**，零操作 |
 | 别人给的 / 下载的 `.dmg` | 需放行一次，见下 |
 
 ```bash

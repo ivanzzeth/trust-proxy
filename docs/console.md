@@ -31,8 +31,9 @@ HashRouter，无需 SPA 服务端兜底。
 ## 构建
 
 ```bash
-make dashboard       # -> dashboard/dist（:21585 从磁盘 serve，适合开发）
+make build-ui        # 只构建控制台 -> dashboard/dist（:21585 从磁盘 serve，适合开发）
 make build-embed     # 把 dist 嵌进二进制（-tags embed_ui），发布单文件
+make build           # 全套（含上面两步 + 桌面 app）
 make dashboard-test  # vitest（jsdom，对着 mock 的 /api 断言页面真的渲染出后端返回的东西）
 cd dashboard && npx tsc --noEmit
 ```

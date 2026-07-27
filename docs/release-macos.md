@@ -73,7 +73,7 @@ export APPLE_API_KEY=ABCD1234EF
 export APPLE_API_ISSUER=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
 export APPLE_API_KEY_PATH=/abs/path/AuthKey_ABCD1234EF.p8
 
-make desktop            # Tauri 自己 codesign → notarytool submit --wait → stapler staple
+make build-app          # Tauri 自己 codesign → notarytool submit --wait → stapler staple
 ```
 
 要点：

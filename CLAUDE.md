@@ -20,7 +20,7 @@
 
 | 阶段 | 落点 | 「测试充分」的判定 |
 |---|---|---|
-| **1. 功能** | `internal/gateway`（注入/重建）、`internal/detect`、各 store（`internal/{whitelist,customrules,ruleset,dnscfg,…}`） | 该包单测 + **`make build && ./trust-proxy selftest`**（VM 里 `sudo` 跑覆盖 tun）。涉及安全语义的必须新增 selftest 场景，并**验证去掉修复后该场景会 FAIL**（测试得有牙齿） |
+| **1. 功能** | `internal/gateway`（注入/重建）、`internal/detect`、各 store（`internal/{whitelist,customrules,ruleset,dnscfg,…}`） | 该包单测 + **`make build-go && ./trust-proxy selftest`**（VM 里 `sudo` 跑覆盖 tun；`build-go` 是不带 UI 的快速内环，`make build` 才是出全套）。涉及安全语义的必须新增 selftest 场景，并**验证去掉修复后该场景会 FAIL**（测试得有牙齿） |
 | **2. API** | `internal/api`（路由 + 入参校验 + **失败回滚**，别让一条坏数据 brick 网关） | handler 单测（`internal/api/*_test.go`）+ 对真实实例 curl 一遍；错误必须以 `{"error":…}` 透出，不能静默成功 |
 | **3. SDK** | `pkg/client`（每个端点一个薄方法，wire 类型只放 `pkg/apitypes`，**不建第二套模型**）；底层 Clash 原语在 `pkg/clash` | `httptest` 假后端断言 method/path/body/token（`pkg/client/policy_test.go`）。**注意返回整份 store 文档的端点要解包** |
 | **4. CLI** | `cmd/*.go`（cobra，走 SDK 而非直接拼 HTTP）；每个命令必须有 `--json`，共享 `--api-addr`/`--api-token` | VM 里对真实网关跑通，且**每个写操作用另一个命令读回来**验证（no-proxy 不能顺带授予 Permit 这类轴隔离要显式断言）；危险开关要确认提示 + `-y` |
@@ -102,7 +102,7 @@ sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 
 **锚点**：地板 reject 在 `preludeLen` 后；闸/路由/Global 在 `catchAllIdx` 前。
 
 ### UI 分工（已决策 + 已落地）
-- **我们自建的控制台 `dashboard/`（shadcn/ui + Tailwind v4 + React 19 + Vite）** 是唯一 UI，由后端 `internal/api`（:21585）从 `dashboard/dist` serve，`make dashboard` 构建。**浏览器只连 :21585 单一 origin**，一切走 `/api/*`；连接/代理组/日志都由后端**代理 Clash API**（浏览器不碰 Clash secret）。HashRouter，无需 SPA 服务端兜底。
+- **我们自建的控制台 `dashboard/`（shadcn/ui + Tailwind v4 + React 19 + Vite）** 是唯一 UI，由后端 `internal/api`（:21585）从 `dashboard/dist` serve，`make build-ui` 构建。**浏览器只连 :21585 单一 origin**，一切走 `/api/*`；连接/代理组/日志都由后端**代理 Clash API**（浏览器不碰 Clash secret）。HashRouter，无需 SPA 服务端兜底。
   - 页面：Overview / Connections（全部·活动·已关闭 + 一键加白）/ Nodes（订阅/粘贴 + **自建出口对话框**）/ Profiles（**当前策略实时快照** + 三步引导 + 覆盖·激活确认）/ **Policy**（Permit / Route / Deny / Subjects）/ **Rules**（Routing 生效视图 + Rule Sets + Custom/策略包）/ Proxies / Endpoints/VPN / Settings / DNS / History / **Gateways / 多网关**（原 Fleet，`/fleet` 路由不变；「节点」留给代理节点，网关叫网关）/ Logs。（`/whitelist`·`/blacklist`→`/acls`，`/rulesets`·`/custom-rules`→`/rules` 重定向。）
   - **（历史）曾 vendored Yacd 作底座（`console/`），里程碑 5 后整体换成自研 shadcn 应用并删除 Yacd**——不再有前端 upstream 同步负担。
 - **go:embed 单二进制（✅）**：默认构建从磁盘 serve `dashboard/dist`（开发）；`make build-embed`（或 `-tags embed_ui`，见 `embed_ui.go`）把前端嵌进二进制，release 单文件自带 UI（`internal/api` 的 `consoleHandler` 用 `fs.FS`：embed 优先、否则 `os.DirFS(--console)`）。
@@ -147,7 +147,7 @@ UI 就是网关自己在 `:21585` serve 的那个控制台（故 sidecar **必�
 任意半装状态都能收干净且幂等；install **不会顺手打开 TUN**（`--mode` 不给就不写）；`RunAtLoad`+`KeepAlive`（kill -9 后自愈）。
 plist 里所有路径必须绝对（launchd 不解析相对路径，否则每次开机静默失败）。
 
-构建：`make desktop`（→ `.app` + `.dmg`，先 `make build-embed` 再 bundle）/ `make desktop-dev`。
+构建：`make build`（一键全套：控制台 → embed_ui 单二进制 → `.app` + `.dmg`；没有 cargo 的机器只出二进制并说明）/ `make build-app` 只重打 app / `make desktop-dev`。**默认目标故意是「全套」**：旧的 `make build` 产出不带 UI 的二进制，装成服务后每页都是「dashboard not built」——不假思索敲的那个名字必须是不会出错的那个。
 **默认 ad-hoc 签名**（`APPLE_SIGNING_IDENTITY ?= -`）：Apple Silicon 上没签名的 Mach-O 压根跑不起来，而不给 identity
 时 Tauri 不封印 bundle、`spctl` 连评估都做不了（`code has no resources…`）；ad-hoc 后是
 `flags=0x10002(adhoc,runtime)` + Sealed Resources，hardened runtime 已开，换真证书不改流程。签名/公证全流程与
@@ -236,7 +236,7 @@ git checkout trust-proxy
 git merge upstream/testing          # 或 rebase；解决冲突后
 git push origin trust-proxy
 cd ../..
-go mod tidy && make build
+go mod tidy && make build-go
 git add third_party/sing-box go.mod go.sum
 git commit -m "chore: merge sing-box upstream/testing into trust-proxy"
 ```
@@ -256,12 +256,13 @@ git commit -m "chore: merge sing-box upstream/testing into trust-proxy"
 
 ```bash
 make deps        # 首次：git submodule update --init --recursive（拉 sing-box）
-make build       # 编译 -> ./trust-proxy（TAGS="with_clash_api ..." 可选）
+make build       # 一键全套：控制台 + 内嵌 UI 的单二进制 + 桌面 app
+make build-go    # 只编译 Go（不带 UI，快速内环；TAGS="with_clash_api ..." 可选）
 make run         # 用 configs/config.json 启动
-make dashboard   # 构建自研控制台 -> dashboard/dist
+make build-ui    # 只构建自研控制台 -> dashboard/dist
 ```
 
-**端到端自测（`cmd/selftest.go`，`trust-proxy selftest`，hidden 子命令）**：**离线、确定性、可扔进 VM 跑**的核心引擎 e2e。自起两个本地「origin」（direct-origin 返回 `direct` / node-origin 返回 `node`）+ 一个 http CONNECT「node」上游，用**真实 `gateway.Manager`** 跑遍：默认拒绝拦截 / 白名单→node / no-proxy→direct / 黑名单胜 / 自定义规则 direct·proxy·block·node / system 模式；`sudo trust-proxy selftest` 额外覆盖 tun（loopback 不被 tun 捕获，故 tun 分支只断言 box 能在 tun 模式起来）。任一场景失败则非零退出。**改引擎后务必 `make build && ./trust-proxy selftest`**（VM 里 `sudo` 跑覆盖全部）。
+**端到端自测（`cmd/selftest.go`，`trust-proxy selftest`，hidden 子命令）**：**离线、确定性、可扔进 VM 跑**的核心引擎 e2e。自起两个本地「origin」（direct-origin 返回 `direct` / node-origin 返回 `node`）+ 一个 http CONNECT「node」上游，用**真实 `gateway.Manager`** 跑遍：默认拒绝拦截 / 白名单→node / no-proxy→direct / 黑名单胜 / 自定义规则 direct·proxy·block·node / system 模式；`sudo trust-proxy selftest` 额外覆盖 tun（loopback 不被 tun 捕获，故 tun 分支只断言 box 能在 tun 模式起来）。任一场景失败则非零退出。**改引擎后务必 `make build-go && ./trust-proxy selftest`**（VM 里 `sudo` 跑覆盖全部）。
 
 **配置只有一处**：`<data>/config.json`（默认 `~/.trust-proxy/config.json`），**首启自动种下**——种子是 `main.go` 用 `go:embed` 编进二进制的 `configs/config.json`（仓库里就这一份，不存副本故不会漂移）；若 cwd 有老默认路径 `configs/config.json` 则**以它为种子**（保住用户在仓库里的编辑）。`-c` 只作显式覆盖。**为什么改**：`-c` 原先默认 `configs/config.json` 是**仓库相对路径**，只在 checkout 里成立，于是桌面壳只能另挑位置并在 Rust 里**重写一遍种配置逻辑**——同一件事两份实现、两个默认值，同机上 CLI daemon 与 app 会落到不同配置（连 mode 都不同）。修法是回上游改 `serve`（`cmd/configseed.go` 的 `resolveConfig`，`serve` 与 `service install` 共用），Rust 侧那份删掉。
 

@@ -17,10 +17,10 @@
 依赖：Go 1.24.7+、Node 20+ / pnpm（构建控制台）。
 
 ```bash
-make deps            # git submodule update --init --recursive（拉 sing-box）
-make dashboard       # 构建控制台 -> dashboard/dist
-make build           # 编译 -> ./trust-proxy（开发：从磁盘 serve dashboard/dist）
-make build-embed     # 发布：-tags embed_ui 把 UI 嵌进二进制，单文件自带控制台
+make deps            # 首次：git submodule update --init --recursive（拉 sing-box）
+make build           # 一键出全套：控制台 → 内嵌 UI 的单二进制 → 桌面 app
+                     #（机器上没有 cargo 就只出二进制并说明，服务器上正合适）
+make                 # 不带参数 = 列出所有目标，build-* 是各个单独的部分
 ./trust-proxy serve            # 前台
 ./trust-proxy serve --daemon   # 后台（停止：proxy stop --pid ~/.trust-proxy/serve.pid）
 ```
@@ -52,7 +52,7 @@ trust-proxy auth bootstrap --api-addr <host>:21585 --code …   # 远程（码�
 ## 桌面端（macOS / Linux / Windows）
 
 ```bash
-make desktop   # 在当前平台上打包：.app+.dmg / .deb+.AppImage / .msi+.nsis
+make build-app   # 只打包 app（`make build` 已经包含它）：.app+.dmg / .deb+.AppImage / .msi+.nsis
 ```
 
 壳只负责开窗和生命周期，UI 就是网关 serve 的控制台；已有网关在跑则**贴附**而不再起一个。
