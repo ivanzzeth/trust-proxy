@@ -30,7 +30,11 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22+, not 20: dashboard/package.json pins pnpm 11, which imports
+          # node:sqlite — absent in 20, so every release since v0.7.0 died on
+          # `pnpm install` with "No such built-in module: node:sqlite" before it
+          # built anything.
+          node-version: 22
 
       - name: Build dashboard (embedded into the binary)
         run: |
