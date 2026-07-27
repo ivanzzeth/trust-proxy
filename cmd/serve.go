@@ -696,7 +696,11 @@ func announceBootstrap(store *users.Store, auth *authn.Authn, dataDir, apiAddr s
 		return
 	}
 	log.Warn().Msgf("  API is reachable off-loopback: remote bootstrap needs this one-time code: %s", code)
-	log.Info().Msgf("  trust-proxy auth bootstrap --api-addr %s --code %s", apiAddr, code)
+	// <name> is not decoration. The CLI takes the username positionally, so a line
+	// printed without it invites pasting the code into that slot — which claims the
+	// gateway under an account named after the code, and succeeds. That happened to
+	// a real user, from this very line.
+	log.Info().Msgf("  trust-proxy auth bootstrap <name> --api-addr %s --code %s", apiAddr, code)
 }
 
 // loopbackAddr reports whether a listen address only accepts local connections.

@@ -152,6 +152,32 @@ func TestAPIKeyAuthenticatesWithTheOwnersRole(t *testing.T) {
 	}
 }
 
+// A dead API key in the environment must not shadow a valid session. Measured:
+// `auth login` succeeded and then failed to mint its key with "unauthorized",
+// because TP_API_KEY still held a key belonging to an account that had just been
+// deleted, and the key was checked first and returned its error.
+func TestAStaleAPIKeyDoesNotShadowAValidSession(t *testing.T) {
+	s, us, a, _ := newAuthServer(t)
+	admin, err := us.Create("ivan", "admin-password-long", users.RoleAdmin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, _, _ := a.Issue(admin)
+
+	r := req("POST", "/api/users/"+admin.ID+"/apikeys")
+	r.Header.Set("X-API-Key", users.KeyPrefix+"a-key-that-no-longer-exists")
+	r.AddCookie(&http.Cookie{Name: authn.CookieName, Value: tok})
+	if got := serve(s, r).Code; got != 200 {
+		t.Fatalf("a valid session must win over a dead key: got %d", got)
+	}
+	// With nothing else to fall back on, a bad key is still a rejection.
+	r = req("POST", "/api/users/"+admin.ID+"/apikeys")
+	r.Header.Set("X-API-Key", users.KeyPrefix+"a-key-that-no-longer-exists")
+	if got := serve(s, r).Code; got != 401 {
+		t.Fatalf("a bad key alone must be refused: got %d", got)
+	}
+}
+
 // A session must stop working the moment the account behind it is disabled — a
 // JWT outlives the account, so the middleware re-reads the record.
 func TestDisabledAccountLosesItsSessionImmediately(t *testing.T) {

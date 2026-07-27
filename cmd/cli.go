@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/ivanzzeth/trust-proxy/pkg/client"
 	"os"
 	"strings"
 
@@ -47,6 +48,21 @@ func resolveToken() string {
 		return apiToken
 	}
 	return os.Getenv("TP_API_KEY")
+}
+
+// loginToken is the credential `auth login` and `auth bootstrap` start from:
+// nothing, unless one was passed by hand.
+//
+// TP_API_KEY is deliberately ignored there. Logging in is how you *replace* that
+// key, and an exported one belonging to a deleted or revoked account made the
+// login itself fail — "logged in, but minting an API key failed: unauthorized" —
+// which reads as "my password is wrong" when it is not.
+func loginToken() string { return apiToken }
+
+// loginSDK is a client for the commands that establish a credential rather than
+// use one.
+func loginSDK() *client.Client {
+	return client.New(client.Options{APIBaseURL: apiAddr, Token: loginToken()})
 }
 
 // emit prints v as indented JSON. Every command routes its result through

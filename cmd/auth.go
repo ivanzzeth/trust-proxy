@@ -63,7 +63,7 @@ var authBootstrapCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		sess, err := sdk().Bootstrap(args[0], pw, authBootstrapCode)
+		sess, err := loginSDK().Bootstrap(args[0], pw, authBootstrapCode)
 		if err != nil {
 			return err
 		}
@@ -85,7 +85,7 @@ var authLoginCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		c := sdk()
+		c := loginSDK()
 		sess, err := c.Login(args[0], pw)
 		if err != nil {
 			return err

@@ -200,12 +200,20 @@ func (s *Server) originOK(r *http.Request) bool {
 // authenticate resolves the caller, or returns nil when anonymous.
 func (s *Server) authenticate(r *http.Request) (*apitypes.User, error) {
 	// 1. API key.
+	//
+	// A key that does not authenticate must not end the attempt: a caller can
+	// legitimately carry a stale TP_API_KEY *and* a fresh session — which is
+	// exactly what `auth login` does, and it failed with "unauthorized" while
+	// holding a valid session, because the dead key from a deleted account was
+	// checked first and returned. The error is kept and only reported if nothing
+	// else authenticates, so a genuinely bad key still says so.
+	var keyErr error
 	if key := apiKeyFrom(r); key != "" && s.users != nil {
 		u, err := s.users.AuthenticateAPIKey(key)
-		if err != nil {
-			return nil, err
+		if err == nil {
+			return &u, nil
 		}
-		return &u, nil
+		keyErr = err
 	}
 	// 2. Legacy static token: full admin, for probes configured with --api-token.
 	//
@@ -232,6 +240,9 @@ func (s *Server) authenticate(r *http.Request) (*apitypes.User, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	if keyErr != nil {
+		return nil, keyErr
 	}
 	// No accounts and no token configured: an unclaimed gateway is open, which is
 	// what makes bootstrap possible at all. The console pushes you to create the
