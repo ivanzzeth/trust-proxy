@@ -58,7 +58,11 @@
       "win": "Windows：以管理员身份运行。",
       "guard": "可放心尝试：切到 TUN 会武装 60 秒自动回退，若切断了你的访问，网关会自行退回上一个模式。切回 Manual 永远不需要权限。",
       "cancel": "取消",
-      "tryAnyway": "仍然尝试"
+      "tryAnyway": "仍然尝试",
+      "appTitle": "这个 app 可以直接帮你开",
+      "appBody": "TUN 需要网关以 root 运行，而这个窗口刻意不是 root。装成系统服务后网关归系统所有：开机自启、关窗不停，TUN 也就能用了。会向你要一次密码。",
+      "appAction": "装成服务并开启 TUN",
+      "elevated": "已安装 —— 网关现在以系统服务运行，TUN 已开"
     },
     "routingRuleTip": "Rule：白名单默认拒绝（安全）",
     "routingGlobalTip": "Global：默认拒绝关闭 —— 未列入流量走代理出网",

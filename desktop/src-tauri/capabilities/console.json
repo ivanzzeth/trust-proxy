@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "console",
+  "description": "Lets the gateway's own console (served over loopback, inside this window) ask the shell for the one thing it cannot do itself: elevate. Without this the TUN switch in the console can only print advice, because the page is a remote origin and Tauri gives remote origins no IPC by default.",
+  "windows": ["main"],
+  "remote": {
+    "urls": ["http://127.0.0.1:21585", "http://localhost:21585", "http://127.0.0.1:*"]
+  },
+  "permissions": ["core:default"]
+}

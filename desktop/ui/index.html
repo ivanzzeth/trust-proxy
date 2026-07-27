@@ -67,6 +67,7 @@
 
       <div class="actions" id="actions" hidden>
         <button class="primary" id="retry">Retry</button>
+        <button id="install-tun">Enable TUN (install system service)…</button>
         <button id="install">Install system service…</button>
         <button id="uninstall" hidden>Remove system service…</button>
       </div>
@@ -89,6 +90,8 @@
           ? s.service_running ? 'installed, running' : 'installed, not running'
           : 'not installed';
         $('uninstall').hidden = !s.service_installed;
+        $('install-tun').hidden = s.service_installed;
+        $('install').hidden = s.service_installed;
 
         if (s.error) {
           $('headline').textContent = 'The gateway did not start';
@@ -122,10 +125,10 @@
       poll();
 
       $('retry').onclick = () => { done = false; $('error').hidden = true; $('actions').hidden = true; invoke('open_console').catch(()=>{}); poll(); };
-      const privileged = async (cmd, btn) => {
+      const privileged = async (cmd, btn, args) => {
         btn.disabled = true;
         try {
-          await invoke(cmd);
+          await invoke(cmd, args);
           done = false; poll();
         } catch (e) {
           $('error').hidden = false;
@@ -134,6 +137,9 @@
           btn.disabled = false;
         }
       };
+      // TUN is why most people install the service at all, so it gets its own
+      // button rather than being a mode to discover afterwards in the console.
+      $('install-tun').onclick = (e) => privileged('install_service', e.target, { mode: 'tun' });
       $('install').onclick = (e) => privileged('install_service', e.target);
       $('uninstall').onclick = (e) => privileged('uninstall_service', e.target);
     </script>

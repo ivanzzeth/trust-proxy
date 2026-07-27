@@ -574,13 +574,25 @@ fn open_console(app: AppHandle, rt: State<Runtime>) {
 /// install_service hands the privileged half to the CLI, through exactly one
 /// admin prompt. The shell itself never runs as root.
 #[tauri::command]
-fn install_service(app: AppHandle, rt: State<Runtime>) -> Result<String, String> {
+fn install_service(app: AppHandle, rt: State<Runtime>, mode: Option<String>) -> Result<String, String> {
+    // mode = "tun" is the whole reason a desktop user installs the service: TUN
+    // needs root, the window must not be root, so the daemon becomes root's. `-y`
+    // because the confirmation the CLI would print has already been made in the UI
+    // — there is no terminal here to answer it.
+    let mode_flag = match mode.as_deref() {
+        Some(m) if !m.is_empty() => format!(" --mode {} -y", shell_quote(m)),
+        _ => String::new(),
+    };
+    // --takeover: clicking "install the service" cannot sensibly mean "and leave
+    // the other gateway holding the port", which would install a service that can
+    // never bind and is retried at every boot.
     let cmd = format!(
-        "{} service install -c {} --data {} --api-addr {} --json",
+        "{} service install --takeover -c {} --data {} --api-addr {}{} --json",
         shell_quote(&rt.binary.display().to_string()),
         shell_quote(&rt.data_dir.join("config.json").display().to_string()),
         shell_quote(&rt.data_dir.display().to_string()),
         shell_quote(&rt.api),
+        mode_flag,
     );
 
     // Stand aside first. If this window started the gateway, that process holds

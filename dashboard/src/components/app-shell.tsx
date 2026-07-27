@@ -12,6 +12,7 @@ import {
   History as HistoryIcon,
   Layers,
   ListTree,
+  Loader2,
   Moon,
   Radar,
   ScrollText,
@@ -29,6 +30,7 @@ import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api, currentNode, setNode } from '@/lib/api';
+import { inDesktopApp, installServiceViaApp } from '@/lib/desktop';
 import { cn, fmtBytes, fmtRate } from '@/lib/utils';
 import { useTrafficRate } from '@/hooks/use-traffic-rate';
 import { Logo } from '@/components/logo';
@@ -233,6 +235,23 @@ function TunHelpDialog({
   onClose: () => void;
 }) {
   const { t } = useTranslation();
+  // Inside the desktop app there is a button for this, so the shell-command
+  // instructions below are the fallback for a browser, not the main event.
+  const desktop = inDesktopApp();
+  const [elevating, setElevating] = useState(false);
+  const elevate = async () => {
+    setElevating(true);
+    try {
+      await installServiceViaApp('tun');
+      toast.success(t('top.tunHelp.elevated'));
+      // The service now owns the gateway; the shell has re-attached to it, and a
+      // reload picks up the new /api/status (root, can_tun, mode).
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (e) {
+      toast.error(String((e as Error).message));
+      setElevating(false);
+    }
+  };
   const steps =
     os === 'darwin'
       ? [t('top.tunHelp.mac')]
@@ -253,21 +272,35 @@ function TunHelpDialog({
             {error}
           </div>
         )}
-        <ul className="space-y-2 text-sm">
-          {steps.map((s, i) => (
-            <li key={i} className="rounded-md bg-muted/60 px-3 py-2 font-mono text-xs leading-relaxed">
-              {s}
-            </li>
-          ))}
-        </ul>
+        {desktop ? (
+          <div className="space-y-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2.5">
+            <div className="text-sm font-medium">{t('top.tunHelp.appTitle')}</div>
+            <p className="text-xs text-muted-foreground">{t('top.tunHelp.appBody')}</p>
+          </div>
+        ) : (
+          <ul className="space-y-2 text-sm">
+            {steps.map((s, i) => (
+              <li key={i} className="rounded-md bg-muted/60 px-3 py-2 font-mono text-xs leading-relaxed">
+                {s}
+              </li>
+            ))}
+          </ul>
+        )}
         <p className="text-xs text-muted-foreground">{t('top.tunHelp.guard')}</p>
         <DialogFooter>
           <Button variant="ghost" onClick={onClose}>
             {t('top.tunHelp.cancel')}
           </Button>
-          <Button variant="secondary" disabled={pending} onClick={onTry}>
-            {t('top.tunHelp.tryAnyway')}
-          </Button>
+          {desktop ? (
+            <Button disabled={elevating} onClick={elevate}>
+              {elevating ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}{' '}
+              {t('top.tunHelp.appAction')}
+            </Button>
+          ) : (
+            <Button variant="secondary" disabled={pending} onClick={onTry}>
+              {t('top.tunHelp.tryAnyway')}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

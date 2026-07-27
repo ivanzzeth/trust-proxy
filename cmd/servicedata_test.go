@@ -1,8 +1,13 @@
 package cmd
 
 import (
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -79,5 +84,47 @@ func TestHasGatewayData(t *testing.T) {
 	write(t, filepath.Join(dir, "whitelist.json"), `{"domains":[]}`)
 	if !hasGatewayData(dir) {
 		t.Fatal("a real store must be recognised")
+	}
+}
+
+// Installing a service while another gateway holds the API port produces a
+// daemon that can never bind and is retried at every boot — with the machine
+// looking fine, because the other gateway answers. So the install looks first.
+func TestGatewayOnDetectsAnAnswerOnThePort(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/health" {
+			_, _ = io.WriteString(w, `{"status":"ok"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+	addr := strings.TrimPrefix(srv.URL, "http://")
+	if gatewayOn(addr) == "" {
+		t.Fatal("a gateway answering /api/health must be detected")
+	}
+	// A free port must not read as occupied, or every install on a clean machine
+	// would refuse.
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	free := l.Addr().String()
+	_ = l.Close()
+	if who := gatewayOn(free); who != "" {
+		t.Fatalf("nothing is listening on %s, got %q", free, who)
+	}
+}
+
+// --takeover stops the gateway in the way; with no pid file it must say so
+// rather than killing something it guessed at.
+func TestStopGatewayOnRefusesWithoutAPidFile(t *testing.T) {
+	dir := t.TempDir()
+	err := stopGatewayOn("127.0.0.1:1", dir)
+	if err == nil {
+		t.Fatal("expected an error when there is no pid file")
+	}
+	if !strings.Contains(err.Error(), "pid file") {
+		t.Fatalf("the error should name the missing pid file: %v", err)
 	}
 }

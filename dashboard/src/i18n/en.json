@@ -58,7 +58,11 @@
       "win": "Windows: run the app as Administrator.",
       "guard": "Safe to try: a TUN switch arms a 60s auto-revert, so if it severs your access the gateway falls back to the previous mode on its own. Switching back to Manual never needs privileges.",
       "cancel": "Cancel",
-      "tryAnyway": "Try anyway"
+      "tryAnyway": "Try anyway",
+      "appTitle": "This app can do it for you",
+      "appBody": "TUN needs the gateway to run as root, and this window deliberately does not. Installing it as a system service hands the gateway to the OS: it starts at boot, keeps running when you close the window, and TUN becomes available. You will be asked for your password once.",
+      "appAction": "Install service and enable TUN",
+      "elevated": "Installed — the gateway now runs as a system service with TUN"
     },
     "routingRuleTip": "Rule: whitelist default-deny (safe)",
     "routingGlobalTip": "Global: default-deny OFF — unlisted traffic egresses via proxy",

@@ -2,10 +2,13 @@ package cmd
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -29,6 +32,7 @@ var (
 	svcBinary   string
 	svcKeepPath bool
 	svcConsole  string
+	svcTakeover bool
 )
 
 var serviceCmd = &cobra.Command{
@@ -52,6 +56,26 @@ var serviceInstallCmd = &cobra.Command{
 		c, err := serviceConfig()
 		if err != nil {
 			return err
+		}
+		// Something already on the API port means the service will start, fail to
+		// bind, and be retried at every boot by KeepAlive — while the machine looks
+		// fine, because the *other* gateway is answering. Say it now.
+		if who := gatewayOn(c.APIAddr); who != "" {
+			if !svcTakeover {
+				return fmt.Errorf("a gateway is already listening on %s (%s).\n"+
+					"Installing the service now would give you two, and the service would "+
+					"lose the port and be restarted forever.\n"+
+					"Stop that one first:  sudo %s proxy stop --pid %s\n"+
+					"or re-run this with --takeover to have it stopped for you.",
+					c.APIAddr, who, os.Args[0], filepath.Join(c.DataDir, "serve.pid"))
+			}
+			// --takeover: the caller has said the service should be the gateway, so
+			// the one in the way gets stopped. The desktop app always asks for this —
+			// clicking "install the service" cannot reasonably mean "and also leave
+			// the other gateway running".
+			if err := stopGatewayOn(c.APIAddr, c.DataDir); err != nil {
+				return err
+			}
 		}
 		c.KeepBinaryPath = svcKeepPath
 		if svcMode == "tun" {
@@ -121,6 +145,59 @@ var serviceStatusCmd = &cobra.Command{
 			}
 		})
 	},
+}
+
+// gatewayOn reports what is answering /api/health at addr, so an install can
+// refuse rather than produce a service that cannot bind. Empty means nobody.
+func gatewayOn(addr string) string {
+	c := &http.Client{Timeout: 800 * time.Millisecond}
+	resp, err := c.Get("http://" + addr + "/api/health")
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return ""
+	}
+	// Naming the process makes the difference between "stop it" and "stop what?".
+	if installed, running, _ := service.Status(); installed && running {
+		return "the service that is already installed"
+	}
+	return "started by hand, or another trust-proxy"
+}
+
+// stopGatewayOn stops whatever gateway holds the API address, using its pid file,
+// and waits for the port to actually free — a bind that races the old process's
+// exit fails just as badly as not stopping it at all.
+func stopGatewayOn(addr, dataDir string) error {
+	pidPath := filepath.Join(dataDir, "serve.pid")
+	pid, err := readPidFile(pidPath)
+	if err != nil {
+		return fmt.Errorf("a gateway holds %s but there is no pid file at %s to stop it with "+
+			"(%v) — stop it yourself, then re-run this", addr, pidPath, err)
+	}
+	// The same guard `proxy stop` uses: a stale pid file whose number has been
+	// reused would otherwise make this signal an unrelated process.
+	if alive, other := checkPid(pid); !alive {
+		_ = os.Remove(pidPath)
+	} else if other {
+		return fmt.Errorf("pid %d from %s does not look like a trust-proxy process; "+
+			"refusing to signal it — stop the gateway on %s yourself", pid, pidPath, addr)
+	} else if p, err := os.FindProcess(pid); err == nil {
+		fmt.Printf("stopping the gateway already using %s (pid %d)\n", addr, pid)
+		if err := p.Signal(syscall.SIGTERM); err != nil {
+			return fmt.Errorf("stop pid %d: %w", pid, err)
+		}
+		_ = os.Remove(pidPath)
+	}
+	for i := 0; i < 40; i++ {
+		if gatewayOn(addr) == "" {
+			return nil
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	return fmt.Errorf("a gateway still holds %s after being asked to stop; "+
+		"stop it yourself, then re-run this", addr)
 }
 
 // defaultServiceData picks the data directory for a machine-wide service.
@@ -314,6 +391,8 @@ func init() {
 		"run the binary where it stands instead of copying it to "+service.ManagedBinary+
 			" (only for a package-managed path; NEVER for one inside an .app, which breaks when the app moves)")
 	f.BoolVarP(&yesToAll, "yes", "y", false, "skip the TUN confirmation")
+	f.BoolVar(&svcTakeover, "takeover", false,
+		"stop a gateway that is already using the API port instead of refusing (the desktop app uses this)")
 
 	serviceCmd.AddCommand(serviceInstallCmd, serviceUninstallCmd, serviceStatusCmd)
 }
