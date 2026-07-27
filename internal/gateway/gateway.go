@@ -109,8 +109,10 @@ type Manager struct {
 	revertTimer *time.Timer
 	// persistMode records a settled capture mode; see SetModePersister.
 	persistMode func(string) error
-	revertTo    string
-	revertAt    time.Time
+	// lastGood is the most recent merged config that successfully started.
+	lastGood []byte
+	revertTo string
+	revertAt time.Time
 }
 
 // SetLogWriter routes sing-box's own log lines to w (the async ring) instead of
@@ -767,11 +769,38 @@ func (m *Manager) rebuild() error {
 		old.Close()
 	}
 	if err := newInst.Start(); err != nil {
-		m.logger.Error("gateway rebuild: new box failed to start after closing the previous instance; gateway has no running box until the next successful rebuild: ", err)
-		return fmt.Errorf("start box: %w", err)
+		// The old box is already closed — they want the same ports, so it has to be.
+		// A build failure returns above this point and is therefore harmless; a start
+		// failure is not, and used to leave the gateway with no running box at all
+		// until some later rebuild happened to succeed. The log line admitting that
+		// was the entire recovery story.
+		//
+		// The callers' revert paths do not cover it. They put back the one axis they
+		// changed and rebuild — which re-reads the base config, so if the reason the
+		// start failed is in *there* (a hand-edited config.json, a -c file somebody
+		// else manages, a port taken during the blip) the revert fails identically and
+		// its error is discarded. The operator was then told "apply X failed
+		// (reverted)" while nothing was forwarding, which is worse than an error: it
+		// is the opposite of what happened.
+		//
+		// So: fall back to the last configuration that actually started, which is a
+		// stronger guarantee than reverting one axis because it does not depend on the
+		// caller knowing what to undo.
+		if restored := m.restoreLastGood(); restored {
+			m.logger.Error("gateway rebuild: the new box failed to start; restored the previous "+
+				"configuration and the gateway is still forwarding: ", err)
+			return fmt.Errorf("start box: %w (previous configuration restored, gateway still running)", err)
+		}
+		m.logger.Error("gateway rebuild: the new box failed to start and the previous "+
+			"configuration could not be restored either; THE GATEWAY IS NOT RUNNING: ", err)
+		return fmt.Errorf("start box: %w (the gateway is NOT running: nothing could be started)", err)
 	}
 	m.mu.Lock()
 	m.instance = newInst
+	// The bytes that just started, kept for the fallback above. Recorded here and
+	// not where the config is built: "it parsed" and "it runs" are different claims,
+	// and only the second one is worth falling back to.
+	m.lastGood = merged
 	m.mu.Unlock()
 	m.logger.Info("gateway reloaded (", len(nodes), " node(s), ", len(wl.Domains), " domain(s), ", len(wl.IPs), " ip(s))")
 	m.mu.Lock()
@@ -991,5 +1020,34 @@ func isCatchAllRule(raw json.RawMessage) bool {
 			return false
 		}
 	}
+	return true
+}
+
+// restoreLastGood brings up the most recent configuration that started, after a
+// rebuild has closed the old box and failed to start the new one.
+//
+// Best-effort by nature — if nothing can be started there is nothing left to try —
+// but it reports which happened, because "the change failed" and "the gateway is
+// down" need different reactions from whoever is reading.
+func (m *Manager) restoreLastGood() bool {
+	m.mu.Lock()
+	good := m.lastGood
+	m.mu.Unlock()
+	if len(good) == 0 {
+		return false // never started successfully; there is no previous plane to keep
+	}
+	inst, err := m.buildBox(good)
+	if err != nil {
+		m.logger.Error("gateway restore: the last known-good config no longer builds: ", err)
+		return false
+	}
+	if err := inst.Start(); err != nil {
+		m.logger.Error("gateway restore: the last known-good config no longer starts: ", err)
+		_ = inst.Close()
+		return false
+	}
+	m.mu.Lock()
+	m.instance = inst
+	m.mu.Unlock()
 	return true
 }
