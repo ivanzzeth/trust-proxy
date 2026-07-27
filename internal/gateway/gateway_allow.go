@@ -113,7 +113,17 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 	hasUserPermit := len(wlSfx) > 0 || len(wlRgx) > 0 || len(wl.IPs) > 0 ||
 		len(permitSetTags) > 0 || hasCustomPermit
 	if !hasUserPermit && !splitOpen {
-		return nil
+		// Nothing to permit and no gate to build — but the catch-all still has to
+		// exist, because that is the rule default-deny *is*.
+		//
+		// This used to return here outright, so a base config without a catch-all of
+		// its own got none appended, and the result was fail-closed only because
+		// route.final happens to be "blocked" in the shipped config. Remove that one
+		// line from config.json and unmatched traffic goes to sing-box's default
+		// outbound — the first in the list, i.e. `direct` — with no gate above it.
+		// A silent fail-open, one edit away, in exactly the state a gateway is in
+		// before anyone has permitted anything.
+		return ensureCatchAll(cfg, route, "blocked")
 	}
 
 	allowSfx := append([]string(nil), wlSfx...)
@@ -294,4 +304,42 @@ func stringOr(v any, fallback string) string {
 		return s
 	}
 	return fallback
+}
+
+// ensureCatchAll guarantees route.rules ends with a catch-all sending unmatched
+// traffic to outbound, rewriting one that is already there.
+//
+// Shared by the two paths out of injectAllow, because both of them need it and one
+// of them used to skip it: with nothing permitted under Strict the function
+// returned before any catch-all was written, leaving default-deny to be enforced
+// by route.final alone.
+func ensureCatchAll(cfg map[string]json.RawMessage, route map[string]json.RawMessage, outbound string) error {
+	var rules []json.RawMessage
+	if raw, ok := route["rules"]; ok {
+		if err := json.Unmarshal(raw, &rules); err != nil {
+			return err
+		}
+	}
+	catchAll, err := json.Marshal(map[string]any{
+		"action": "route", "network": []string{"tcp", "udp"}, "outbound": outbound,
+	})
+	if err != nil {
+		return err
+	}
+	if i := catchAllIdx(rules); i < len(rules) {
+		rules[i] = catchAll
+	} else {
+		rules = append(rules, catchAll)
+	}
+	nr, err := json.Marshal(rules)
+	if err != nil {
+		return err
+	}
+	route["rules"] = nr
+	nrt, err := json.Marshal(route)
+	if err != nil {
+		return err
+	}
+	cfg["route"] = nrt
+	return nil
 }

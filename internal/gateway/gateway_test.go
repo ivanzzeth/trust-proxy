@@ -78,8 +78,18 @@ func routeRules(t *testing.T, merged []byte) []map[string]any {
 
 // --- rule classifiers -------------------------------------------------------
 
-func isSniff(r map[string]any) bool      { return r["action"] == "sniff" }
-func isCatchAll(r map[string]any) bool   { return r["network"] != nil }
+func isSniff(r map[string]any) bool { return r["action"] == "sniff" }
+
+// isCatchAll delegates to the production classifier: this used to be its own
+// looser copy ("has a network key"), which is exactly the mistake the production
+// side made, so a test written against it could not have caught it.
+func isCatchAll(r map[string]any) bool {
+	b, err := json.Marshal(r)
+	if err != nil {
+		return false
+	}
+	return isCatchAllRule(b)
+}
 func isGate(r map[string]any) bool       { return r["type"] == "logical" && r["invert"] == true }
 func isGlobalRule(r map[string]any) bool { return r["clash_mode"] == "Global" }
 func isInvertReject(r map[string]any) bool {

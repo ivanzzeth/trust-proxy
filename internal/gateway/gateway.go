@@ -941,18 +941,55 @@ func preludeLen(rules []json.RawMessage) int {
 	return n
 }
 
-// catchAllIdx returns the index of the default-deny catch-all (the rule carrying
-// a bare network matcher — reject or route->blocked), or len(rules) if absent.
-// Allow/gate rules are inserted right before it.
+// catchAllIdx returns the index of the default-deny catch-all, or len(rules) if
+// there is none. Allow/gate rules are inserted right before it.
 func catchAllIdx(rules []json.RawMessage) int {
 	for i, r := range rules {
-		var m struct {
-			Network json.RawMessage `json:"network"`
-		}
-		_ = json.Unmarshal(r, &m)
-		if len(m.Network) > 0 {
+		if isCatchAllRule(r) {
 			return i
 		}
 	}
 	return len(rules)
+}
+
+// isCatchAllRule reports whether a route rule is *the* catch-all: it matches every
+// network and has nothing else to match on.
+//
+// The anchor used to be "carries a network matcher at all", which is not the same
+// claim, and the difference is the most common thing an operator hand-writes:
+// blocking QUIC with {"network":["udp"],"port":[443],"action":"reject"}. That was
+// taken for the catch-all and rewritten by injectAllow into `route → Final`, so
+// their rule became its own inverse — all UDP permitted to the default egress —
+// while the real catch-all below it was left untouched. Silently, because a
+// rewritten rule is still a valid rule.
+//
+// Shape, not position, and not a marker key: sing-box parses route rules strictly,
+// so there is nowhere to write "this one is ours".
+func isCatchAllRule(raw json.RawMessage) bool {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return false
+	}
+	var tcp, udp bool
+	for _, n := range strSliceOf(m["network"]) {
+		switch n {
+		case "tcp":
+			tcp = true
+		case "udp":
+			udp = true
+		}
+	}
+	if !tcp || !udp {
+		return false
+	}
+	// Any other key is a matcher or a modifier that narrows this rule, which makes
+	// it somebody's policy rather than the fallthrough.
+	for k := range m {
+		switch k {
+		case "network", "action", "outbound":
+		default:
+			return false
+		}
+	}
+	return true
 }
