@@ -181,6 +181,7 @@ fn start_gateway(app: AppHandle) {
             set(&app, |s| s.spawned = true);
         }
         Err(e) => {
+            log(&format!("could not start a gateway: {e}"));
             set(&app, |s| s.error = Some(e));
             return;
         }
@@ -241,12 +242,12 @@ fn spawn_gateway(rt: &Runtime) -> Result<Child, String> {
         ));
     }
     std::fs::create_dir_all(&rt.data_dir)
-        .map_err(|e| format!("create {}: {e}", rt.data_dir.display()))?;
+        .map_err(|e| data_dir_problem(&rt.data_dir, &e))?;
     let log = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(rt.data_dir.join("serve.log"))
-        .map_err(|e| format!("open log: {e}"))?;
+        .map_err(|e| data_dir_problem(&rt.data_dir, &e))?;
     let errlog = log.try_clone().map_err(|e| format!("clone log: {e}"))?;
 
     Command::new(&rt.binary)
@@ -289,6 +290,28 @@ fn console_complaint(api: &str) -> Option<String> {
          \u{20}   sudo trust-proxy service install\n\n\
          (build it with `make build`, which embeds the console.)"
     ))
+}
+
+/// data_dir_problem turns "Permission denied (os error 13)" into something a
+/// person can act on.
+///
+/// The case that actually happens: the gateway was once run with sudo, so
+/// ~/.trust-proxy and everything in it now belongs to root, and the app — which
+/// is deliberately not root — cannot write there. The raw errno gives no hint of
+/// that, and the two ways out are not guessable either.
+fn data_dir_problem(dir: &Path, e: &std::io::Error) -> String {
+    if e.kind() != ErrorKind::PermissionDenied {
+        return format!("{}: {e}", dir.display());
+    }
+    format!(
+        "cannot write to {} \u{2014} the gateway cannot start.\n\n\
+         This usually means it was run with sudo at some point, so the directory now \
+         belongs to root while this app (deliberately) does not run as root. Either:\n\n\
+         \u{20}   \u{2022} install the system service, and let root own the gateway properly, or\n\
+         \u{20}   \u{2022} hand the directory back:  sudo chown -R \"$USER\" {}",
+        dir.display(),
+        dir.display()
+    )
 }
 
 /// log writes one line to stderr, which is where someone running the binary from
@@ -816,6 +839,22 @@ mod tests {
         });
         let why = console_complaint(&api).expect("a console-less gateway must be reported");
         assert!(why.contains("service install"), "no fix offered: {why}");
+    }
+
+    // The state this machine was actually in: a data directory the app cannot
+    // write because an earlier sudo run took it. errno alone says nothing about
+    // either way out, and both are needed — one keeps TUN, the other gives the
+    // directory back.
+    #[test]
+    fn an_unwritable_data_dir_names_both_ways_out() {
+        let denied = std::io::Error::from(ErrorKind::PermissionDenied);
+        let msg = data_dir_problem(Path::new("/Users/x/.trust-proxy"), &denied);
+        assert!(msg.contains("system service"), "{msg}");
+        assert!(msg.contains("chown -R"), "{msg}");
+        assert!(msg.contains("/Users/x/.trust-proxy"), "{msg}");
+        // Anything else keeps the original error rather than guessing at a cause.
+        let other = std::io::Error::from(ErrorKind::NotFound);
+        assert!(!data_dir_problem(Path::new("/tmp/x"), &other).contains("sudo"));
     }
 
     #[test]
