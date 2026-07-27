@@ -26,7 +26,9 @@
     "grpPolicy": "策略",
     "grpEgress": "出口",
     "grpSystem": "系统",
-    "users": "用户"
+    "users": "用户",
+    "open": "打开导航",
+    "close": "关闭导航"
   },
   "top": {
     "capture": "抓取",

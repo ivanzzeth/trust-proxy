@@ -13,6 +13,7 @@ import {
   Layers,
   ListTree,
   Loader2,
+  Menu,
   Moon,
   Radar,
   ScrollText,
@@ -25,8 +26,10 @@ import {
   Users as UsersIcon,
   Waypoints,
   Wifi,
+  X,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { api, currentNode, setNode } from '@/lib/api';
@@ -548,26 +551,39 @@ function TrafficPill() {
   );
 }
 
-export function AppShell() {
+/** Brand is the logo and wordmark. It renders in the sidebar, and — when the
+ *  sidebar has collapsed into a drawer — in the header, so that narrowing the
+ *  window never costs you the one element that says what you are looking at. */
+function Brand() {
+  const { t } = useTranslation();
+  return (
+    <div className="flex items-center gap-2.5">
+      <div className="grid size-7 shrink-0 place-items-center rounded-md bg-primary/15 text-primary">
+        <Logo className="size-5" />
+      </div>
+      <div className="flex flex-col leading-none">
+        <span className="text-sm font-bold tracking-tight">Trust Proxy</span>
+        <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{t('brand.subtitle')}</span>
+      </div>
+    </div>
+  );
+}
+
+/** SidebarBody is the navigation itself, rendered both in the fixed sidebar and
+ *  in the drawer. One copy: a second would drift, and nobody would notice until
+ *  a page was reachable at one width and not at another. */
+function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
   const { isAdmin } = useIsAdmin();
   const { t } = useTranslation();
   const { dark, toggle } = useTheme();
   const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status });
 
   return (
-    <div className="flex h-dvh overflow-hidden bg-background text-foreground">
-      {/* Sidebar */}
-      <aside className="flex w-60 shrink-0 flex-col border-r bg-card/40">
-        <div className="flex h-14 items-center gap-2.5 px-5">
-          <div className="grid size-7 place-items-center rounded-md bg-primary/15 text-primary">
-            <Logo className="size-5" />
-          </div>
-          <div className="flex flex-col leading-none">
-            <span className="text-sm font-bold tracking-tight">Trust Proxy</span>
-            <span className="text-[10px] uppercase tracking-widest text-muted-foreground">{t('brand.subtitle')}</span>
-          </div>
-        </div>
-        <nav className="flex-1 space-y-4 overflow-y-auto px-3 py-3">
+    <>
+      <div className="flex h-14 shrink-0 items-center px-5">
+        <Brand />
+      </div>
+      <nav className="flex-1 space-y-4 overflow-y-auto px-3 py-3">
           {NAV_SECTIONS.map((section) => (
             <div key={section.key} className="space-y-0.5">
               <div className="px-3 pb-1 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60">
@@ -578,6 +594,7 @@ export function AppShell() {
                   key={to}
                   to={to}
                   end={end}
+                  onClick={onNavigate}
                   className={({ isActive }) =>
                     cn(
                       'group relative flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors',
@@ -603,54 +620,136 @@ export function AppShell() {
               ))}
             </div>
           ))}
-        </nav>
-        <div className="border-t p-3">
-          <div className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1.5">
-              <ScrollText className="size-3.5" />
-              {st ? t('top.intel', { domains: st.threats.domains, ips: st.threats.ips }) : '—'}
-            </span>
-            <span className="flex items-center gap-0.5">
-              <a
-                href="https://github.com/ivanzzeth/trust-proxy"
-                target="_blank"
-                rel="noreferrer noopener"
-                title="GitHub"
-                className="grid size-6 place-items-center rounded hover:bg-accent hover:text-foreground"
-              >
-                <Github className="size-3.5" />
-              </a>
-              <button onClick={toggle} className="grid size-6 place-items-center rounded hover:bg-accent cursor-pointer">
-                {dark ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
-              </button>
-            </span>
-          </div>
+      </nav>
+      <div className="shrink-0 border-t p-3">
+        <div className="flex items-center justify-between rounded-md px-2 py-1.5 text-xs text-muted-foreground">
+          <span className="flex items-center gap-1.5">
+            <ScrollText className="size-3.5" />
+            {st ? t('top.intel', { domains: st.threats.domains, ips: st.threats.ips }) : '—'}
+          </span>
+          <span className="flex items-center gap-0.5">
+            <a
+              href="https://github.com/ivanzzeth/trust-proxy"
+              target="_blank"
+              rel="noreferrer noopener"
+              title="GitHub"
+              className="grid size-6 place-items-center rounded hover:bg-accent hover:text-foreground"
+            >
+              <Github className="size-3.5" />
+            </a>
+            <button onClick={toggle} className="grid size-6 place-items-center rounded hover:bg-accent cursor-pointer">
+              {dark ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
+            </button>
+          </span>
         </div>
+      </div>
+    </>
+  );
+}
+
+export function AppShell() {
+  const { isAdmin } = useIsAdmin();
+  const { t } = useTranslation();
+  const [navOpen, setNavOpen] = useState(false);
+  const { pathname } = useLocation();
+
+  // Close the drawer on navigation, and on any width change that brings the real
+  // sidebar back. A drawer left open behind a sidebar is invisible state: the
+  // overlay is gone, but it is still capturing Escape and the next backdrop click.
+  useEffect(() => setNavOpen(false), [pathname]);
+  useEffect(() => {
+    if (!navOpen) return;
+    const wide = window.matchMedia('(min-width: 1024px)');
+    const close = () => setNavOpen(false);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close();
+    };
+    wide.addEventListener('change', close);
+    window.addEventListener('keydown', onKey);
+    return () => {
+      wide.removeEventListener('change', close);
+      window.removeEventListener('keydown', onKey);
+    };
+  }, [navOpen]);
+
+  return (
+    <div className="flex h-dvh overflow-hidden bg-background text-foreground">
+      {/* Sidebar: fixed on a wide window, a drawer on a narrow one. 240px is a
+          sixth of a 1440px screen and half of a 480px one. */}
+      <aside className="hidden w-60 shrink-0 flex-col border-r bg-card/40 lg:flex">
+        <SidebarBody />
       </aside>
+
+      {navOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
+          <div className="absolute inset-0 bg-black/50" onClick={() => setNavOpen(false)} aria-hidden />
+          <aside className="absolute inset-y-0 left-0 flex w-64 max-w-[85vw] flex-col border-r bg-card shadow-xl">
+            <button
+              onClick={() => setNavOpen(false)}
+              aria-label={t('nav.close')}
+              className="absolute right-2 top-3.5 z-10 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground cursor-pointer"
+            >
+              <X className="size-4" />
+            </button>
+            <SidebarBody onNavigate={() => setNavOpen(false)} />
+          </aside>
+        </div>
+      )}
 
       {/* Main */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center justify-end gap-3 border-b bg-background/80 px-6 backdrop-blur">
-          {/* "Where does my traffic leave from" is everyone's business; the policy
-              switches below are an administrator's. The admin *target* selector is
-              on the Gateways page, not here — see exit-switcher.tsx. */}
-          <ExitSwitcher />
-          <TrafficPill />
-          {isAdmin && (
-            <>
-              <AutoBlock />
-              <PostureSwitcher />
-              <RoutingSwitcher />
-              <ModeSwitcher />
-            </>
-          )}
-          <AccountMenu />
+        {/* Wraps rather than overflows. With `justify-end` and no wrapping, a
+            narrow window pushed these controls out of the *start* of the row —
+            straight across the sidebar, taking the logo with them. A header that
+            grows a row is honest; one that silently eats the branding is not. */}
+        {/* min-h-14, not h-14: a fixed height and wrapping content cannot both be
+            had, and the fixed one wins by clipping. Measured at 1280px, where the
+            sidebar is back but the controls still need two rows — the top row was
+            sliced in half. It settles at exactly 14 when everything fits on one. */}
+        <header className="flex min-h-14 shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b bg-background/80 px-4 py-2 backdrop-blur sm:px-6">
+          <button
+            onClick={() => setNavOpen(true)}
+            aria-label={t('nav.open')}
+            className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground cursor-pointer lg:hidden"
+          >
+            <Menu className="size-4" />
+          </button>
+          <div className="lg:hidden">
+            <Brand />
+          </div>
+          {/* flex-1 so the controls share the brand's row and wrap *within*
+              themselves; as one indivisible child they dropped to a line of their
+              own, leaving a nearly empty row above. min-w-0 because a flex item
+              defaults to its content's minimum width, which is how a row of
+              controls pushes a layout wider than the window in the first place. */}
+          <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-x-3 gap-y-2">
+            {/* "Where does my traffic leave from" is everyone's business; the policy
+                switches below are an administrator's. The admin *target* selector is
+                on the Gateways page, not here — see exit-switcher.tsx. */}
+            <ExitSwitcher />
+            {/* The widest control here (~265px) and the only read-only one — and
+                the same numbers are on the Overview page. So it is the one that
+                buys a single-row header back on a 1440 laptop, which is the width
+                this is actually used at. */}
+            <div className="hidden 2xl:block">
+              <TrafficPill />
+            </div>
+            {isAdmin && (
+              <>
+                <AutoBlock />
+                <PostureSwitcher />
+                <RoutingSwitcher />
+                <ModeSwitcher />
+              </>
+            )}
+            <AccountMenu />
+          </div>
         </header>
         <RevertBanner />
         <SplitModeBanner />
         <GlobalModeBanner />
         <main className="min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-[1400px] px-6 py-6">
+          <div className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6">
             <Outlet />
           </div>
         </main>

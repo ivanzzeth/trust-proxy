@@ -26,7 +26,9 @@
     "grpPolicy": "Policy",
     "grpEgress": "Egress",
     "grpSystem": "System",
-    "users": "Users"
+    "users": "Users",
+    "open": "Open the navigation",
+    "close": "Close the navigation"
   },
   "top": {
     "capture": "Capture",

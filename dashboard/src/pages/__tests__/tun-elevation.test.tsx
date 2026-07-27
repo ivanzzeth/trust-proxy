@@ -14,6 +14,11 @@ vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k }
 vi.mock('react-router-dom', () => ({
   NavLink: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   Outlet: () => null,
+  // The shell watches the location to close the navigation drawer after a
+  // redirect. Nothing here navigates, so a constant is enough — but it has to
+  // exist, or mounting the shell throws and every assertion below fails for a
+  // reason that has nothing to do with TUN.
+  useLocation: () => ({ pathname: '/' }),
 }));
 
 // The shell streams live traffic over SSE, which jsdom has no notion of. Stub it
