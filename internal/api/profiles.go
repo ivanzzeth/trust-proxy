@@ -119,7 +119,8 @@ func (s *Server) handleActivateProfile(w http.ResponseWriter, r *http.Request) {
 	// write back pg/dns/final when the profile explicitly specified them —
 	// otherwise resolveProfile* already fell back to whatever's live, so
 	// writing it back would be a no-op at best.
-	s.alignLiveStores(in, p.ProxyGroups != nil, p.DNS != nil, p.Final, p.Final != "", "profile activate:")
+	diverged := s.alignLiveStores(in, p.ProxyGroups != nil, p.DNS != nil, p.Final, p.Final != "", "profile activate:")
+	s.notePolicyDivergence(diverged)
 	if p.SubID != "" && s.store != nil {
 		if err := s.store.SetApplied(p.SubID); err != nil {
 			logging.L().Warn().Err(err).Msg("profile activate: SetApplied")
@@ -208,11 +209,30 @@ func (s *Server) resolveProfileProxyGroups(p apitypes.Profile) proxygroups.Confi
 }
 
 func (s *Server) resolveProfileDNS(p apitypes.Profile) apitypes.DNSConfig {
-	if p.DNS != nil {
-		return *p.DNS
+	return s.resolveRecordedDNS(p.DNS)
+}
+
+// resolveSlotDNS answers the same question for a posture slot.
+//
+// It exists because applySlot did not ask it. `if slot.DNS != nil { … }` with no
+// else, and posture.SeedSplit never records DNS, so the first switch to Split
+// applied a zero DNSConfig — injectDNS returns early on that, producing a config
+// with no `dns` block at all: no direct-split resolver, no fakeip, no hosts, no
+// DoH-via-proxy, and in manual mode a fallback to the system resolver. The policy
+// was not changed, it was deleted, and nothing said so.
+func (s *Server) resolveSlotDNS(slot apitypes.PolicySlot) apitypes.DNSConfig {
+	return s.resolveRecordedDNS(slot.DNS)
+}
+
+// resolveRecordedDNS is the single answer to "this snapshot may or may not have
+// recorded DNS — what runs?". Profiles and postures ask the same question, and
+// having two implementations of it is how one of them came to answer "nothing".
+func (s *Server) resolveRecordedDNS(recorded *apitypes.DNSConfig) apitypes.DNSConfig {
+	if recorded != nil {
+		return *recorded
 	}
 	if s.dns != nil {
-		return s.dns.Get()
+		return s.dns.Get() // no snapshot: keep what is running
 	}
 	return apitypes.DNSConfig{}
 }

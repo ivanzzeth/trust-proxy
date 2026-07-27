@@ -363,3 +363,105 @@ func TestLinuxSplitWorksWithNoReachableRuleSetSource(t *testing.T) {
 	// And Split is really in force: the gate is open.
 	l.mustReach("Split with no rule sets should still drop the Permit gate")
 }
+
+// A posture switch must not delete the DNS policy.
+//
+// applySlot did `if slot.DNS != nil { … }` with no else, and posture.SeedSplit
+// never records DNS, so the first switch to Split applied a zero DNSConfig —
+// injectDNS returns early on that and the rebuilt config had no `dns` block at
+// all. Gone: the direct-split resolver that keeps domestic sites off an overseas
+// edge, fakeip, hosts, DoH-via-proxy. In manual mode that means falling back to
+// the system resolver, i.e. resolving in the clear.
+//
+// It hid twice over. alignLiveStores then tried to write the empty config, the
+// store refused it, and the refusal was only logged — so the file still held the
+// real policy while the running box had none, and a restart put it back and took
+// the evidence with it. Which is why this asserts across a restart as well.
+func TestLinuxPostureSwitchKeepsTheDNSPolicy(t *testing.T) {
+	l := newLab(t, "tp-e2e-posture-dns")
+
+	// The signal is a loopback stub resolver: whichever resolver gets asked proves
+	// which path the query took. It is the technique the selftest uses for the same
+	// reason, and here it is the only one that works, because the two obvious
+	// alternatives both measure the wrong thing:
+	//
+	//   - `dns get` reads the *store*, and the store is the half that stayed correct
+	//     — alignLiveStores' write of the empty config was refused by validate. A
+	//     test against it passes whether or not the bug is present. Measured: it did.
+	//   - a `hosts`-type server with a rule pointing at it never sees a direct-routed
+	//     name at all, because the split pins the direct outbound to a
+	//     domain_resolver, which names a server instead of re-entering dns.rules.
+	//
+	// So: a resolver on 127.0.0.1:5353 that answers one name, and `final` pointing
+	// at it. If the dns block survives the posture switch the name resolves; if the
+	// block is gone, sing-box falls back to the system resolver and the name does
+	// not exist anywhere.
+	const marker = "posture-dns-probe.invalid"
+	l.exec(`cat > /tmp/stub.py <<'EOF'
+import socket, struct
+IP = bytes(int(x) for x in "` + originIP + `".split("."))
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.bind(("127.0.0.1", 5353))
+while True:
+    data, addr = s.recvfrom(2048)
+    open("/tmp/stub.queries", "ab").write(data[12:40] + b"\n")
+    # id | flags QR+RD+RA | qd=1 an=1 ns=0 ar=0 | question echoed | A answer
+    resp = data[:2] + b"\x81\x80" + b"\x00\x01\x00\x01\x00\x00\x00\x00" + data[12:]
+    resp += b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 60, 4) + IP
+    s.sendto(resp, addr)
+EOF`)
+	l.exec("setsid nohup python3 /tmp/stub.py >/dev/null 2>&1 < /dev/null &")
+	l.exec(`cat > /tmp/dns.json <<'EOF'
+{"servers":[{"tag":"stub","type":"udp","server":"127.0.0.1","port":5353}],
+ "final":"stub","disable_direct_split":true}
+EOF`)
+	if out := l.exec("trust-proxy dns set -f /tmp/dns.json"); strings.Contains(out, "error:") {
+		t.Fatalf("could not establish a DNS policy to preserve:\n%s", out)
+	}
+	// Permit the name, so the Permit gate is not what decides this either way.
+	l.exec("trust-proxy acl add permit " + marker)
+
+	reaches := func() bool {
+		return strings.Contains(
+			l.exec(`curl -s -m 6 -x http://127.0.0.1:21584 http://`+marker+`/ 2>&1 || true`), "ORIGIN-OK")
+	}
+	settled := false
+	for deadline := time.Now().Add(20 * time.Second); time.Now().Before(deadline); {
+		if reaches() {
+			settled = true
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if !settled {
+		t.Fatalf("the stub resolver is not being used even before the posture switch, so this test "+
+			"would measure nothing.\ndns get:\n%s\nstub queries: %s\nlog:\n%s",
+			l.exec("trust-proxy dns get"),
+			l.exec("wc -c /tmp/stub.queries 2>/dev/null || echo none"),
+			l.exec("tail -6 /var/lib/trust-proxy/serve.log"))
+	}
+
+	if out := l.exec("trust-proxy posture set split -y"); strings.Contains(out, "error:") {
+		t.Fatalf("switching to Split failed:\n%s", out)
+	}
+	l.assertBoxAlive("posture set split")
+
+	if !reaches() {
+		t.Fatalf("the posture switch deleted the DNS policy: %s no longer resolves, so the stub "+
+			"is not being asked.\ndns get still says:\n%s\n(that divergence between the store and the "+
+			"running config is the second half of the bug)", marker, l.exec("trust-proxy dns get"))
+	}
+	// And live/disk must agree, which is the half that used to heal itself on
+	// restart and take the evidence with it.
+	if got := l.exec("trust-proxy posture get --json"); strings.Contains(got, `"diverged_stores": [`) {
+		t.Fatalf("a store refused the applied policy, so the console and the gateway disagree:\n%s", got)
+	}
+
+	l.exec("systemctl restart trust-proxy")
+	l.waitAPI("21585")
+	if !reaches() {
+		t.Fatalf("the DNS policy did not survive a restart after a posture switch:\n%s",
+			l.exec("trust-proxy dns get"))
+	}
+	l.assertBoxAlive("after restart following a posture switch")
+}

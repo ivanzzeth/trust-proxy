@@ -178,7 +178,7 @@ func TestApplySlotAlignsLiveStoresOnSuccess(t *testing.T) {
 		Whitelist: apitypes.Rules{Domains: []string{"other.example"}},
 		Final:     "proxy",
 	}
-	if err := s.applySlot(slot, apitypes.PostureSplit); err != nil {
+	if _, err := s.applySlot(slot, apitypes.PostureSplit); err != nil {
 		t.Fatal(err)
 	}
 	if fa.lastPosture != apitypes.PostureSplit {
@@ -195,7 +195,7 @@ func TestApplySlotDoesNotAlignStoresOnFailure(t *testing.T) {
 	s.profApplier = fa
 
 	slot := apitypes.PolicySlot{Whitelist: apitypes.Rules{Domains: []string{"other.example"}}, Final: "proxy"}
-	if err := s.applySlot(slot, apitypes.PostureSplit); err == nil {
+	if _, err := s.applySlot(slot, apitypes.PostureSplit); err == nil {
 		t.Fatal("expected error to propagate")
 	}
 	got := s.wl.Get()

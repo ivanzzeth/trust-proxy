@@ -119,8 +119,9 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 	rollback := s.snapshotLiveSlot()
 	rollbackPosture := from
 
-	if err := s.applySlot(toSlot, req.Active); err != nil {
-		_ = s.applySlot(rollback, rollbackPosture)
+	diverged, err := s.applySlot(toSlot, req.Active)
+	if err != nil {
+		_, _ = s.applySlot(rollback, rollbackPosture)
 		writeErr(w, http.StatusBadGateway, "switch posture: "+err.Error())
 		return
 	}
@@ -145,6 +146,10 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 		"seeded_split":      s.posture.Get().Slots[apitypes.PostureSplit].Seeded,
 		"forced_clash_rule": forcedRule,
 		"unreachable_sets":  unreachable,
+		// Empty unless a store refused the policy the data plane is now running. Not
+		// only logged: live and disk disagreeing means the console shows one policy
+		// and the gateway enforces another, until a restart quietly picks the file.
+		"diverged_stores": diverged,
 	})
 }
 
@@ -154,7 +159,7 @@ func (s *Server) snapshotLiveSlot() apitypes.PolicySlot {
 	return s.snapshotLivePolicy()
 }
 
-func (s *Server) applySlot(slot apitypes.PolicySlot, postureName string) error {
+func (s *Server) applySlot(slot apitypes.PolicySlot, postureName string) ([]string, error) {
 	in := policyInputs{
 		wl: whitelist.Rules{
 			Domains: slot.Whitelist.Domains, IPs: slot.Whitelist.IPs,
@@ -180,9 +185,7 @@ func (s *Server) applySlot(slot apitypes.PolicySlot, postureName string) error {
 	} else if s.pgroups != nil {
 		in.pg = s.pgroups.Get()
 	}
-	if slot.DNS != nil {
-		in.dns = *slot.DNS
-	}
+	in.dns = s.resolveSlotDNS(slot)
 	final := slot.Final
 	if final == "" {
 		final = "proxy"
@@ -190,12 +193,13 @@ func (s *Server) applySlot(slot apitypes.PolicySlot, postureName string) error {
 	nodes := s.profApplier.Nodes()
 
 	if err := s.profApplier.ApplyProfile(nodes, in.wl, in.bl, in.dl, in.cr, in.sets, in.pg, in.dns, "", final, postureName); err != nil {
-		return err
+		return nil, err
 	}
 	// A posture slot swap always replaces every axis (unlike profile
 	// activation, which only writes back axes the profile explicitly set).
-	s.alignLiveStores(in, true, true, final, true, "posture:")
-	return nil
+	diverged := s.alignLiveStores(in, true, true, final, true, "posture:")
+	s.notePolicyDivergence(diverged)
+	return diverged, nil
 }
 
 // SyncActivePostureSlot writes the current live policy into the active posture
