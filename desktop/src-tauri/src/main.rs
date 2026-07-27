@@ -1,337 +1,325 @@
-// trust-proxy desktop shell (macOS slice).
+// trust-proxy desktop shell.
 //
-// Deliberately thin: the gateway is the Go binary, the console is the UI it
-// already serves at 127.0.0.1:21585, and this process is a window plus a
-// lifecycle. Nothing about policy or detection lives here — a second
-// implementation of any of it would drift from the CLI within a week.
+// Deliberately thin, and thinner than it used to be. The gateway is the Go
+// binary, the console is the UI that gateway already serves on 127.0.0.1:21585,
+// and this process is a window plus one authorization prompt.
 //
-// Two things it must get right:
+// **It does not run a gateway of its own.** It used to: if nothing answered, it
+// spawned the sidecar as the logged-in user and watched it. That gateway was a
+// lie — it could not do TUN (that needs root), it died with the window, and the
+// first time anyone ran the real thing with sudo it left a root-owned directory
+// in the home it wanted to write, after which the app could not start at all.
+// There is one gateway on a machine now, it belongs to the service manager, and
+// this shell either attaches to it or offers to install it.
 //
-//  1. Never start a second gateway. Two `serve` processes on one data dir fight
-//     over cache.db (bolt takes a single writer lock) and over the ports. So we
-//     probe /api/health first: if a gateway is already there — installed as a
-//     LaunchDaemon, or started by hand in a terminal — we attach to it and stay
-//     out of the way. Only if nothing answers do we spawn our own.
-//
-//  2. Never leave an orphan. A child we spawned is killed when the app exits,
-//     including the window-close path, so closing the window cannot leave a
-//     headless data plane running that the user believes is gone. A daemon we
-//     merely attached to is never touched.
-//
-// TUN needs root, which a GUI app should not have. That is what
-// `trust-proxy service install` is for: launchd owns the daemon, this shell
-// attaches to it. The splash offers that install, running the CLI through one
-// admin prompt.
+// Nothing here knows *where* anything lives. Every fact comes from
+// `trust-proxy env --json`, and the privileged step is the CLI's own
+// `trust-proxy install` run through one system prompt. Three mirrors of the Go
+// rules used to live in this file — the data directory, the sidecar's location,
+// a hand-rolled probe for whether the console existed — and a shell is the worst
+// possible place for drift, because it shows a splash screen instead of an error.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
-use tauri::{AppHandle, Manager, RunEvent, State, WebviewWindow};
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, State, WebviewWindow};
 
 const DEFAULT_API: &str = "127.0.0.1:21585";
 
-/// Gateway is the child we spawned, if any. `None` means we attached to a
-/// gateway somebody else owns.
-struct Gateway(Mutex<Option<Child>>);
+// ---- what the Go binary tells us ------------------------------------------
 
-impl Gateway {
-    fn take(&self) -> Option<Child> {
-        self.0.lock().ok().and_then(|mut g| g.take())
-    }
-    /// Kill and reap. Called on every exit path; safe to call twice.
-    fn shutdown(&self) {
-        if let Some(mut child) = self.take() {
-            // SIGKILL is enough here: serve persists as it goes, and its stores
-            // are append-or-replace, so there is no shutdown flush to lose.
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
+#[derive(Deserialize, Default, Clone)]
+struct EnvService {
+    supported: bool,
+    installed: bool,
+    running: bool,
+    #[serde(default)]
+    detail: String,
+    #[serde(default)]
+    program_missing: bool,
 }
 
-#[derive(Serialize, Clone)]
+#[derive(Deserialize, Default, Clone)]
+struct EnvGateway {
+    healthy: bool,
+    console: bool,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    managed: bool,
+    #[serde(default)]
+    stale: bool,
+}
+
+#[derive(Deserialize, Default, Clone)]
+struct Env {
+    platform: String,
+    data_dir: String,
+    api_addr: String,
+    console_url: String,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    elevation: String,
+    /// What should happen next, decided by the Go side: attach | update |
+    /// takeover | install | repair | unsupported.
+    ///
+    /// The shell deliberately does not work this out from the flags below. It used
+    /// to decide with one question — "does anything answer?" — and attach whenever
+    /// the answer was yes, which is right in one case out of four and silently
+    /// wrong in two of them.
+    #[serde(default)]
+    action: String,
+    #[serde(default)]
+    service: EnvService,
+    #[serde(default)]
+    gateway: EnvGateway,
+}
+
+// ---- what the splash sees -------------------------------------------------
+
+#[derive(Serialize, Clone, Default)]
 struct Status {
     api: String,
-    /// true when the gateway was already running and we attached to it.
-    attached: bool,
-    /// true when this app started the gateway.
-    spawned: bool,
-    healthy: bool,
+    data_dir: String,
+    platform: String,
+    /// How this platform will ask for administrator rights ("osascript",
+    /// "pkexec", "uac", or empty when there is no graphical way to ask).
+    elevation: String,
+    /// What the window should offer, straight from the Go side.
+    action: String,
+    service_supported: bool,
     service_installed: bool,
     service_running: bool,
-    binary: String,
-    data_dir: String,
+    healthy: bool,
+    /// The gateway answers but was built without the console in it.
+    console_missing: bool,
+    /// This build, and the build actually running — different means the app was
+    /// upgraded and the daemon was not.
+    app_version: String,
+    gateway_version: String,
+    busy: bool,
     error: Option<String>,
 }
 
 struct Runtime {
-    api: String,
-    data_dir: PathBuf,
     binary: PathBuf,
+    api: String,
+    /// Where the console is, as the gateway itself reports it. Composing it here
+    /// from the address would work today and be one more thing to keep in step.
+    console_url: Mutex<String>,
     status: Mutex<Status>,
 }
 
 fn main() {
     // --print-config answers "what would you attach to, and with which sidecar"
-    // without opening a window. It exists so a test can catch the drift that
-    // actually happened: a bundle left over from before the ports were renumbered
-    // kept probing the old address, found nothing, and sat on the splash forever.
-    // It is also the first thing to ask when a user says "it will not open".
+    // without opening a window. It exists because a bundle left over from before
+    // the ports were renumbered kept probing the old address, found nothing, and
+    // sat on the splash forever — with every other test in the repo green,
+    // because none of them ever looked at the .app. It is also the first thing to
+    // ask when someone says "it will not open".
     if std::env::args().any(|a| a == "--print-config") {
+        let binary = gateway_binary_standalone();
         let api = env_override("TP_API_ADDR").unwrap_or_else(|| DEFAULT_API.to_string());
-        let sidecar = env_override("TP_BINARY").unwrap_or_else(|| {
-            std::env::current_exe()
-                .ok()
-                .and_then(|exe| exe.parent().map(|d| d.join(sidecar_name())))
-                .map(|p| p.display().to_string())
-                .unwrap_or_default()
-        });
+        let env = probe_env(&binary, &api);
+        let data = env.as_ref().map(|e| e.data_dir.clone()).unwrap_or_default();
+        let action = env.as_ref().map(|e| e.action.clone()).unwrap_or_default();
         println!(
-            "{{\"api\":\"{}\",\"data_dir\":\"{}\",\"sidecar\":\"{}\"}}",
-            api,
-            data_dir().display(),
-            sidecar
+            "{{\"api\":\"{}\",\"data_dir\":\"{}\",\"sidecar\":\"{}\",\"action\":\"{}\"}}",
+            env.as_ref().map(|e| e.api_addr.clone()).unwrap_or(api),
+            data,
+            binary.display(),
+            action
         );
         return;
     }
+
     tauri::Builder::default()
-        .manage(Gateway(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             status,
             open_console,
-            install_service,
+            refresh,
+            setup,
             uninstall_service
         ])
         .setup(|app| {
-            let api = env_override("TP_API_ADDR").unwrap_or_else(|| DEFAULT_API.to_string());
-            let data_dir = data_dir();
             let binary = gateway_binary(app.handle());
-            let (installed, running) = service_state(&binary);
+            let api = env_override("TP_API_ADDR").unwrap_or_else(|| DEFAULT_API.to_string());
             app.manage(Runtime {
+                binary,
+                console_url: Mutex::new(format!("http://{api}/")),
                 api: api.clone(),
-                data_dir: data_dir.clone(),
-                binary: binary.clone(),
                 status: Mutex::new(Status {
-                    api: api.clone(),
-                    attached: false,
-                    spawned: false,
-                    healthy: false,
-                    service_installed: installed,
-                    service_running: running,
-                    binary: binary.display().to_string(),
-                    data_dir: data_dir.display().to_string(),
-                    error: None,
+                    api,
+                    ..Default::default()
                 }),
             });
-
             let handle = app.handle().clone();
-            // Off the UI thread: probing, spawning and waiting all block, and a
-            // frozen splash is indistinguishable from a crash.
-            std::thread::spawn(move || start_gateway(handle));
+            // Off the UI thread: probing and elevation both block, and a frozen
+            // splash is indistinguishable from a crash.
+            std::thread::spawn(move || bring_up(&handle));
             Ok(())
         })
         .build(tauri::generate_context!())
         .expect("failed to build the trust-proxy shell")
-        .run(|app, event| {
-            if let RunEvent::ExitRequested { .. } | RunEvent::Exit = event {
-                app.state::<Gateway>().shutdown();
-            }
-        });
+        .run(|_app, _event| {});
 }
 
-/// start_gateway attaches to a running gateway or spawns one, then points the
-/// window at the console it serves.
-fn start_gateway(app: AppHandle) {
+/// bring_up decides, once, what this window is looking at.
+///
+/// Three outcomes and no others: attach to the gateway, ask for one prompt to
+/// install it, or say why neither is possible. There is deliberately no fourth
+/// where the shell quietly starts something of its own.
+fn bring_up(app: &AppHandle) {
     let rt = app.state::<Runtime>();
-    let api = rt.api.clone();
-    // Say what is being decided, on stderr. A GUI app that sits on its splash is
-    // otherwise a black box: twice now the only way to find out what it thought
-    // was happening was to reason about the source. Run the binary from a
-    // terminal and it explains itself.
-    log(&format!("probing {api} (data {}, sidecar {})", rt.data_dir.display(), rt.binary.display()));
-
-    if healthy(&api, Duration::from_millis(700)) {
-        set(&app, |s| {
-            s.attached = true;
-            s.healthy = true;
-        });
-        log("attached to a gateway that was already running");
-        if let Some(why) = console_complaint(&api) {
-            log(&format!("refusing to show it: {why}"));
-            set(&app, |s| s.error = Some(why));
+    log(&format!(
+        "asking {} about this machine",
+        rt.binary.display()
+    ));
+    let env = match probe_env(&rt.binary, &rt.api) {
+        Some(e) => e,
+        None => {
+            let why = sidecar_problem(&rt.binary);
+            log(&format!("could not run the gateway binary: {why}"));
+            set(app, |s| s.error = Some(why));
             return;
         }
-        log("opening the console");
-        show_console(&app, &api);
-        return;
-    }
-    log("nothing answered; starting our own gateway");
+    };
+    apply_env(app, &env);
+    log(&format!("next: {}", env.action));
 
-    match spawn_gateway(&rt) {
-        Ok(child) => {
-            if let Ok(mut slot) = app.state::<Gateway>().0.lock() {
-                *slot = Some(child);
-            }
-            set(&app, |s| s.spawned = true);
-        }
-        Err(e) => {
-            log(&format!("could not start a gateway: {e}"));
-            set(&app, |s| s.error = Some(e));
-            return;
-        }
-    }
-
-    // 20s: a cold start parses the config, builds the box and (in TUN mode) waits
-    // on the interface. Report the child's own exit early rather than spinning.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while Instant::now() < deadline {
-        if healthy(&api, Duration::from_millis(500)) {
-            set(&app, |s| s.healthy = true);
-            log("our gateway answered");
-            if let Some(why) = console_complaint(&api) {
-                set(&app, |s| s.error = Some(why));
+    match env.action.as_str() {
+        // The only path that opens the console by itself. Everything else has
+        // something to say first, and saying it *before* navigating is the whole
+        // point: once the window is on the console there is no splash left to put
+        // an offer on.
+        "attach" => {
+            if !env.gateway.console {
+                log("attached, but that gateway has no console in it");
                 return;
             }
-            show_console(&app, &api);
-            return;
+            open_the_console(app);
         }
-        if let Ok(mut slot) = app.state::<Gateway>().0.lock() {
-            if let Some(child) = slot.as_mut() {
-                if let Ok(Some(exit)) = child.try_wait() {
-                    let log = rt.data_dir.join("serve.log");
-                    // Quote the gateway's own last error instead of pointing at a
-                    // log file: the common failure is "port already in use"
-                    // (another gateway, or another proxy app holding 21584), and
-                    // that is fixable in ten seconds if we just say it.
-                    let why = last_error_line(&log)
-                        .map(|l| format!(": {l}"))
-                        .unwrap_or_else(|| format!(". See {}", log.display()));
-                    // A quarantined, un-notarized bundle is the other first-run
-                    // failure, and its symptom is a silent SIGKILL of the sidecar
-                    // with nothing in the log at all — measured on macOS 26, where
-                    // approving the *app* does not extend to the binary it spawns.
-                    // Guessing from "signal: 9" is not something a user should have
-                    // to do, so name it and give the one command that fixes it.
-                    let hint = quarantine_hint(&rt.binary, exit.code().is_none());
-                    set(&app, |s| {
-                        s.error = Some(format!("the gateway exited immediately ({exit}){why}{hint}"))
-                    });
-                    return;
-                }
-            }
+        "unsupported" => set(app, |s| {
+            s.error = Some(format!(
+                "installing a system service is not implemented on {} yet — \
+                 run the gateway under this machine's init system instead.",
+                env.platform
+            ))
+        }),
+        "repair" => {
+            let detail = if env.service.program_missing {
+                " — the program it points at is gone".to_string()
+            } else if env.service.detail.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", env.service.detail)
+            };
+            set(app, |s| {
+                s.error = Some(format!(
+                    "the gateway service is installed but not running{detail}. \
+                     Reinstalling it is the repair."
+                ))
+            });
         }
-        std::thread::sleep(Duration::from_millis(300));
+        // "update", "takeover" and "install" are all offers; the splash renders
+        // them from `action`, and each runs the same privileged command.
+        _ => {}
     }
-    log(&format!("gave up waiting for {api}"));
-    set(&app, |s| {
-        s.error = Some(format!("the gateway did not answer on {api} within 20s"))
+}
+
+/// probe_env runs `trust-proxy env --json` and parses it. None means the binary
+/// could not be run at all — a missing, unexecutable or Gatekeeper-killed sidecar.
+fn probe_env(binary: &Path, api: &str) -> Option<Env> {
+    let out = Command::new(binary)
+        .args(["env", "--json", "--api-addr", api])
+        .output()
+        .ok()?;
+    if !out.status.success() && out.stdout.is_empty() {
+        return None;
+    }
+    serde_json::from_slice(&out.stdout).ok()
+}
+
+fn apply_env(app: &AppHandle, env: &Env) {
+    if !env.console_url.is_empty() {
+        if let Ok(mut u) = app.state::<Runtime>().console_url.lock() {
+            *u = env.console_url.clone();
+        }
+    }
+    set(app, |s| {
+        s.api = env.api_addr.clone();
+        s.data_dir = env.data_dir.clone();
+        s.platform = env.platform.clone();
+        s.elevation = env.elevation.clone();
+        s.action = env.action.clone();
+        s.app_version = env.version.clone();
+        s.gateway_version = env.gateway.version.clone();
+        s.service_supported = env.service.supported;
+        s.service_installed = env.service.installed;
+        s.service_running = env.service.running;
+        s.healthy = env.gateway.healthy;
+        s.console_missing = env.gateway.healthy && !env.gateway.console;
+        s.error = None;
     });
 }
 
-fn spawn_gateway(rt: &Runtime) -> Result<Child, String> {
-    if !rt.binary.exists() {
-        return Err(format!(
-            "gateway binary not found at {} — build it with `make desktop`",
-            rt.binary.display()
-        ));
-    }
-    std::fs::create_dir_all(&rt.data_dir)
-        .map_err(|e| data_dir_problem(&rt.data_dir, &e))?;
-    let log = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(rt.data_dir.join("serve.log"))
-        .map_err(|e| data_dir_problem(&rt.data_dir, &e))?;
-    let errlog = log.try_clone().map_err(|e| format!("clone log: {e}"))?;
-
-    Command::new(&rt.binary)
-        .arg("serve")
-        // No -c: the gateway defaults to <data>/config.json and seeds it on first
-        // run. The shell used to pass a path and carry its own copy of the default
-        // config, which is how the CLI and the app ended up on different files.
-        .arg("--data")
-        .arg(&rt.data_dir)
-        .arg("--api-addr")
-        .arg(&rt.api)
-        // Belt and braces for the orphan case: killing this app on the exit path
-        // is not enough, because a force-quit or a crash runs no handler at all —
-        // measured, the gateway survived a SIGTERM to the shell. The child watches
-        // our pid and shuts itself down when we disappear.
-        .arg("--exit-with-pid")
-        .arg(std::process::id().to_string())
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(errlog))
-        .spawn()
-        .map_err(|e| match e.kind() {
-            ErrorKind::PermissionDenied => format!(
-                "{} is not executable ({e})",
-                rt.binary.display()
-            ),
-            _ => format!("spawn {}: {e}", rt.binary.display()),
-        })
+/// open_the_console points the window at the gateway, logged in when it can be.
+///
+/// `auth ticket` turns the API key this user already has — the one `install`
+/// wrote into their home directory — into a single-use URL that sets a session
+/// cookie. When there is no key (someone else claimed this gateway, or the user
+/// declined to claim it) the plain console URL is right: its own login page is
+/// the correct thing to show.
+fn open_the_console(app: &AppHandle) {
+    let rt = app.state::<Runtime>();
+    let url = match console_ticket(&rt.binary, &rt.api) {
+        Some(u) => {
+            log("opening the console with a session ticket");
+            u
+        }
+        None => {
+            log("no stored credential; opening the console's login page");
+            rt.console_url
+                .lock()
+                .map(|u| u.clone())
+                .unwrap_or_else(|_| format!("http://{}/", rt.api))
+        }
+    };
+    show_console(app, &url);
 }
 
-/// console_complaint is the message for a gateway that runs but cannot show a
-/// console, or None when there is nothing to complain about.
-fn console_complaint(api: &str) -> Option<String> {
-    if !console_is_missing(api, Duration::from_millis(1500)) {
+fn console_ticket(binary: &Path, api: &str) -> Option<String> {
+    let out = Command::new(binary)
+        .args(["auth", "ticket", "--api-addr", api])
+        .output()
+        .ok()?;
+    if !out.status.success() {
         return None;
     }
-    Some(format!(
-        "the gateway on {api} is running but has no console in it \u{2014} it was built without \
-         the UI embedded. If it is the installed system service, update it:\n\n\
-         \u{20}   sudo trust-proxy service install\n\n\
-         (build it with `make build`, which embeds the console.)"
-    ))
-}
-
-/// data_dir_problem turns "Permission denied (os error 13)" into something a
-/// person can act on.
-///
-/// The case that actually happens: the gateway was once run with sudo, so
-/// ~/.trust-proxy and everything in it now belongs to root, and the app — which
-/// is deliberately not root — cannot write there. The raw errno gives no hint of
-/// that, and the two ways out are not guessable either.
-fn data_dir_problem(dir: &Path, e: &std::io::Error) -> String {
-    if e.kind() != ErrorKind::PermissionDenied {
-        return format!("{}: {e}", dir.display());
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if url.starts_with("http://") || url.starts_with("https://") {
+        Some(url)
+    } else {
+        None
     }
-    format!(
-        "cannot write to {} \u{2014} the gateway cannot start.\n\n\
-         This usually means it was run with sudo at some point, so the directory now \
-         belongs to root while this app (deliberately) does not run as root. Either:\n\n\
-         \u{20}   \u{2022} install the system service, and let root own the gateway properly, or\n\
-         \u{20}   \u{2022} hand the directory back:  sudo chown -R \"$USER\" {}",
-        dir.display(),
-        dir.display()
-    )
 }
 
-/// log writes one line to stderr, which is where someone running the binary from
-/// a terminal will look, and where `macOS Console` picks it up for a bundled app.
-fn log(msg: &str) {
-    eprintln!("[trust-proxy shell] {msg}");
-}
-
-/// show_console points the window at the gateway's console.
+/// show_console navigates the existing window.
 ///
-/// It hops to the main thread first. Everything that decides *whether* to show it
-/// — probing, spawning, waiting — runs on a worker thread, because it blocks; but
-/// the webview is a WKWebView, and touching one from another thread is not an
-/// error, it simply does nothing. That is the whole "stuck on the splash" bug:
-/// the shell attached to a healthy gateway, called navigate, logged success, and
-/// the window never moved.
-fn show_console(app: &AppHandle, api: &str) {
-    let url = format!("http://{api}/");
+/// It hops to the main thread first. Everything that decides *whether* to
+/// navigate runs on a worker thread because it blocks; but the webview is a
+/// platform widget, and touching one from another thread is not an error, it
+/// simply does nothing. That was the whole "stuck on the splash" bug: the shell
+/// attached, called navigate, logged success, and the window never moved.
+fn show_console(app: &AppHandle, url: &str) {
     let handle = app.clone();
-    let target = url.clone();
+    let target = url.to_string();
     if let Err(e) = app.run_on_main_thread(move || {
         let Some(window) = handle.get_webview_window("main") else {
             log("no window to navigate — the console cannot be shown");
@@ -339,8 +327,6 @@ fn show_console(app: &AppHandle, api: &str) {
         };
         match target.parse() {
             Ok(parsed) => {
-                // Navigate the existing window rather than opening a second one:
-                // the console is the app, the splash was only a waiting room.
                 if let Err(e) = WebviewWindow::navigate(&window, parsed) {
                     log(&format!("navigate to {target} failed: {e}"));
                 }
@@ -352,314 +338,109 @@ fn show_console(app: &AppHandle, api: &str) {
     }
 }
 
-/// quarantine_hint explains a Gatekeeper kill, when that is what happened.
-///
-/// killed_by_signal narrows it: an ordinary bad-config exit has a status code, a
-/// Gatekeeper kill is SIGKILL with an empty log. The attribute is checked on the
-/// enclosing .app, since that is where a browser puts it.
-fn quarantine_hint(binary: &Path, killed_by_signal: bool) -> String {
-    if !killed_by_signal {
-        return String::new();
-    }
-    let bundle = binary
-        .ancestors()
-        .find(|p| p.extension().map(|e| e == "app").unwrap_or(false))
-        .unwrap_or(binary);
-    if !is_quarantined(bundle) {
-        return String::new();
-    }
-    format!(
-        "\n\nThis copy is still quarantined (it was downloaded, and this build is \
-         not notarized), so macOS killed the gateway. Clear it once:\n\n    \
-         xattr -dr com.apple.quarantine {}\n\nor allow the app under System \
-         Settings → Privacy & Security.",
-        shell_quote(&bundle.display().to_string())
-    )
-}
-
-fn is_quarantined(path: &Path) -> bool {
-    Command::new("xattr")
-        .arg("-p")
-        .arg("com.apple.quarantine")
-        .arg(path)
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-/// last_error_line returns the most recent error the gateway logged, with the
-/// ANSI colouring its console logger emits stripped out.
-fn last_error_line(log: &Path) -> Option<String> {
-    let text = std::fs::read_to_string(log).ok()?;
-    let tail: Vec<&str> = text.lines().rev().take(80).collect();
-    let line = tail.into_iter().find(|l| {
-        let low = strip_ansi(l).to_lowercase();
-        low.contains("error") || low.contains("failed") || low.contains("in use")
-    })?;
-    let clean = strip_ansi(line).trim().to_string();
-    if clean.is_empty() {
-        return None;
-    }
-    Some(clean.chars().take(300).collect())
-}
-
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' {
-            // CSI ... final byte in @-~; drop the whole sequence.
-            for c in chars.by_ref() {
-                if ('@'..='~').contains(&c) {
-                    break;
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
-}
-
-fn healthy(api: &str, timeout: Duration) -> bool {
-    match http_get(api, "/api/health", timeout, 64) {
-        Some(head) => head.starts_with("HTTP/1.") && (head.contains(" 200") || head.contains(" 204")),
-        None => false,
-    }
-}
-
-/// console_is_missing reports that the gateway we attached to answers, but has no
-/// console to show.
-///
-/// This happens to a gateway installed as a service from a binary built without
-/// the UI: it is healthy, the API works, and the window fills with the words
-/// "dashboard not built". Detecting it here turns that into one sentence with the
-/// command that fixes it, instead of a page the user has to interpret.
-fn console_is_missing(api: &str, timeout: Duration) -> bool {
-    match http_get(api, "/", timeout, 512) {
-        Some(body) => body.contains("dashboard not built"),
-        None => false,
-    }
-}
-
-/// http_get is a hand-rolled request: one HTTP client is not worth a dependency,
-/// and both callers only need the first few hundred bytes of the response.
-fn http_get(api: &str, path: &str, timeout: Duration, limit: usize) -> Option<String> {
-    use std::io::{Read, Write};
-    use std::net::TcpStream;
-    let addr = api.parse().ok()?;
-    let mut stream = TcpStream::connect_timeout(&addr, timeout).ok()?;
-    let _ = stream.set_read_timeout(Some(timeout));
-    let req = format!("GET {path} HTTP/1.0\r\nHost: {api}\r\nConnection: close\r\n\r\n");
-    stream.write_all(req.as_bytes()).ok()?;
-    let mut buf = vec![0u8; limit];
-    let n = stream.read(&mut buf).unwrap_or(0);
-    Some(String::from_utf8_lossy(&buf[..n]).into_owned())
-}
-
-fn data_dir() -> PathBuf {
-    if let Some(dir) = env_override("TP_DATA") {
-        return PathBuf::from(dir);
-    }
-    // Same location the CLI uses, on purpose: the desktop app and `trust-proxy`
-    // in a terminal must see one gateway with one set of policy. The rule lives in
-    // internal/paths on the Go side; this mirrors it, and the mirror is asserted
-    // against the CLI at runtime (see status()).
-    if cfg!(target_os = "windows") {
-        if let Ok(base) = std::env::var("LOCALAPPDATA") {
-            return Path::new(&base).join("trust-proxy");
-        }
-    }
-    let home = std::env::var("HOME")
-        .or_else(|_| std::env::var("USERPROFILE"))
-        .unwrap_or_else(|_| ".".into());
-    Path::new(&home).join(".trust-proxy")
-}
-
-/// env_override reads a TP_* override, treating an empty value as absent.
-///
-/// `TP_API_ADDR=` in the environment is not a request to connect to nowhere — it
-/// is a variable someone cleared. Taking it literally produced a shell that
-/// probed the empty string and could never attach.
-fn env_override(name: &str) -> Option<String> {
-    match std::env::var(name) {
-        Ok(v) if !v.trim().is_empty() => Some(v),
-        _ => None,
-    }
-}
-
-/// sidecar_name is the gateway executable's file name inside the bundle.
-fn sidecar_name() -> &'static str {
-    if cfg!(target_os = "windows") {
-        "trust-proxy.exe"
-    } else {
-        "trust-proxy"
-    }
-}
-
-/// gateway_binary is the sidecar inside the bundle, or an override for dev.
-fn gateway_binary(app: &AppHandle) -> PathBuf {
-    if let Some(p) = env_override("TP_BINARY") {
-        return PathBuf::from(p);
-    }
-    // Tauri strips the target triple from an externalBin, but *where* the result
-    // lands differs per platform: next to the executable on Linux/Windows, in the
-    // bundle's MacOS/ directory on macOS (a sibling of Resources/). Try both
-    // rather than encoding one layout.
-    let exe_name = sidecar_name();
-    if let Ok(dir) = app.path().resource_dir() {
-        for candidate in [dir.join(format!("../MacOS/{exe_name}")), dir.join(exe_name)] {
-            if let Ok(canon) = candidate.canonicalize() {
-                return canon;
-            }
-        }
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let side = dir.join(exe_name);
-            if side.exists() {
-                return side;
-            }
-        }
-    }
-    PathBuf::from(exe_name)
-}
-
-fn service_state(binary: &Path) -> (bool, bool) {
-    let out = Command::new(binary)
-        .args(["service", "status", "--json"])
-        .output();
-    match out {
-        Ok(o) => {
-            let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap_or_default();
-            (
-                v.get("installed").and_then(|b| b.as_bool()).unwrap_or(false),
-                v.get("running").and_then(|b| b.as_bool()).unwrap_or(false),
-            )
-        }
-        Err(_) => (false, false),
-    }
-}
-
-fn set(app: &AppHandle, f: impl FnOnce(&mut Status)) {
-    let rt = app.state::<Runtime>();
-    let locked = rt.status.lock();
-    if let Ok(mut s) = locked {
-        f(&mut s);
-    };
-}
-
 // ---- commands the splash calls -------------------------------------------
 
 #[tauri::command]
 fn status(rt: State<Runtime>) -> Status {
-    rt.status.lock().map(|s| s.clone()).unwrap_or_else(|_| Status {
-        api: rt.api.clone(),
-        attached: false,
-        spawned: false,
-        healthy: false,
-        service_installed: false,
-        service_running: false,
-        binary: rt.binary.display().to_string(),
-        data_dir: rt.data_dir.display().to_string(),
-        error: Some("status unavailable".into()),
-    })
+    rt.status
+        .lock()
+        .map(|s| s.clone())
+        .unwrap_or_else(|_| Status {
+            api: rt.api.clone(),
+            error: Some("status unavailable".into()),
+            ..Default::default()
+        })
 }
 
 #[tauri::command]
-fn open_console(app: AppHandle, rt: State<Runtime>) {
-    show_console(&app, &rt.api);
+fn refresh(app: AppHandle) {
+    std::thread::spawn(move || bring_up(&app));
 }
 
-/// install_service hands the privileged half to the CLI, through exactly one
-/// admin prompt. The shell itself never runs as root.
 #[tauri::command]
-fn install_service(app: AppHandle, rt: State<Runtime>, mode: Option<String>) -> Result<String, String> {
-    // mode = "tun" is the whole reason a desktop user installs the service: TUN
-    // needs root, the window must not be root, so the daemon becomes root's. `-y`
-    // because the confirmation the CLI would print has already been made in the UI
-    // — there is no terminal here to answer it.
-    let mode_flag = match mode.as_deref() {
-        Some(m) if !m.is_empty() => format!(" --mode {} -y", shell_quote(m)),
-        _ => String::new(),
-    };
-    // --takeover: clicking "install the service" cannot sensibly mean "and leave
-    // the other gateway holding the port", which would install a service that can
-    // never bind and is retried at every boot.
-    let cmd = format!(
-        "{} service install --takeover -c {} --data {} --api-addr {}{} --json",
+fn open_console(app: AppHandle) {
+    std::thread::spawn(move || open_the_console(&app));
+}
+
+/// setup is the one-click, and it is also the update and the takeover: all three
+/// are the same privileged command, which is why there is one of it.
+///
+/// One system authorization prompt, then a gateway that belongs to this machine
+/// and comes back after a reboot. `install` replaces the managed copy of the
+/// binary and restarts the service, so running it again *is* the upgrade — which
+/// is what makes "you opened a newer app than the daemon" a button rather than a
+/// paragraph of instructions.
+///
+/// The command it elevates is the CLI's own, unmodified. An earlier version
+/// assembled its own argument list here and passed `--data <home>` — which
+/// silently undid the rule that a root daemon keeps its state out of anybody's
+/// home, and produced exactly the root-owned directory this shell then had to
+/// apologize for.
+#[tauri::command]
+fn setup(app: AppHandle, rt: State<Runtime>, mode: Option<String>) -> Result<String, String> {
+    let owner = current_user().ok_or("could not work out which account to claim the gateway for")?;
+    let mut cmd = format!(
+        "{} install --api-addr {} --claim-for {} --takeover --json",
         shell_quote(&rt.binary.display().to_string()),
-        shell_quote(&rt.data_dir.join("config.json").display().to_string()),
-        shell_quote(&rt.data_dir.display().to_string()),
         shell_quote(&rt.api),
-        mode_flag,
+        shell_quote(&owner),
     );
-
-    // Stand aside first. If this window started the gateway, that process holds
-    // the API port and the data directory — the service would fail to bind, and
-    // KeepAlive would then retry a doomed exec at every boot while the app still
-    // looked fine, because our own gateway was answering all along.
-    let ours = app.state::<Gateway>();
-    let we_had_one = ours.0.lock().map(|g| g.is_some()).unwrap_or(false);
-    if we_had_one {
-        log("stopping the gateway this window started, so the service can take the port");
-        ours.shutdown();
+    if let Some(m) = mode.as_deref().filter(|m| !m.is_empty()) {
+        // -y because the confirmation the CLI would print has already been made in
+        // the UI, and there is no terminal here to answer it on.
+        cmd.push_str(&format!(" --mode {} -y", shell_quote(m)));
     }
 
-    match admin(&cmd) {
+    set(&app, |s| {
+        s.busy = true;
+        s.error = None;
+    });
+    let result = admin(&cmd);
+    set(&app, |s| s.busy = false);
+
+    match result {
         Ok(out) => {
-            // The service is what owns the data plane now; wait for it and show its
-            // console, rather than leaving the window on a gateway that just exited.
-            let deadline = Instant::now() + Duration::from_secs(20);
+            // Wait for the service to answer before showing anything: navigating to
+            // a gateway that is still binding its ports gives a connection error
+            // page, which reads as "the install failed" when it did not.
+            let deadline = Instant::now() + Duration::from_secs(30);
             while Instant::now() < deadline && !healthy(&rt.api, Duration::from_millis(500)) {
                 std::thread::sleep(Duration::from_millis(300));
             }
-            set(&app, |s| {
-                s.spawned = false;
-                s.attached = true;
-                s.healthy = true;
-                s.service_installed = true;
-                s.service_running = true;
-                s.error = None;
-            });
-            log("installed; attached to the service's gateway");
-            show_console(&app, &rt.api);
+            let app2 = app.clone();
+            std::thread::spawn(move || bring_up(&app2));
             Ok(out)
         }
         Err(e) => {
-            // Declined or failed: put back what was there, or the user is left with
-            // no gateway at all because they said no to a prompt.
-            if we_had_one {
-                log("install failed; restarting the gateway this window had");
-                match spawn_gateway(&rt) {
-                    Ok(child) => {
-                        if let Ok(mut slot) = app.state::<Gateway>().0.lock() {
-                            *slot = Some(child);
-                        }
-                    }
-                    Err(e2) => log(&format!("could not restart it: {e2}")),
-                }
-            }
+            // Declined or failed. There is deliberately nothing to fall back to:
+            // a user-level gateway would have no TUN, would die with this window,
+            // and would leave state that the real install then has to clean up.
+            set(&app, |s| s.error = Some(e.clone()));
             Err(e)
         }
     }
 }
 
 #[tauri::command]
-fn uninstall_service(rt: State<Runtime>) -> Result<String, String> {
+fn uninstall_service(app: AppHandle, rt: State<Runtime>) -> Result<String, String> {
     let cmd = format!(
-        "{} service uninstall --json",
+        "{} uninstall --json",
         shell_quote(&rt.binary.display().to_string())
     );
-    admin(&cmd)
+    let out = admin(&cmd)?;
+    let app2 = app.clone();
+    std::thread::spawn(move || bring_up(&app2));
+    Ok(out)
 }
+
+// ---- elevation ------------------------------------------------------------
 
 /// admin runs one shell command with an authorization prompt.
 ///
-/// One shell, one elevation *mechanism per OS*: the same CLI command in all
-/// cases, so what gets installed never depends on which shell asked. The shell
-/// itself is never root — it asks the platform to run the CLI as root and reads
-/// back the CLI's own JSON.
+/// One elevation *mechanism per OS*, but the same CLI command in all three: what
+/// gets installed never depends on which prompt asked. The shell itself is never
+/// root — it asks the platform to run the CLI as root and reads back the CLI's
+/// own JSON.
 #[cfg(target_os = "macos")]
 fn admin(cmd: &str) -> Result<String, String> {
     let script = format!(
@@ -671,7 +452,11 @@ fn admin(cmd: &str) -> Result<String, String> {
         .output()
         .map_err(|e| format!("osascript: {e}"))?;
     if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        if stderr.contains("User canceled") || stderr.contains("(-128)") {
+            return Err("the administrator prompt was cancelled".into());
+        }
+        return Err(stderr);
     }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
@@ -713,7 +498,8 @@ fn admin(cmd: &str) -> Result<String, String> {
 fn admin(cmd: &str) -> Result<String, String> {
     use std::os::windows::process::CommandExt;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out_file = std::env::temp_dir().join(format!("trust-proxy-admin-{}.json", std::process::id()));
+    let out_file =
+        std::env::temp_dir().join(format!("trust-proxy-admin-{}.json", std::process::id()));
     let _ = std::fs::remove_file(&out_file);
     let ps = runas_script(cmd, &out_file);
     let status = Command::new("powershell")
@@ -739,8 +525,8 @@ fn admin(cmd: &str) -> Result<String, String> {
 }
 
 /// pkexec runs a *program*, not a shell line, so the command goes to sh rather
-/// than being re-split here — re-splitting is how a data directory with a space
-/// in it turns into two arguments.
+/// than being re-split here — re-splitting is how a path with a space in it turns
+/// into two arguments.
 fn pkexec_argv(cmd: &str) -> Vec<String> {
     vec![
         "pkexec".to_string(),
@@ -758,6 +544,156 @@ fn runas_script(cmd: &str, out_file: &Path) -> String {
         "$p = Start-Process -FilePath cmd.exe -ArgumentList '/c',{} -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
         powershell_string(&format!("{cmd} > \"{}\"", out_file.display()))
     )
+}
+
+// ---- odds and ends --------------------------------------------------------
+
+/// current_user is who this window belongs to — the account `install` should
+/// create the first admin for and leave the API key with.
+///
+/// Passed explicitly rather than left to SUDO_USER: the authorization prompts
+/// this shell uses do not all set it, and a credential dropped in root's home is
+/// a credential nobody at the keyboard will ever find.
+fn current_user() -> Option<String> {
+    for var in ["USER", "LOGNAME", "USERNAME"] {
+        if let Some(v) = env_override(var) {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn healthy(api: &str, timeout: Duration) -> bool {
+    use std::io::{Read, Write};
+    use std::net::TcpStream;
+    let Ok(addr) = api.parse() else { return false };
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, timeout) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(timeout));
+    let req = format!("GET /api/health HTTP/1.0\r\nHost: {api}\r\nConnection: close\r\n\r\n");
+    if stream.write_all(req.as_bytes()).is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 64];
+    let n = stream.read(&mut buf).unwrap_or(0);
+    let head = String::from_utf8_lossy(&buf[..n]);
+    head.starts_with("HTTP/1.") && (head.contains(" 200") || head.contains(" 204"))
+}
+
+/// sidecar_problem explains a gateway binary that would not run at all.
+///
+/// On macOS the usual cause is Gatekeeper: approving the *app* does not extend to
+/// a binary it launches, and on macOS 26 that binary is SIGKILLed with nothing in
+/// any log. Guessing from an empty failure is not something a user should have to
+/// do, so the command that fixes it is named, with its path.
+fn sidecar_problem(binary: &Path) -> String {
+    if !binary.exists() {
+        return format!(
+            "the gateway binary is missing from this app ({}). This build is incomplete — \
+             rebuild it with `make build`.",
+            binary.display()
+        );
+    }
+    let bundle = binary
+        .ancestors()
+        .find(|p| p.extension().map(|e| e == "app").unwrap_or(false))
+        .unwrap_or(binary);
+    if is_quarantined(bundle) {
+        return format!(
+            "macOS refused to run the gateway inside this app: the copy is still \
+             quarantined, and this build is not notarized. Clear it once:\n\n    \
+             xattr -dr com.apple.quarantine {}\n\nor allow the app under System \
+             Settings → Privacy & Security.",
+            shell_quote(&bundle.display().to_string())
+        );
+    }
+    format!(
+        "the gateway binary in this app could not be run ({}).",
+        binary.display()
+    )
+}
+
+fn is_quarantined(path: &Path) -> bool {
+    Command::new("xattr")
+        .arg("-p")
+        .arg("com.apple.quarantine")
+        .arg(path)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// log writes one line to stderr, which is where someone running the binary from
+/// a terminal will look, and where the platform's log viewer picks it up.
+fn log(msg: &str) {
+    eprintln!("[trust-proxy shell] {msg}");
+}
+
+fn set(app: &AppHandle, f: impl FnOnce(&mut Status)) {
+    if let Ok(mut s) = app.state::<Runtime>().status.lock() {
+        f(&mut s);
+    }
+}
+
+/// env_override reads an environment variable, treating an empty value as absent.
+///
+/// `TP_API_ADDR=` is not a request to connect to nowhere — it is a variable
+/// somebody cleared. Taking it literally produced a shell that probed the empty
+/// string and could never attach.
+fn env_override(name: &str) -> Option<String> {
+    match std::env::var(name) {
+        Ok(v) if !v.trim().is_empty() => Some(v),
+        _ => None,
+    }
+}
+
+/// sidecar_name is the gateway executable's file name inside the bundle.
+fn sidecar_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "trust-proxy.exe"
+    } else {
+        "trust-proxy"
+    }
+}
+
+/// gateway_binary is the sidecar inside the bundle, or an override for dev.
+fn gateway_binary(app: &AppHandle) -> PathBuf {
+    if let Some(p) = env_override("TP_BINARY") {
+        return PathBuf::from(p);
+    }
+    // Tauri strips the target triple from an externalBin, but *where* the result
+    // lands differs per platform: next to the executable on Linux/Windows, in the
+    // bundle's MacOS/ directory on macOS (a sibling of Resources/). Try both
+    // rather than encoding one layout.
+    let exe_name = sidecar_name();
+    if let Ok(dir) = app.path().resource_dir() {
+        for candidate in [dir.join(format!("../MacOS/{exe_name}")), dir.join(exe_name)] {
+            if let Ok(canon) = candidate.canonicalize() {
+                return canon;
+            }
+        }
+    }
+    gateway_binary_standalone()
+}
+
+/// gateway_binary_standalone is the same lookup without a Tauri handle, for
+/// --print-config (which runs before any app exists).
+fn gateway_binary_standalone() -> PathBuf {
+    if let Some(p) = env_override("TP_BINARY") {
+        return PathBuf::from(p);
+    }
+    let exe_name = sidecar_name();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            for candidate in [dir.join(exe_name), dir.join(format!("../MacOS/{exe_name}"))] {
+                if candidate.exists() {
+                    return candidate;
+                }
+            }
+        }
+    }
+    PathBuf::from(exe_name)
 }
 
 #[cfg(any(target_os = "linux", test))]
@@ -799,11 +735,11 @@ mod tests {
     // path with a space — which is the normal case on a desktop.
     #[test]
     fn elevation_passes_one_unsplit_command() {
-        let cmd = "'/Applications/Trust Proxy.app/tp' service install --data '/Users/a b/.trust-proxy'";
+        let cmd = "'/Applications/Trust Proxy.app/tp' install --claim-for 'a b'";
         let argv = pkexec_argv(cmd);
         assert_eq!(argv[0], "pkexec");
         // sh -c takes the whole line as ONE argument; splitting it would install
-        // against the wrong data dir instead of failing loudly.
+        // against the wrong arguments instead of failing loudly.
         assert_eq!(argv.len(), 4);
         assert_eq!(argv[3], cmd);
 
@@ -824,112 +760,67 @@ mod tests {
         assert_eq!(powershell_string("$env:PATH"), "'$env:PATH'");
     }
 
-    // A gateway that is up but has no console is the failure this catches; the
-    // page it serves is the only signal, so the detection is a string match and
-    // deserves a test that the string is the right one.
+    // The shell must not carry its own idea of where anything is: every fact comes
+    // out of `env --json`. This pins the field names, because a rename on the Go
+    // side would otherwise leave the window silently showing defaults — empty
+    // paths, "not installed", and a setup button that is wrong.
     #[test]
-    fn a_console_less_gateway_is_recognised_and_explained() {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-        let server = TcpListener::bind("127.0.0.1:0").unwrap();
-        let api = server.local_addr().unwrap().to_string();
-        std::thread::spawn(move || {
-            for conn in server.incoming().take(1) {
-                let mut c = conn.unwrap();
-                let mut buf = [0u8; 256];
-                let _ = c.read(&mut buf);
-                let body = "trust-proxy dashboard not built.\nRun: make dashboard";
-                let _ = c.write_all(
-                    format!(
-                        "HTTP/1.0 200 OK\r\nContent-Length: {}\r\n\r\n{}",
-                        body.len(),
-                        body
-                    )
-                    .as_bytes(),
-                );
-            }
-        });
-        let why = console_complaint(&api).expect("a console-less gateway must be reported");
-        assert!(why.contains("service install"), "no fix offered: {why}");
+    fn the_env_contract_is_what_the_go_side_prints() {
+        let raw = r#"{
+            "platform":"linux","arch":"amd64","version":"v1","privileged":false,
+            "can_tun":true,"data_dir":"/var/lib/trust-proxy",
+            "managed_binary":"/usr/local/libexec/trust-proxy",
+            "api_addr":"127.0.0.1:21585","console_url":"http://127.0.0.1:21585/",
+            "elevation":"pkexec","action":"repair",
+            "service":{"supported":true,"installed":true,"running":false,
+                       "detail":"failed","program_missing":true},
+            "gateway":{"healthy":false,"console":false,"version":"","managed":false,"stale":false}
+        }"#;
+        let env: Env = serde_json::from_str(raw).expect("the env contract must parse");
+        assert_eq!(env.platform, "linux");
+        assert_eq!(env.data_dir, "/var/lib/trust-proxy");
+        assert_eq!(env.elevation, "pkexec");
+        assert_eq!(env.action, "repair");
+        assert!(env.service.installed && !env.service.running);
+        assert!(env.service.program_missing);
+        assert!(!env.gateway.healthy);
     }
 
-    // The state this machine was actually in: a data directory the app cannot
-    // write because an earlier sudo run took it. errno alone says nothing about
-    // either way out, and both are needed — one keeps TUN, the other gives the
-    // directory back.
+    // The upgrade shape: a gateway that is up, is the managed copy, and is a
+    // different build from the app that just opened. The shell must not treat this
+    // as "attach" — that is the silent no-op upgrade, where the new app shows the
+    // old daemon's console and nothing looks wrong.
     #[test]
-    fn an_unwritable_data_dir_names_both_ways_out() {
-        let denied = std::io::Error::from(ErrorKind::PermissionDenied);
-        let msg = data_dir_problem(Path::new("/Users/x/.trust-proxy"), &denied);
-        assert!(msg.contains("system service"), "{msg}");
-        assert!(msg.contains("chown -R"), "{msg}");
-        assert!(msg.contains("/Users/x/.trust-proxy"), "{msg}");
-        // Anything else keeps the original error rather than guessing at a cause.
-        let other = std::io::Error::from(ErrorKind::NotFound);
-        assert!(!data_dir_problem(Path::new("/tmp/x"), &other).contains("sudo"));
-    }
-
-    #[test]
-    fn a_gateway_that_is_not_there_is_not_reported_as_console_less() {
-        // Nothing listening: that is the "still starting" path, not a complaint.
-        assert!(console_complaint("127.0.0.1:9").is_none());
-    }
-
-    #[test]
-    fn which_finds_a_program_on_the_path_and_not_a_made_up_one() {
-        assert!(which("sh").is_some());
-        assert!(which("definitely-not-a-real-program-xyz").is_none());
-    }
-
-    #[test]
-    fn the_gateways_own_error_is_quoted_not_a_log_path() {
-        // The common first-run failure is a port already held by another proxy;
-        // the shell must say that, not "see the log".
-        let dir = std::env::temp_dir().join(format!("tp-log-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let log = dir.join("serve.log");
-        std::fs::write(
-            &log,
-            "\u{1b}[36mINFO\u{1b}[0m network: updated default interface en0\n\u{1b}[31mERROR\u{1b}[0m start inbound/mixed[mixed-in]: listen tcp 127.0.0.1:21584: bind: address already in use\n",
+    fn a_stale_daemon_arrives_as_an_update_not_an_attach() {
+        let env: Env = serde_json::from_str(
+            r#"{"platform":"darwin","data_dir":"/d","api_addr":"a:1","console_url":"http://a:1/",
+                "version":"v2","action":"update",
+                "service":{"supported":true,"installed":true,"running":true},
+                "gateway":{"healthy":true,"console":true,"version":"v1","managed":true,"stale":true}}"#,
         )
-        .unwrap();
-        let got = last_error_line(&log).expect("an error line");
-        assert!(got.contains("address already in use"), "got {got}");
-        assert!(!got.contains('\u{1b}'), "ANSI escapes leaked into the UI: {got}");
-        assert!(last_error_line(&dir.join("missing.log")).is_none());
-        let _ = std::fs::remove_dir_all(&dir);
+        .expect("must parse");
+        assert_eq!(env.action, "update");
+        assert!(env.gateway.stale);
+        assert_ne!(env.version, env.gateway.version);
+        assert!(env.gateway.managed);
+    }
+
+    // A gateway that is up but console-less, and an older binary that does not
+    // know some field yet, must both degrade to something usable rather than
+    // failing to parse and leaving the window blank.
+    #[test]
+    fn a_partial_env_still_parses() {
+        let env: Env = serde_json::from_str(
+            r#"{"platform":"darwin","data_dir":"/d","api_addr":"a:1","console_url":"http://a:1/"}"#,
+        )
+        .expect("missing optional sections must default, not fail");
+        assert!(!env.service.supported);
+        assert!(!env.gateway.healthy);
+        assert_eq!(env.elevation, "");
     }
 
     #[test]
-    fn quarantine_hint_only_fires_for_a_signal_kill_on_a_quarantined_bundle() {
-        let dir = std::env::temp_dir().join(format!("tp-q-{}", std::process::id()));
-        let bundle = dir.join("Trust Proxy.app");
-        let bin = bundle.join("Contents/MacOS/trust-proxy");
-        std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
-        std::fs::write(&bin, b"#!/bin/sh\n").unwrap();
-
-        // Not quarantined: no hint, whatever the exit shape.
-        assert_eq!(quarantine_hint(&bin, true), "");
-
-        let marked = Command::new("xattr")
-            .args(["-w", "com.apple.quarantine", "0083;0;test;"])
-            .arg(&bundle)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false);
-        if marked {
-            // A plain non-zero exit is a config problem, not Gatekeeper.
-            assert_eq!(quarantine_hint(&bin, false), "");
-            let hint = quarantine_hint(&bin, true);
-            assert!(hint.contains("xattr -dr com.apple.quarantine"), "got {hint}");
-            assert!(hint.contains("Trust Proxy.app"), "hint must name the bundle: {hint}");
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn health_probe_rejects_a_dead_port() {
-        // Port 1 on loopback: nothing listens, and the probe must not hang.
+    fn health_probe_rejects_a_dead_port_quickly() {
         let start = Instant::now();
         assert!(!healthy("127.0.0.1:1", Duration::from_millis(200)));
         assert!(start.elapsed() < Duration::from_secs(2));
@@ -941,7 +832,10 @@ mod tests {
         use std::net::TcpListener;
         for (reply, want) in [
             ("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", true),
-            ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n", false),
+            (
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+                false,
+            ),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let addr = listener.local_addr().unwrap().to_string();
@@ -955,5 +849,20 @@ mod tests {
             assert_eq!(healthy(&addr, Duration::from_secs(2)), want, "reply {reply:?}");
             let _ = handle.join();
         }
+    }
+
+    #[test]
+    fn which_finds_a_program_on_the_path_and_not_a_made_up_one() {
+        assert!(which("sh").is_some());
+        assert!(which("definitely-not-a-real-program-xyz").is_none());
+    }
+
+    // A missing sidecar and a quarantined one are different failures with
+    // different fixes, and neither is guessable from "the app will not open".
+    #[test]
+    fn a_missing_sidecar_says_so_rather_than_blaming_gatekeeper() {
+        let msg = sidecar_problem(Path::new("/nowhere/trust-proxy"));
+        assert!(msg.contains("missing"), "{msg}");
+        assert!(!msg.contains("quarantine"), "{msg}");
     }
 }

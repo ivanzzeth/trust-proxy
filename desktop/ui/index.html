@@ -57,7 +57,7 @@
       </div>
 
       <div class="card">
-        <div class="row"><span id="headline"><span class="spinner"></span> Starting the gateway…</span></div>
+        <div class="row"><span id="headline"><span class="spinner"></span> Looking for the gateway…</span></div>
         <div class="row muted"><span>API</span><span id="api">—</span></div>
         <div class="row muted"><span>Data</span><span id="data">—</span></div>
         <div class="row muted"><span>System service</span><span id="svc">—</span></div>
@@ -66,82 +66,163 @@
       <div id="error" class="err" hidden></div>
 
       <div class="actions" id="actions" hidden>
-        <button class="primary" id="retry">Retry</button>
-        <button id="install-tun">Enable TUN (install system service)…</button>
-        <button id="install">Install system service…</button>
-        <button id="uninstall" hidden>Remove system service…</button>
+        <button class="primary" id="setup-tun">Set up, with TUN capture…</button>
+        <button class="primary" id="apply" hidden>Update…</button>
+        <button id="setup">Set up…</button>
+        <button id="anyway" hidden>Open the console anyway</button>
+        <button id="retry">Retry</button>
+        <button id="uninstall" hidden>Remove the gateway service…</button>
       </div>
 
-      <p class="hint" id="hint">
-        TUN capture needs root. Installing the system service lets
-        <code>launchd</code> own the gateway, so the data plane keeps running when
-        this window is closed — and survives a reboot.
-      </p>
+      <p class="hint" id="hint"></p>
     </main>
 
     <script type="module">
       const { invoke } = window.__TAURI__.core;
       const $ = (id) => document.getElementById(id);
 
-      const render = (s) => {
-        $('api').textContent = s.api;
-        $('data').textContent = s.data_dir;
-        $('svc').textContent = s.service_installed
-          ? s.service_running ? 'installed, running' : 'installed, not running'
-          : 'not installed';
-        $('uninstall').hidden = !s.service_installed;
-        $('install-tun').hidden = s.service_installed;
-        $('install').hidden = s.service_installed;
+      // What the authorization prompt will look like, per platform. Naming it
+      // beats "authorize this": the user is about to see a system dialog and
+      // should recognise it as the one we asked for.
+      const PROMPT = {
+        osascript: 'macOS will ask for your administrator password',
+        pkexec: 'your desktop will ask for your password (polkit)',
+        uac: 'Windows will show a User Account Control prompt',
+      };
+      // The service manager that will own the gateway. Written down once, keyed by
+      // platform — the hint used to say "launchd" on all three.
+      const MANAGER = { darwin: 'launchd', linux: 'systemd', windows: 'the Service Control Manager' };
 
-        if (s.error) {
-          $('headline').textContent = 'The gateway did not start';
-          $('error').hidden = false;
-          $('error').textContent = s.error;
-          $('actions').hidden = false;
+      const render = (s) => {
+        $('api').textContent = s.api || '—';
+        $('data').textContent = s.data_dir || '—';
+        $('svc').textContent = !s.service_supported && s.platform
+          ? 'not available on ' + s.platform
+          : s.service_installed
+            ? (s.service_running ? 'installed, running' : 'installed, not running')
+            : 'not installed';
+        $('uninstall').hidden = !s.service_installed;
+
+        // Every offer is the same privileged command; only the wording and which
+        // button is primary changes. `action` comes from the Go side — the shell
+        // deliberately does not re-derive it from the flags.
+        const offer = !s.busy && s.service_supported &&
+          ['install', 'update', 'takeover', 'repair'].includes(s.action);
+        const firstRun = s.action === 'install';
+        $('setup-tun').hidden = !(offer && firstRun);
+        $('setup').hidden = !(offer && firstRun);
+        $('apply').hidden = !(offer && !firstRun);
+        // A stale or foreign gateway must never be a dead end: it is running and it
+        // works, it is just not the one this app expects.
+        $('anyway').hidden = !(!s.busy && s.healthy && s.action !== 'attach');
+        $('retry').hidden = s.busy;
+        $('actions').hidden = !(offer || s.error || s.console_missing || !$('anyway').hidden);
+
+        $('error').hidden = !s.error;
+        if (s.error) $('error').textContent = s.error;
+
+        const prompt = PROMPT[s.elevation];
+        const manager = MANAGER[s.platform] || 'the system service manager';
+        const noElevation = `There is no graphical way to ask for administrator rights on this ` +
+          `system. Run <code>sudo trust-proxy install</code> in a terminal, then reopen this window.`;
+
+        if (s.busy) {
+          $('headline').innerHTML = '<span class="spinner"></span> Asking the system to set the gateway up…';
+          $('hint').textContent = 'This is the only step that needs a password.';
+          return false;
+        }
+        if (s.console_missing) {
+          $('headline').textContent = 'That gateway has no console in it';
+          $('hint').innerHTML = 'It was built without the UI embedded. Rebuild with <code>make build</code> ' +
+            'and set it up again.';
           return true;
         }
-        if (s.healthy) {
-          $('headline').innerHTML = s.attached
-            ? 'Attached to the running gateway — opening the console…'
-            : 'Gateway is up — opening the console…';
-          return true;
+        switch (s.action) {
+          case 'attach':
+            $('headline').innerHTML = '<span class="spinner"></span> Opening the console…';
+            $('hint').textContent = '';
+            return true;
+          case 'update':
+            // The failure this screen exists for: without it the new app attaches
+            // to the old daemon, shows its console, and nothing looks wrong.
+            $('headline').textContent = 'This app is newer than the gateway running here';
+            $('apply').textContent = 'Update the gateway…';
+            $('hint').innerHTML = s.elevation
+              ? `The gateway on this machine is <code>${s.gateway_version || 'an older build'}</code>, ` +
+                `this app is <code>${s.app_version}</code>. Updating replaces the service's copy and ` +
+                `restarts it — ${prompt}. Your policy, accounts and subscriptions are untouched.`
+              : noElevation;
+            return false;
+          case 'takeover':
+            $('headline').textContent = 'A gateway is running here, but not as a system service';
+            $('apply').textContent = 'Take over and set up…';
+            $('hint').innerHTML = s.elevation
+              ? `Something on <code>${s.api}</code> is holding the port — a gateway started by hand, ` +
+                `or one left from an older version. Taking over stops it and installs the service ` +
+                `properly (starts at boot, survives closing this window, TUN available). ` +
+                `Its policy is carried over. ${prompt}.`
+              : noElevation;
+            return false;
+          case 'repair':
+            $('apply').textContent = 'Reinstall the gateway…';
+            $('hint').innerHTML = s.elevation ? `Reinstalling is the repair. ${prompt}.` : noElevation;
+            return false;
+          case 'install':
+            $('headline').textContent = 'Not set up on this machine yet';
+            $('hint').innerHTML = s.elevation
+              ? `One click and one password: ${prompt}. The gateway is installed as a system ` +
+                `service owned by ${manager}, so it starts at boot, keeps running when this window ` +
+                `is closed, and can capture all traffic with TUN. It will not ask again.`
+              : noElevation;
+            return false;
+          default:
+            $('hint').textContent = '';
+            return false;
         }
-        return false;
       };
 
-      let done = false;
+      let settled = false;
       const poll = async () => {
         try {
-          const s = await invoke('status');
-          if (render(s)) { done = true; }
+          if (render(await invoke('status'))) { settled = true; }
         } catch (e) {
           $('error').hidden = false;
           $('error').textContent = String(e);
           $('actions').hidden = false;
-          done = true;
+          settled = true;
         }
-        if (!done) setTimeout(poll, 400);
+        if (!settled) setTimeout(poll, 400);
       };
       poll();
 
-      $('retry').onclick = () => { done = false; $('error').hidden = true; $('actions').hidden = true; invoke('open_console').catch(()=>{}); poll(); };
-      const privileged = async (cmd, btn, args) => {
-        btn.disabled = true;
+      const run = async (cmd, btn, args) => {
+        if (btn) btn.disabled = true;
+        settled = false;
+        $('error').hidden = true;
         try {
           await invoke(cmd, args);
-          done = false; poll();
         } catch (e) {
           $('error').hidden = false;
           $('error').textContent = String(e);
         } finally {
-          btn.disabled = false;
+          if (btn) btn.disabled = false;
+          poll();
         }
       };
-      // TUN is why most people install the service at all, so it gets its own
-      // button rather than being a mode to discover afterwards in the console.
-      $('install-tun').onclick = (e) => privileged('install_service', e.target, { mode: 'tun' });
-      $('install').onclick = (e) => privileged('install_service', e.target);
-      $('uninstall').onclick = (e) => privileged('uninstall_service', e.target);
+
+      // TUN is why most people set this up at all, so it is the primary button
+      // rather than a mode to discover later in the console. The plain one exists
+      // because installing a boot-time daemon that captures everything is a
+      // decision, not a default.
+      $('setup-tun').onclick = (e) => run('setup', e.target, { mode: 'tun' });
+      $('setup').onclick = (e) => run('setup', e.target);
+      // Update / take over / repair are the same command as a first install: it
+      // replaces the service's copy of the binary and restarts it. No mode is
+      // passed, so an existing TUN setting is left as it is.
+      $('apply').onclick = (e) => run('setup', e.target);
+      $('anyway').onclick = (e) => run('open_console', e.target);
+      $('uninstall').onclick = (e) => run('uninstall_service', e.target);
+      $('retry').onclick = (e) => run('refresh', e.target);
     </script>
   </body>
 </html>
