@@ -199,7 +199,23 @@ var postureSetCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		return out(p, func() { fmt.Printf("posture -> %v\n", p["active"]) })
+		return out(p, func() {
+			fmt.Printf("posture -> %v\n", p["active"])
+			// Split seeds the catalog's remote rule sets, and a machine that cannot
+			// download them gets them switched off rather than a gateway that will
+			// not start. Saying which ones, and why, is the difference between a
+			// degraded policy and a mysterious one.
+			if list, ok := p["unreachable_sets"].([]any); ok && len(list) > 0 {
+				names := make([]string, 0, len(list))
+				for _, v := range list {
+					names = append(names, fmt.Sprint(v))
+				}
+				fmt.Printf("\n⚠ %d rule set(s) could not be downloaded from any source and are OFF:\n    %s\n",
+					len(names), strings.Join(names, ", "))
+				fmt.Printf("  They need either a working route to GitHub/jsdelivr or an exit node.\n")
+				fmt.Printf("  Add a node, then:  trust-proxy rules sets toggle <tag>\n")
+			}
+		})
 	},
 }
 

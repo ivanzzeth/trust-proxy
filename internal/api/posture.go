@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/blacklist"
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
@@ -75,6 +76,12 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Rule sets Split wanted but this machine cannot download. Reported to the
+	// caller, not only logged: switching to Split and silently getting a policy
+	// with a dozen pieces missing is worse than being told, and a log line on a
+	// systemd service is not somewhere anyone looks.
+	var unreachable []string
+
 	// 2) Load target slot; seed Split on first visit.
 	toSlot, err := s.posture.Slot(req.Active)
 	if err != nil {
@@ -83,6 +90,24 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Active == apitypes.PostureSplit && !toSlot.Seeded {
 		toSlot = posture.SeedSplit()
+		// Point every seeded rule set at a source this machine can actually reach,
+		// and disable the ones it cannot.
+		//
+		// Split seeds the catalog's *remote* rule sets, and sing-box refuses to
+		// start when it cannot fetch one — so on a gateway that has no exit node
+		// yet and cannot reach GitHub, switching to Split failed outright, eight
+		// lines of "initialize rule-set: Get https://raw.githubusercontent.com/…"
+		// deep. Which is the first thing a new user behind the GFW tries: no node
+		// means the download cannot go through the proxy either.
+		//
+		// The catalog has carried a jsdelivr mirror for every entry since the
+		// beginning, with a comment explaining it is the one that works there.
+		// Nothing read it.
+		unreachable = ruleset.ResolveSources(toSlot.RuleSets, 6*time.Second)
+		if len(unreachable) > 0 {
+			logging.L().Warn().Strs("rule_sets", unreachable).
+				Msg("posture: no reachable source for these rule sets — seeded disabled; add an exit node and enable them")
+		}
 		if err := s.posture.PutSlot(apitypes.PostureSplit, toSlot); err != nil {
 			writeErr(w, http.StatusInternalServerError, err.Error())
 			return
@@ -119,6 +144,7 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 		"active":            req.Active,
 		"seeded_split":      s.posture.Get().Slots[apitypes.PostureSplit].Seeded,
 		"forced_clash_rule": forcedRule,
+		"unreachable_sets":  unreachable,
 	})
 }
 

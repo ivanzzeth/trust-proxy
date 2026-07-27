@@ -322,3 +322,44 @@ JSON`)
 	}
 	l.assertBoxAlive("respecting a chosen system resolver")
 }
+
+// Switching to Split must not depend on being able to reach GitHub.
+//
+// Split seeds the catalog's *remote* rule sets, and sing-box refuses to start
+// when it cannot fetch one — so on a gateway with no exit node that cannot reach
+// raw.githubusercontent.com, `posture set split` failed outright, eight lines of
+// Go network errors deep. That is the first thing a new user behind the GFW
+// tries: no node means the download cannot go through the proxy either, and the
+// mirror the catalog has carried all along was never read.
+//
+// This container reaches nothing, which is the whole point: the posture switch
+// has to succeed anyway, with the unreachable sets switched off and named.
+func TestLinuxSplitWorksWithNoReachableRuleSetSource(t *testing.T) {
+	l := newLab(t, "tp-e2e-split")
+
+	out := l.exec("trust-proxy posture set split -y")
+	if strings.Contains(out, "error:") {
+		t.Fatalf("switching to Split failed on a machine that cannot download rule sets:\n%s", out)
+	}
+	if got := l.exec("trust-proxy posture get"); !strings.Contains(got, "split") {
+		t.Fatalf("posture did not switch: %s", got)
+	}
+	l.assertBoxAlive("posture set split with nothing downloadable")
+
+	// Told, not silently degraded: a policy quietly missing a dozen pieces is
+	// worse than one that says which pieces and how to get them.
+	if !strings.Contains(out, "could not be downloaded") {
+		t.Fatalf("the disabled rule sets were not reported to the caller:\n%s", out)
+	}
+	if !strings.Contains(out, "exit node") {
+		t.Fatalf("the message does not say how to fix it:\n%s", out)
+	}
+	// Disabled, not dropped — the entry stays so it can be turned on later.
+	sets := l.exec("trust-proxy rules sets ls")
+	if !strings.Contains(sets, "geoip-cn") {
+		t.Fatalf("an unreachable rule set was dropped rather than disabled:\n%s", sets)
+	}
+
+	// And Split is really in force: the gate is open.
+	l.mustReach("Split with no rule sets should still drop the Permit gate")
+}
