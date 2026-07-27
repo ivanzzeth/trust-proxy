@@ -88,6 +88,32 @@ type User struct {
 	APIKeys       []APIKey `json:"api_keys,omitempty"`
 	CreatedAt     string   `json:"created_at"`
 	LastLoginAt   string   `json:"last_login_at,omitempty"`
+	// SessionEpoch invalidates every session issued before it was bumped.
+	//
+	// authenticate re-reads the account on every request, so Disabled and Role take
+	// effect immediately — but nothing tied a token to the password, so SetPassword
+	// left every issued JWT valid for the rest of its 12-hour life and "change your
+	// password" was not a way to end a stolen session. A single integer in the token
+	// and in the record fixes that without per-token storage: bump it and every
+	// session minted under the old value stops authenticating.
+	//
+	// Deliberately not applied to API keys. They are a separate credential with
+	// their own lifecycle — the CLI runs unattended — and rotating a human password
+	// must not silently break every script.
+	SessionEpoch int `json:"session_epoch,omitempty"`
+	// PasswordGenerated marks a password no human was ever told.
+	//
+	// `install` claims the gateway by creating the first admin with a random password
+	// and handing over an API key instead — the working credential is the key, and
+	// the console arrives through a session. So the account starts with a password
+	// that is not a secret anybody holds, and the documented next step is
+	// `trust-proxy user passwd <name>`, which is a *set* rather than a change.
+	//
+	// Requiring the current password there would make that step impossible. This flag
+	// is the distinction: while it is true, setting a password needs nothing else;
+	// once a human has set one, changing it requires proving you know it. Cleared by
+	// SetPassword, which is the only thing that sets a password.
+	PasswordGenerated bool `json:"password_generated,omitempty"`
 }
 
 // APIKey is a non-interactive credential, for the CLI and for scripts.
@@ -364,6 +390,18 @@ func (s *Store) SetPassword(id, password string) error {
 	}
 	return s.mutate(id, func(u *User) error {
 		u.PasswordHash = hash
+		// Every session the old password opened ends here. See User.SessionEpoch.
+		u.SessionEpoch++
+		u.PasswordGenerated = false // somebody now knows it
+		return nil
+	})
+}
+
+// MarkPasswordGenerated records that this account's password was machine-generated
+// and told to nobody. See User.PasswordGenerated.
+func (s *Store) MarkPasswordGenerated(id string) error {
+	return s.mutate(id, func(u *User) error {
+		u.PasswordGenerated = true
 		return nil
 	})
 }
@@ -639,10 +677,12 @@ func (u User) public() apitypes.User {
 		ID: u.ID, Username: u.Username, Role: u.Role, Disabled: u.Disabled,
 		// Whether this person can use the proxy is worth showing; the password
 		// itself never leaves the server.
-		HasProxyCred: u.ProxyPassword != "",
-		APIKeys:      keys,
-		CreatedAt:    u.CreatedAt,
-		LastLoginAt:  u.LastLoginAt,
+		HasProxyCred:      u.ProxyPassword != "",
+		APIKeys:           keys,
+		CreatedAt:         u.CreatedAt,
+		LastLoginAt:       u.LastLoginAt,
+		SessionEpoch:      u.SessionEpoch,
+		PasswordGenerated: u.PasswordGenerated,
 	}
 }
 

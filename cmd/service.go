@@ -345,7 +345,7 @@ func claimGateway(apiAddr string, owner paths.Owner) (claimResult, error) {
 	if err != nil {
 		return claimResult{}, err
 	}
-	sess, err := c.Bootstrap(name, pw, "")
+	sess, err := c.BootstrapWithGeneratedPassword(name, pw, "")
 	if err != nil {
 		return claimResult{}, fmt.Errorf("create the first admin: %w", err)
 	}

@@ -254,11 +254,12 @@ var authRegistrationCmd = &cobra.Command{
 // ---- user (local, on the file) -------------------------------------------
 
 var (
-	userAdmin    bool
-	userRole     string
-	userProxyPw  string
-	userNoProxy  bool
-	userPassword string
+	userAdmin           bool
+	userRole            string
+	userProxyPw         string
+	userNoProxy         bool
+	userPassword        string
+	userCurrentPassword string
 )
 
 var userCmd = &cobra.Command{
@@ -359,10 +360,31 @@ var userPasswdCmd = &cobra.Command{
 				return err
 			}
 		}
-		if _, err := sdk().PatchUser(id, apitypes.PatchUserRequest{Password: &pw}); err != nil {
+		req := apitypes.PatchUserRequest{Password: &pw}
+		if userCurrentPassword != "" {
+			req.CurrentPassword = &userCurrentPassword
+		}
+		_, err = sdk().PatchUser(id, req)
+		// Changing your *own* password needs the current one — an admin resetting
+		// somebody else's does not, and cannot, so the requirement is not knowable
+		// from here without another round trip. Ask for it when the API says so
+		// rather than asking every time or guessing which case this is.
+		if err != nil && strings.Contains(err.Error(), "requires current_password") && userCurrentPassword == "" {
+			cur, perr := readPassword("current password: ")
+			if perr != nil {
+				return perr
+			}
+			req.CurrentPassword = &cur
+			_, err = sdk().PatchUser(id, req)
+		}
+		if err != nil {
 			return err
 		}
 		fmt.Println("✓ password updated for", args[0])
+		// The old sessions are gone, and so is the API key the CLI was using if it
+		// belonged to a session rather than a key — worth saying, because "why did my
+		// other terminal stop working" is otherwise a mystery.
+		fmt.Println("  every session that password opened has ended; API keys are unaffected")
 		return nil
 	},
 }
@@ -597,6 +619,8 @@ func init() {
 	userAddCmd.Flags().BoolVar(&userAdmin, "admin", false, "create an administrator")
 	userAddCmd.Flags().StringVar(&userRole, "role", "", "role: admin | user (default user; the first account is always admin)")
 	userAddCmd.Flags().StringVar(&userPassword, "password", "", "password (omit to be prompted; a flag lands in your shell history)")
+	userPasswdCmd.Flags().StringVar(&userCurrentPassword, "current", "",
+		"your current password, required when changing your own (omit to be prompted)")
 	userPasswdCmd.Flags().StringVar(&userPassword, "password", "", "new password (omit to be prompted)")
 	userDisableCmd.Flags().BoolVar(&userEnable, "enable", false, "enable instead of disable")
 	userProxyCmd.Flags().StringVar(&userProxyPw, "password", "", "proxy password (omit to be prompted)")

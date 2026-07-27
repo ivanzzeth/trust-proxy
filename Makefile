@@ -225,7 +225,7 @@ e2e-fleet:
 ## Deny, the Route/Permit axis split, Global mode's floor, the mode dead-man's
 ## switch, policy surviving restart and in-place upgrade, key rotation on login.
 e2e-dataplane:
-	go test -count=1 -tags docker_e2e -run 'TestLinux(DefaultDeny|GlobalMode|GuardedMode|PolicySurvives|LoginRotates|FreshInstallResolves|UpgradeHealsTheOldDNS|SplitWorksWithNo|PostureSwitchKeeps|LoginFloodIsRefused)' -v -timeout 20m ./test/
+	go test -count=1 -tags docker_e2e -run 'TestLinux(DefaultDeny|GlobalMode|GuardedMode|PolicySurvives|LoginRotates|FreshInstallResolves|UpgradeHealsTheOldDNS|SplitWorksWithNo|PostureSwitchKeeps|LoginFloodIsRefused|PasswordLifecycle)' -v -timeout 20m ./test/
 
 ## Every command that rewrites policy, under a real systemd: each one rebuilds
 ## the sing-box config, and a config the box refuses is a gateway that enforces

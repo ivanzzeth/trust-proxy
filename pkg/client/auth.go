@@ -37,6 +37,20 @@ func (c *Client) Me() (apitypes.User, error) {
 // Bootstrap creates the first admin. code is required only when the gateway is
 // reached off-loopback (it is printed in the gateway's log at startup).
 func (c *Client) Bootstrap(username, password, code string) (apitypes.Session, error) {
+	return c.bootstrap(username, password, code, false)
+}
+
+// BootstrapWithGeneratedPassword is Bootstrap for a caller that made the password
+// up and told nobody — `install`, claiming a gateway on behalf of the person who
+// ran it. The account is marked so that setting a real password afterwards is a
+// *set* and not a *change*: requiring a current password there would make the
+// documented next step (`trust-proxy user passwd <name>`) impossible, since the
+// current one is 32 random bytes that were never printed.
+func (c *Client) BootstrapWithGeneratedPassword(username, password, code string) (apitypes.Session, error) {
+	return c.bootstrap(username, password, code, true)
+}
+
+func (c *Client) bootstrap(username, password, code string, generated bool) (apitypes.Session, error) {
 	// Keep the session the server issues, exactly as Login does. Bootstrap did not,
 	// and the very next call — minting the new admin's first API key — went out
 	// unauthenticated against a registry that had just stopped being empty, so it
@@ -44,9 +58,12 @@ func (c *Client) Bootstrap(username, password, code string) (apitypes.Session, e
 	// worth having.
 	c.ensureJar()
 	var out apitypes.Session
-	body := map[string]string{"username": username, "password": password}
+	body := map[string]any{"username": username, "password": password}
 	if code != "" {
 		body["code"] = code
+	}
+	if generated {
+		body["generated_password"] = true
 	}
 	err := c.do(http.MethodPost, "/api/auth/bootstrap", body, &out)
 	return out, err

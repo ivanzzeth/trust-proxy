@@ -156,10 +156,41 @@ func (s *Server) handleDenyPermitRequest(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	id := r.PathValue("id")
+	// The same check its sibling approve does, and for the same reason: this endpoint
+	// takes an id and this store holds every custom rule, so without it "deny a
+	// request" deleted whatever rule that id named — an ordinary, enabled piece of
+	// policy included.
+	var found *apitypes.CustomRule
+	for _, rule := range s.cr.Get().Rules {
+		if rule.ID == id {
+			r := rule
+			found = &r
+			break
+		}
+	}
+	if found == nil {
+		writeErr(w, http.StatusNotFound, "no such request")
+		return
+	}
+	if !strings.HasPrefix(found.Pack, apitypes.PackRequestPrefix) {
+		writeErr(w, http.StatusBadRequest, "that rule is not a pending request")
+		return
+	}
 	rules, err := s.cr.Remove(id)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
+	}
+	// And re-apply. Without this the store and the data plane diverged: whatever was
+	// removed stayed in force until something else happened to rebuild, so "revoked"
+	// read as done and was not. A pending request is disabled and grants nothing, so
+	// this is usually a no-op — usually is not a reason to skip it, and an approved
+	// request that is later denied is the case where it is not.
+	if s.crApplier != nil {
+		if err := s.crApplier.SetCustomRules(rules); err != nil {
+			writeErr(w, http.StatusBadGateway, "apply rules: "+err.Error())
+			return
+		}
 	}
 	writeArray(w, http.StatusOK, rules.Rules)
 }

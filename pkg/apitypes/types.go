@@ -502,6 +502,16 @@ type User struct {
 	APIKeys      []APIKey `json:"api_keys,omitempty"`
 	CreatedAt    string   `json:"created_at"`
 	LastLoginAt  string   `json:"last_login_at,omitempty"`
+	// SessionEpoch is carried so a session token can be bound to it: a password
+	// change bumps the epoch and every token minted under the old one stops
+	// authenticating. Not secret — it is a counter — and not part of the console's
+	// display, hence omitempty.
+	SessionEpoch int `json:"session_epoch,omitempty"`
+	// PasswordGenerated is true while the account's password is the random one
+	// `install` created and told nobody. Setting a password then needs no current
+	// password, because there is no secret for that check to protect; the console
+	// uses this to label the field "set" rather than "change".
+	PasswordGenerated bool `json:"password_generated,omitempty"`
 }
 
 // APIKey is a non-interactive credential's metadata. The key itself is shown once
@@ -568,6 +578,13 @@ type PatchUserRequest struct {
 	Disabled      *bool   `json:"disabled,omitempty"`
 	Password      *string `json:"password,omitempty"`
 	ProxyPassword *string `json:"proxy_password,omitempty"`
+	// CurrentPassword is required when changing your *own* password, and ignored
+	// when an admin resets somebody else's (they do not know it, and requiring it
+	// would make a reset impossible).
+	//
+	// Without it a stolen session was not merely a session: the thief could set a
+	// password of their own and lock the owner out of an account they still owned.
+	CurrentPassword *string `json:"current_password,omitempty"`
 }
 
 // AuthSettings are the registry-wide auth knobs (admin-writable at runtime).

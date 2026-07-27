@@ -607,10 +607,6 @@ func TestSelfServiceCannotEscalate(t *testing.T) {
 		return rec
 	}
 
-	// Own password: allowed.
-	if rec := withSession("PATCH", "/api/users/"+alice.ID, `{"password":"a-new-long-password"}`); rec.Code != 200 {
-		t.Fatalf("own password change: got %d (%s)", rec.Code, rec.Body)
-	}
 	// Own role: refused — this is the escalation the middleware alone would miss.
 	if rec := withSession("PATCH", "/api/users/"+alice.ID, `{"role":"admin"}`); rec.Code != 403 {
 		t.Fatalf("self-promotion to admin: got %d, want 403 (%s)", rec.Code, rec.Body)
@@ -622,5 +618,14 @@ func TestSelfServiceCannotEscalate(t *testing.T) {
 	// Somebody else's account: refused by the middleware.
 	if rec := withSession("PATCH", "/api/users/"+bob.ID, `{"password":"not-your-account"}`); rec.Code != 403 {
 		t.Fatalf("patching another account: got %d, want 403 (%s)", rec.Code, rec.Body)
+	}
+	// Own password: allowed, with the current one (see
+	// TestSelfServicePasswordChangeRequiresTheCurrentPassword). Last, because it
+	// bumps the account's session epoch and therefore invalidates `tok` — every
+	// assertion above it would start returning 401 for a reason that has nothing to
+	// do with what it is testing.
+	if rec := withSession("PATCH", "/api/users/"+alice.ID,
+		`{"current_password":"alice-password-long","password":"a-new-long-password"}`); rec.Code != 200 {
+		t.Fatalf("own password change: got %d (%s)", rec.Code, rec.Body)
 	}
 }

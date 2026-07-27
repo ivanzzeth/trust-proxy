@@ -237,6 +237,54 @@ func TestLinuxLoginRotatesTheStoredKey(t *testing.T) {
 	}
 }
 
+// The password lifecycle a real first run goes through.
+//
+// `install` claims the gateway with a random password it tells nobody — the working
+// credential is the API key — and prints "set a console password when you want to
+// log in from a browser". So the first `user passwd` is a *set*, and requiring the
+// current password there would make the documented next step impossible: the
+// current one is 32 random bytes that were never printed.
+//
+// After that it is a change, and a change has to prove you know the old one, or a
+// stolen session is not a session but a takeover. And either way every session the
+// old password opened has to end, because "change your password" is the advice
+// everyone gives for a stolen session and it needs to be true.
+func TestLinuxPasswordLifecycleFromClaimToChange(t *testing.T) {
+	l := newLab(t, "tp-e2e-passwd")
+	const first = "first-console-password"
+	const second = "second-console-password"
+
+	// 1. The first set needs no current password.
+	if out := l.exec("printf '" + first + "\\n" + first + "\\n' | trust-proxy user passwd root"); !strings.Contains(out, "password updated") {
+		t.Fatalf("the first password set failed, so the step install tells you to run does not work:\n%s", out)
+	}
+	if out := l.exec("printf '" + first + "\\n' | trust-proxy auth login root"); !strings.Contains(out, "logged in") {
+		t.Fatalf("could not log in with the password just set:\n%s", out)
+	}
+
+	// 2. Changing it without the current one is refused. Through the CLI, which is
+	// the path a person takes: it asks for the current password when the API says it
+	// needs one, and with nothing on stdin to answer with, the change cannot happen.
+	if out := l.exec("printf '" + second + "\\n" + second + "\\n' | trust-proxy user passwd root 2>&1 || true"); strings.Contains(out, "password updated") {
+		t.Fatalf("changing an already-set password went through without the current one:\n%s", out)
+	}
+	if out := l.exec("printf '" + second + "\\n' | trust-proxy auth login root 2>&1 || true"); strings.Contains(out, "logged in") {
+		t.Fatal("the refused change took effect anyway")
+	}
+
+	// 3. With it, the change goes through and the old password stops working.
+	if out := l.exec("printf '" + second + "\\n" + second + "\\n' | trust-proxy user passwd root --current " + first); !strings.Contains(out, "password updated") {
+		t.Fatalf("the change with a correct current password failed:\n%s", out)
+	}
+	if out := l.exec("printf '" + first + "\\n' | trust-proxy auth login root 2>&1"); strings.Contains(out, "logged in") {
+		t.Fatalf("the old password still logs in:\n%s", out)
+	}
+	if out := l.exec("printf '" + second + "\\n' | trust-proxy auth login root"); !strings.Contains(out, "logged in") {
+		t.Fatalf("the new password does not log in:\n%s", out)
+	}
+	l.assertBoxAlive("after the password lifecycle")
+}
+
 // A fresh install must not query every domain in the clear.
 //
 // The default resolver used to be the system one, alone: the ISP saw every

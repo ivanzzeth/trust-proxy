@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/authn"
+	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/users"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
@@ -233,7 +234,12 @@ func (s *Server) authenticate(r *http.Request) (*apitypes.User, error) {
 		if err == nil && s.users != nil {
 			// Re-read the account: a token outlives a role change or a disable, and
 			// the stored record is the truth.
-			if u, ok := s.users.ByID(claims.Subject); ok && !u.Disabled {
+			//
+			// The epoch is part of that truth. Without it a password change left every
+			// issued token valid for the rest of its 12-hour life, so the standard
+			// remedy for a stolen session did nothing and the only real revocation was
+			// disabling the account or deleting jwt-secret, which logs out everybody.
+			if u, ok := s.users.ByID(claims.Subject); ok && !u.Disabled && claims.Epoch == u.SessionEpoch {
 				return &u, nil
 			}
 			return nil, authn.ErrRevoked
@@ -330,6 +336,12 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		apitypes.LoginRequest
 		Code string `json:"code"`
+		// GeneratedPassword says the password in this request was made up by the
+		// caller and told to no human — which is what `install` does when it claims a
+		// gateway. See users.User.PasswordGenerated. Lying about it gains nothing:
+		// this endpoint creates the *first* admin, so the caller already has
+		// everything.
+		GeneratedPassword bool `json:"generated_password,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid body")
@@ -357,6 +369,12 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if req.GeneratedPassword {
+		if err := s.users.MarkPasswordGenerated(u.ID); err != nil {
+			logging.L().Warn().Err(err).Msg("could not mark the claim password as generated")
+		}
+		u, _ = s.users.ByID(u.ID)
 	}
 	if s.authn != nil {
 		s.authn.ClearBootstrapCode(s.dataDir)

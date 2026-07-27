@@ -60,6 +60,12 @@ type Claims struct {
 	jwt.RegisteredClaims
 	Username string `json:"username"`
 	Role     string `json:"role"`
+	// Epoch is the account's SessionEpoch at issue time. The middleware compares it
+	// with the current record, so bumping the epoch ends every session minted before
+	// it — which is what makes changing a password a real revocation rather than
+	// advice. Role is *not* trusted from here for the same family of reasons: the
+	// middleware re-reads it.
+	Epoch int `json:"epoch,omitempty"`
 }
 
 // New loads (or creates) the signing key at dir/jwt-secret.
@@ -128,6 +134,7 @@ func (a *Authn) Issue(u apitypes.User) (token string, expires time.Time, err err
 		},
 		Username: u.Username,
 		Role:     u.Role,
+		Epoch:    u.SessionEpoch,
 	}
 	signed, err := jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString(a.secret)
 	if err != nil {

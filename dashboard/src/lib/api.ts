@@ -483,6 +483,12 @@ export interface User {
   api_keys?: APIKey[];
   created_at: string;
   last_login_at?: string;
+  /**
+   * True while the password is the random one `install` created and told nobody.
+   * Setting one then is a *set*, not a change, so no current password is asked for
+   * — there is no secret for that check to protect.
+   */
+  password_generated?: boolean;
 }
 
 export interface AuthState {
@@ -505,6 +511,13 @@ export interface PatchUser {
   disabled?: boolean;
   password?: string;
   proxy_password?: string;
+  /**
+   * Required when changing your *own* password, ignored when an admin resets
+   * somebody else's — they do not know it, and requiring it would make a reset
+   * impossible. Changing a password ends every session it opened, so the response
+   * also carries a fresh cookie for the caller.
+   */
+  current_password?: string;
 }
 
 export interface PermitRequest {

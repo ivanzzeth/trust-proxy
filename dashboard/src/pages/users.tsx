@@ -36,6 +36,10 @@ export default function Users() {
   const { data: users = [] } = useQuery({ queryKey: ['users'], queryFn: api.users });
   const { data: settings } = useQuery({ queryKey: ['authSettings'], queryFn: api.authSettings });
   const { data: requests = [] } = useQuery({ queryKey: ['permitRequests'], queryFn: api.permitRequests });
+  // Which of these rows is the person looking at the page: only that one is asked
+  // for its current password.
+  const { data: authState } = useQuery({ queryKey: ['authState'], queryFn: api.authState });
+  const me = authState?.user;
 
   const create = useMutation({
     mutationFn: (v: { username: string; password: string; role: Role }) =>
@@ -116,7 +120,7 @@ export default function Users() {
         <div className="space-y-4 lg:col-span-2">
           {requests.length > 0 && <Requests requests={requests} />}
           {users.map((u) => (
-            <UserCard key={u.id} u={u} onChanged={invalidate} />
+            <UserCard key={u.id} u={u} onChanged={invalidate} isMe={u.id === me?.id} />
           ))}
         </div>
       </div>
@@ -124,11 +128,17 @@ export default function Users() {
   );
 }
 
-function UserCard({ u, onChanged }: { u: User; onChanged: () => void }) {
+function UserCard({ u, onChanged, isMe }: { u: User; onChanged: () => void; isMe: boolean }) {
   const { t } = useTranslation();
   const err = (e: unknown) => toast.error(String((e as Error).message));
   const [proxyPw, setProxyPw] = useState('');
   const [newPw, setNewPw] = useState('');
+  // Changing your own password means proving you know the current one — otherwise a
+  // stolen session could lock the owner out of an account they still own. Two
+  // exemptions: an admin resetting somebody else does not know it, and a password
+  // `install` generated and told nobody is being *set* rather than changed.
+  const [curPw, setCurPw] = useState('');
+  const needsCurrent = isMe && !u.password_generated;
   const [freshKey, setFreshKey] = useState('');
 
   const patch = useMutation({
@@ -186,19 +196,30 @@ function UserCard({ u, onChanged }: { u: User; onChanged: () => void }) {
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label className="text-xs">{t('pages.users.resetAccount')}</Label>
+            {needsCurrent && (
+              <Input
+                type="password"
+                autoComplete="current-password"
+                placeholder={t('pages.users.currentPasswordPlaceholder')}
+                value={curPw}
+                onChange={(e) => setCurPw(e.target.value)}
+              />
+            )}
             <div className="flex gap-2">
               <Input type="password" autoComplete="new-password" value={newPw} onChange={(e) => setNewPw(e.target.value)} />
               <Button
                 size="sm"
-                disabled={newPw.length < 10}
+                disabled={newPw.length < 10 || (needsCurrent && curPw.length === 0)}
                 onClick={() => {
-                  patch.mutate({ password: newPw });
+                  patch.mutate(needsCurrent ? { password: newPw, current_password: curPw } : { password: newPw });
                   setNewPw('');
+                  setCurPw('');
                 }}
               >
                 {t('pages.users.set')}
               </Button>
             </div>
+            {isMe && <p className="text-muted-foreground text-xs">{t('pages.users.ownPasswordNote')}</p>}
           </div>
           <div className="space-y-1.5">
             <Label className="text-xs">{t('pages.users.proxyPassword')}</Label>
