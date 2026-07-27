@@ -28,10 +28,16 @@ var defaultConfig []byte
 // SetDefaultConfig hands the embedded default config to the CLI.
 func SetDefaultConfig(b []byte) { defaultConfig = b }
 
-// legacyConfigPath is where the old default pointed. If a checkout has one and
-// the data directory does not, that file is what the user has been editing — so
-// it becomes the seed rather than the shipped default, and their tweaks survive
-// the change instead of being silently ignored.
+// legacyConfigPath is where the old default pointed, relative to the working
+// directory.
+//
+// It is *reported*, never used. Seeding from it silently made a privileged
+// command depend on where it was run from: the release tarball ships a
+// configs/ directory, so `cd trust-proxy_v1.2.3_linux_amd64 && sudo
+// ./trust-proxy install` seeded from that copy rather than the one compiled in,
+// and any other directory that happens to contain configs/config.json would have
+// been adopted too. The reason it existed — a developer's edits in a checkout —
+// is served just as well by saying so and letting them pass -c.
 const legacyConfigPath = "configs/config.json"
 
 // resolveConfig returns the config path to use, seeding <data>/config.json on
@@ -46,12 +52,16 @@ func resolveConfig(explicit, dataDir string) (string, error) {
 	} else if !os.IsNotExist(err) {
 		return "", err
 	}
-	seed, from := defaultConfig, "built-in default"
-	if data, err := os.ReadFile(legacyConfigPath); err == nil {
-		seed, from = data, legacyConfigPath
-	}
-	if len(seed) == 0 {
+	if len(defaultConfig) == 0 {
 		return "", fmt.Errorf("no config at %s and no default to seed it from", path)
+	}
+	seed := defaultConfig
+	// Say it rather than doing it: a config sitting in the working directory is
+	// either irrelevant (the release tarball's copy) or somebody's edited one, and
+	// only they can tell which.
+	if _, err := os.Stat(legacyConfigPath); err == nil {
+		fmt.Printf("note: ignoring %s in the current directory; pass -c %s if that is the one you want\n",
+			legacyConfigPath, legacyConfigPath)
 	}
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return "", err
@@ -61,6 +71,6 @@ func resolveConfig(explicit, dataDir string) (string, error) {
 	}
 	// Printed, not logged: this happens before the logging stack is up, and
 	// "which config am I running" is the first thing anyone asks.
-	fmt.Printf("seeded %s from %s\n", path, from)
+	fmt.Printf("seeded %s from the built-in default\n", path)
 	return path, nil
 }

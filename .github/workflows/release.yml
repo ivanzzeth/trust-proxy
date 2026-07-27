@@ -63,9 +63,13 @@ jobs:
           pkg="trust-proxy_${VERSION}_${GOOS}_${GOARCH}"
           mkdir "$pkg"
           cp "$bin" "$pkg"/
-          cp README.md CLAUDE.md "$pkg"/ 2>/dev/null || true
-          mkdir -p "$pkg/configs"
-          cp configs/config.json configs/config.tun.json "$pkg/configs"/ 2>/dev/null || true
+          cp README.md "$pkg"/ 2>/dev/null || true
+          # No configs/ in the package. The gateway seeds <data>/config.json from
+          # the copy compiled into this binary, so a second one in the tarball is
+          # at best redundant — and it used to be worse than that: the seed was
+          # read from ./configs/config.json, so unpacking and running
+          # `sudo ./trust-proxy install` from inside the directory took the
+          # tarball's copy instead. One binary, one config, no cwd in it.
           if [ "$GOOS" = windows ]; then
             zip -r "${pkg}.zip" "$pkg"
           else

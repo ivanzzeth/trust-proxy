@@ -49,23 +49,34 @@ func TestResolveConfigNeverOverwritesAnExistingConfig(t *testing.T) {
 	}
 }
 
-// The old default was configs/config.json, relative to the checkout. Anyone
-// running from a repo has been editing *that* file, so it is the seed — being
-// quietly ignored in favour of the shipped default is the bad outcome here.
-func TestResolveConfigMigratesTheOldRepoRelativeDefault(t *testing.T) {
+// The seed is the config compiled into the binary, never one that happens to be
+// in the working directory.
+//
+// It used to be the other way round, to preserve a developer's edits in a
+// checkout — and that made a privileged command depend on where it was run from.
+// The release tarball ships a configs/ directory, so unpacking it and running
+// `sudo ./trust-proxy install` from inside seeded the machine from that copy;
+// any other directory holding a configs/config.json would have been adopted just
+// the same.
+func TestResolveConfigIgnoresAConfigInTheWorkingDirectory(t *testing.T) {
 	data := setup(t)
 	if err := os.MkdirAll("configs", 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(legacyConfigPath, []byte(`{"edited-in-repo":true}`), 0o644); err != nil {
+	if err := os.WriteFile(legacyConfigPath, []byte(`{"in-the-cwd":true}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got, err := resolveConfig("", data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(got); string(b) != `{"edited-in-repo":true}` {
-		t.Fatalf("seed = %q, want the checkout's config so local edits survive", b)
+	if b, _ := os.ReadFile(got); string(b) == `{"in-the-cwd":true}` {
+		t.Fatal("a privileged command seeded itself from the working directory")
+	}
+	// …and the way to actually use that file still exists.
+	other := setup(t)
+	if got, err := resolveConfig(legacyConfigPath, other); err != nil || got != legacyConfigPath {
+		t.Fatalf("-c must still take it: %q %v", got, err)
 	}
 }
 
