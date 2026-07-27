@@ -131,6 +131,23 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 
 		user, err := s.authenticate(r)
 		if need == accessPublic {
+			// The public endpoints that cost real work get bounded here rather than
+			// inside each handler: one place, and it applies before the expensive part
+			// runs. See throttle.go for why there are two limits.
+			if costlyPublic(r) {
+				if !s.throttle.allow(clientKey(r)) {
+					w.Header().Set("Retry-After", "60")
+					writeErr(w, http.StatusTooManyRequests, "too many attempts: wait a minute and try again")
+					return
+				}
+				release, ok := s.throttle.acquire()
+				if !ok {
+					w.Header().Set("Retry-After", "1")
+					writeErr(w, http.StatusTooManyRequests, "the gateway is already verifying as many credentials as it will at once: try again shortly")
+					return
+				}
+				defer release()
+			}
 			next.ServeHTTP(w, r)
 			return
 		}

@@ -364,6 +364,51 @@ func TestLinuxSplitWorksWithNoReachableRuleSetSource(t *testing.T) {
 	l.mustReach("Split with no rule sets should still drop the Permit gate")
 }
 
+// Password guessing has to be bounded on a real gateway, and bounding it must not
+// lock the owner out.
+//
+// POST /api/auth/login is public and each attempt forces a 19 MiB argon2id
+// derivation — on purpose even for a username that does not exist, so an unknown
+// account and a wrong password cost the same. There was no limiter of any kind, so
+// an anonymous caller could hold as much of that memory as it could open
+// connections, and on a single-process gateway running the machine out of memory
+// stops forwarding traffic rather than merely breaking the API.
+//
+// Asserted here rather than only in the handler test because the thing worth
+// knowing is that the data plane is still carrying packets afterwards.
+func TestLinuxLoginFloodIsRefusedAndTheDataPlaneSurvives(t *testing.T) {
+	l := newLab(t, "tp-e2e-throttle")
+	l.exec("trust-proxy acl add permit " + originIP + " --type ip")
+	l.mustReach("before the flood")
+
+	// Well past the per-minute budget, from one source.
+	codes := l.exec(`for i in $(seq 1 25); do ` +
+		`curl -s -o /dev/null -w '%{http_code} ' -X POST ` +
+		`-H 'Content-Type: application/json' ` +
+		`-d '{"username":"nobody","password":"wrong-password-long"}' ` +
+		`http://127.0.0.1:21585/api/auth/login; done`)
+	if !strings.Contains(codes, "429") {
+		t.Fatalf("25 password attempts in a row were all served, so guessing is unbounded "+
+			"and so is the argon2 memory behind it:\n%s", codes)
+	}
+	// The early ones must still have been answered properly — a limiter that refuses
+	// from the first attempt is a lockout, not a limit.
+	if !strings.Contains(codes, "401") {
+		t.Fatalf("no attempt got a real answer; the limiter is refusing everything:\n%s", codes)
+	}
+
+	// The point of all of it: traffic is still moving.
+	l.mustReach("after a login flood")
+
+	// And a legitimate login still works once the window rolls, because a gateway
+	// nobody can log into is the failure this was supposed to prevent.
+	l.exec("sleep 61")
+	if out := l.exec("trust-proxy auth state --json"); strings.Contains(out, "429") {
+		t.Fatalf("the limiter did not release after its window:\n%s", out)
+	}
+	l.assertBoxAlive("after a login flood")
+}
+
 // A posture switch must not delete the DNS policy.
 //
 // applySlot did `if slot.DNS != nil { … }` with no else, and posture.SeedSplit

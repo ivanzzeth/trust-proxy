@@ -261,12 +261,16 @@ type Server struct {
 	// caller which gateway it actually reached (see handleHealth).
 	version       string
 	managedBinary bool
+	// throttle bounds the public endpoints that do real work for an
+	// unauthenticated caller; nil disables it (tests that do not care).
+	throttle *throttle
 }
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
 	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, cmApplier: o.CMApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS,
-		version: o.Version, managedBinary: runningTheManagedCopy()}
+		version: o.Version, managedBinary: runningTheManagedCopy(),
+		throttle: newThrottle(defaultLoginConcurrency, defaultLoginAttempts, defaultLoginWindow)}
 	mux := http.NewServeMux()
 	s.registerRoutes(mux)
 	mux.Handle("/", s.consoleHandler())
