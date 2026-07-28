@@ -33,7 +33,10 @@ func TestPickReachableRejectsAStallingSource(t *testing.T) {
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		time.Sleep(10 * time.Second)
+		// Until the client goes away, not for a fixed time: httptest.Server.Close
+		// waits for outstanding handlers, so a handler that ignores cancellation makes
+		// the *test* take as long as it sleeps.
+		<-r.Context().Done()
 	}))
 	t.Cleanup(stall.Close)
 
@@ -52,7 +55,7 @@ func TestPickReachablePrefersTheSourceThatCompletes(t *testing.T) {
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
 		}
-		time.Sleep(10 * time.Second)
+		<-r.Context().Done()
 	}))
 	t.Cleanup(stall.Close)
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -106,5 +109,86 @@ func TestPickReachableGivesUpOnADeadPort(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 4*time.Second {
 		t.Fatalf("took %s to give up on a closed port", elapsed)
+	}
+}
+
+// The measured case: a source that works but at 200 bytes per second.
+//
+// Not a stall — it makes progress the whole way and would eventually finish. On the
+// machine this came from, raw.githubusercontent.com delivered a 54 KB rule set to
+// sing-box in 278 seconds while the jsdelivr mirror took 1.3, and curl fetched the
+// same URL from the same host in 0.55. Same IP, same route; the difference is the
+// TLS stack, which is a thing this project has already met once — the subscription
+// fetcher uses uTLS with a Chrome fingerprint for exactly that reason.
+//
+// This is why the probe has to download the whole object rather than a byte: a
+// one-byte range request completes instantly under that throttling, so the probe
+// voted for the source that would take five minutes over the mirror that took one
+// second. The probe runs in this process with the same TLS stack as the fetch, so
+// downloading the file is a faithful measurement — it is only the range request
+// that was not.
+func TestPickReachableRejectsAThrottledSource(t *testing.T) {
+	const size = 54 * 1024
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(size))
+		w.WriteHeader(http.StatusOK)
+		// ~200 B/s, which needs minutes for the whole file.
+		for sent := 0; sent < size; sent += 200 {
+			if _, err := w.Write(make([]byte, 200)); err != nil {
+				return
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+	}))
+	t.Cleanup(slow.Close)
+
+	start := time.Now()
+	got := PickReachable([]string{slow.URL + "/geoip-cn.srs"}, 2*time.Second)
+	if got != "" {
+		t.Fatalf("a source delivering 200 B/s was reported reachable (%s): the fetch would take "+
+			"minutes and sing-box treats a rule set it cannot load at startup as fatal", got)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("the probe took %s to give up; the budget was 2s", elapsed)
+	}
+}
+
+// And it picks the fast one when both are offered, which is the whole decision.
+func TestPickReachablePrefersTheFastSourceOverTheThrottledOne(t *testing.T) {
+	const size = 54 * 1024
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(size))
+		for sent := 0; sent < size; sent += 200 {
+			if _, err := w.Write(make([]byte, 200)); err != nil {
+				return
+			}
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+				return
+			case <-time.After(200 * time.Millisecond):
+			}
+		}
+	}))
+	t.Cleanup(slow.Close)
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(make([]byte, size))
+	}))
+	t.Cleanup(fast.Close)
+
+	// Primary first, mirror second — the order Sources() produces, so this also pins
+	// that a working mirror beats a throttled primary rather than merely tying.
+	got := PickReachable([]string{slow.URL + "/a.srs", fast.URL + "/a.srs"}, 3*time.Second)
+	if got != fast.URL+"/a.srs" {
+		t.Fatalf("picked %q, want the source that is not throttled", got)
 	}
 }

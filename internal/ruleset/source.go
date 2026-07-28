@@ -255,3 +255,29 @@ func hostOf(u string) string {
 	}
 	return rest
 }
+
+// PickReachableWith chooses among candidates using an injected reachability check.
+//
+// The same seam ResolveSourcesWith uses, for the single-set case: importing one rule
+// set has to make the same decision as seeding a dozen, and a test must be able to
+// make it without asking the actual internet.
+func PickReachableWith(cands []string, reach func(probe map[string]string) map[string]bool) string {
+	if len(cands) == 0 {
+		return ""
+	}
+	probe := map[string]string{}
+	for _, u := range cands {
+		if h := hostOf(u); h != "" {
+			if _, seen := probe[h]; !seen {
+				probe[h] = u
+			}
+		}
+	}
+	ok := reach(probe)
+	for _, u := range cands {
+		if ok[hostOf(u)] {
+			return u
+		}
+	}
+	return ""
+}

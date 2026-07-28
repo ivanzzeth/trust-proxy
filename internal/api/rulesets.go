@@ -58,8 +58,26 @@ func (s *Server) handleAddRuleSet(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		url := entry.URL
-		if req.Mirror {
+		switch {
+		case req.Mirror:
 			url = entry.Mirror
+		default:
+			// Pick a source this machine can actually fetch from rather than the first
+			// one written down.
+			//
+			// The primary used to be taken unless the caller thought to pass --mirror.
+			// Measured on a real machine: that primary delivered 54 KB to sing-box in
+			// 278 seconds while the mirror took 1.3 — same host, same route, throttled
+			// by TLS fingerprint — so the default import was a five-minute box start
+			// and the remedy was a flag you had to already know you needed. A flag is
+			// not a fix for something the gateway can measure in a second.
+			//
+			// A failed probe leaves the primary in place: importing something that will
+			// be slow beats refusing to import, and the rule set can be pointed
+			// elsewhere afterwards.
+			if picked := ruleset.PickReachableWith(ruleset.Sources(*entry), s.reachability()); picked != "" {
+				url = picked
+			}
 		}
 		role := entry.SuggestedRole
 		if req.Role != "" {

@@ -60,7 +60,18 @@ func TestSplitSeedStartsWithTheFullCatalog(t *testing.T) {
 		Final: "doh",
 	}
 
-	merged, err := buildMergedConfig([]byte(baseCfg), nil,
+	// With a subscription applied, which is the variable that was missing: `proxy`
+	// becomes a urltest group, and the DNS policy's final server sits behind it
+	// (detour: proxy). urltest has not probed yet at rule-set fetch time — its
+	// CheckOutbounds runs at PostStart, and rule sets fetch during the router's
+	// StartStateStart — so the group has no healthy member. A node that does not
+	// answer reproduces that without needing a real subscription.
+	nodes := []apitypes.Node{{
+		Tag: "exit", Protocol: "socks", Server: "127.0.0.1", Port: 1,
+		Outbound: json.RawMessage(`{"type":"socks","tag":"exit","server":"127.0.0.1","server_port":1}`),
+	}}
+
+	merged, err := buildMergedConfig([]byte(baseCfg), nodes,
 		whitelist.Rules{Domains: []string{"example.com"}}, blacklist.Rules{}, quarantine.List{},
 		directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeManual, sets,
 		dns, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil,
