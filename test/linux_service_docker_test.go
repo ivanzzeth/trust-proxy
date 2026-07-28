@@ -343,6 +343,41 @@ func TestLinuxSystemdServiceLifecycle(t *testing.T) {
 			procs, c.exec("ps -eo args | grep '[t]rust-proxy serve'"), takeover)
 	}
 
+	// ---- the observability commands work for the person who installed it ------
+	//
+	// Neither of these had ever been exercised: the e2e runs everything as root, and
+	// nothing asserted what a *rendered* table contains — only that a command exited 0.
+	//
+	// `conn ls` read the Clash secret from "data/clash-secret", a relative path, so it
+	// only worked from inside a checkout and returned 401 on any real install. Reading
+	// the correct absolute path would not have helped either, since the data directory
+	// is root-owned and 0700 on purpose. It goes through the backend now.
+	//
+	// `history ls` read closed_at / host / upload / download out of an untyped map;
+	// the record's names are t / h / u / dn. Every field missed, so it printed the
+	// right number of rows with nothing in them, and --json looked perfect throughout.
+	c.exec("trust-proxy acl add permit " + originIP + " --type ip")
+	c.exec("curl -s -m 5 -x socks5h://127.0.0.1:21584 http://" + originIP + "/ >/dev/null 2>&1 || true")
+	time.Sleep(2 * time.Second)
+
+	if out := c.exec("trust-proxy conn ls"); strings.Contains(out, "401") || strings.Contains(out, "Unauthorized") {
+		t.Fatalf("conn ls cannot reach the connection list:\n%s", out)
+	}
+	if out := c.exec("trust-proxy conn ls --json"); !strings.Contains(out, "connections") {
+		t.Fatalf("conn ls --json did not return a connection snapshot:\n%s", out)
+	}
+	// The rendered table has to contain the destination, not just the right number of
+	// blank columns.
+	hist := c.exec("trust-proxy history ls --limit 20")
+	if !strings.Contains(hist, originIP) {
+		t.Fatalf("history ls rendered no host; the columns are reading field names the "+
+			"record does not have:\n%s", hist)
+	}
+	if strings.Contains(hist, "<nil>") {
+		t.Fatalf("history ls printed <nil>, so a byte count decoded as nothing:\n%s", hist)
+	}
+	c.exec("trust-proxy acl rm permit " + originIP + " --type ip")
+
 	// ---- nothing in the data directory is readable by other local accounts --
 	//
 	// The API is careful: subscription URLs and node outbounds are redacted before

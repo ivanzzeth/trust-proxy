@@ -10,6 +10,7 @@ import (
 	"strconv"
 
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
+	"github.com/ivanzzeth/trust-proxy/pkg/clash"
 )
 
 // ---- status -------------------------------------------------------------
@@ -544,4 +545,43 @@ func ValidListKind(name string) (listKind, error) {
 		return ListNoProxy, nil
 	}
 	return "", fmt.Errorf("unknown list %q (want permit|deny|no-proxy)", name)
+}
+
+// HistoryPage is History with the records decoded, so a caller cannot read a field
+// name that does not exist. See apitypes.HistoryRecord for what that cost once.
+func (c *Client) HistoryPage(q string, limit int) (apitypes.HistoryPage, error) {
+	v := url.Values{}
+	if q != "" {
+		v.Set("q", q)
+	}
+	if limit > 0 {
+		v.Set("limit", strconv.Itoa(limit))
+	}
+	var out apitypes.HistoryPage
+	err := c.do(http.MethodGet, "/api/history?"+v.Encode(), nil, &out)
+	return out, err
+}
+
+// APIConnections returns the live connections through the backend rather than
+// straight to the Clash port.
+//
+// The CLI used to build a raw Clash client and look for the secret in
+// "data/clash-secret" — relative, so it only worked from inside a checkout, and on a
+// real install it sent no secret and got 401. The absolute path would not help
+// either: the data directory is root-owned and 0700, so an unprivileged CLI cannot
+// read that secret by design — it is the same reason the browser never sees it. The
+// backend already proxies Clash and scopes the result to the caller, which is
+// strictly better than a shared secret on disk.
+//
+// c.Clash remains for talking to somebody else's Clash instance, which is what
+// pkg/clash is for.
+func (c *Client) APIConnections() (clash.Connections, error) {
+	var out clash.Connections
+	err := c.do(http.MethodGet, "/api/connections", nil, &out)
+	return out, err
+}
+
+// APIKillConnection closes one connection through the backend.
+func (c *Client) APIKillConnection(id string) error {
+	return c.do(http.MethodDelete, "/api/connections/"+url.PathEscape(id), nil, nil)
 }

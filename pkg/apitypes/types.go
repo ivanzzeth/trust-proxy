@@ -667,3 +667,37 @@ type ProxyGenResult struct {
 type ErrorResponse struct {
 	Error string `json:"error"`
 }
+
+// HistoryRecord is one completed connection, as /api/history returns it.
+//
+// The field names are short because internal/history appends one of these per
+// connection and the file is measured in tens of megabytes. They are declared here
+// rather than left to callers because they *were* left to callers: `history ls`
+// read closed_at / host / upload / download / outbound out of a map[string]any,
+// none of which exist, so it printed the right number of rows with nothing in them
+// and <nil> where the byte counts go. --json looked perfect, because that path
+// never touches a name. With a type, a wrong name is a compile error.
+type HistoryRecord struct {
+	Time     string `json:"t"`
+	Host     string `json:"h"`
+	Dest     string `json:"d,omitempty"`
+	Process  string `json:"p,omitempty"`
+	User     string `json:"usr,omitempty"`
+	Outbound string `json:"o,omitempty"`
+	Up       int64  `json:"u"`
+	Down     int64  `json:"dn"`
+	Denied   bool   `json:"x,omitempty"`
+	Level    string `json:"l,omitempty"`
+	// DurationMS is how long the connection was open — with the byte counts, this is
+	// what identifies a stalled connection (open a long time, moved nothing).
+	DurationMS int64 `json:"ms,omitempty"`
+	DNSMs      int64 `json:"dns_ms,omitempty"`
+	ConnectMs  int64 `json:"connect_ms,omitempty"`
+	TLSMs      int64 `json:"tls_ms,omitempty"`
+}
+
+// HistoryPage is one page of history: Total counts every match, Items only this page.
+type HistoryPage struct {
+	Total int             `json:"total"`
+	Items []HistoryRecord `json:"items"`
+}

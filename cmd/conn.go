@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -25,9 +23,12 @@ var connLsCmd = &cobra.Command{
 	Use:   "ls",
 	Short: "List active connections",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		snap, err := clashClient().Connections()
+		snap, err := connSource()
 		if err != nil {
 			return err
+		}
+		if jsonOut {
+			return emit(snap)
 		}
 		fmt.Printf("total up=%d down=%d, %d active\n", snap.UploadTotal, snap.DownloadTotal, len(snap.Connections))
 		fmt.Printf("%-36s %-5s %-28s %-9s %-9s %s\n", "ID", "NET", "HOST", "UP", "DOWN", "RULE")
@@ -47,15 +48,20 @@ var connKillCmd = &cobra.Command{
 	Short: "Close a connection by id, or all",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		c := clashClient()
 		if args[0] == "all" {
-			if err := c.CloseAllConnections(); err != nil {
+			// No API equivalent: closing everything is a Clash primitive and there is
+			// no reason for the backend to own it.
+			if err := clashClient().CloseAllConnections(); err != nil {
 				return err
 			}
 			fmt.Println("closed all connections")
 			return nil
 		}
-		if err := c.CloseConnection(args[0]); err != nil {
+		if clashSecret != "" {
+			if err := clashClient().CloseConnection(args[0]); err != nil {
+				return err
+			}
+		} else if err := sdk().APIKillConnection(args[0]); err != nil {
 			return err
 		}
 		fmt.Println("closed", args[0])
@@ -65,16 +71,35 @@ var connKillCmd = &cobra.Command{
 
 func init() {
 	connCmd.PersistentFlags().StringVar(&clashAddr, "clash-addr", "127.0.0.1:21586", "Clash API address")
-	connCmd.PersistentFlags().StringVar(&clashSecret, "clash-secret", "", "Clash API secret (empty = read data/clash-secret)")
+	connCmd.PersistentFlags().StringVar(&clashSecret, "clash-secret", "",
+		"talk to a Clash API directly with this secret, instead of going through the gateway's own API")
+	connCmd.PersistentFlags().BoolVar(&jsonOut, "json", false, "print the raw JSON response instead of a table")
 	connCmd.AddCommand(connLsCmd, connKillCmd)
 }
 
-func clashClient() *clash.Client {
-	secret := clashSecret
-	if secret == "" {
-		if b, err := os.ReadFile("data/clash-secret"); err == nil {
-			secret = strings.TrimSpace(string(b))
-		}
+// connSource reads the live connections.
+//
+// Through the backend by default. This used to build a raw Clash client and hunt for
+// the secret in "data/clash-secret" — a *relative* path, so it only ever worked from
+// inside a checkout that happened to have a data directory; on a real install it
+// found nothing, sent no secret, and got 401. Which is the mistake this project
+// already fixed once for -c, whose default was a repo-relative
+// configs/config.json.
+//
+// Using the correct absolute path would not have fixed it: the data directory is
+// root-owned and 0700, so an unprivileged CLI cannot read that secret, deliberately
+// — the same reason the browser never sees it. The backend already proxies Clash and
+// scopes the answer to the caller.
+//
+// --clash-secret still talks to a Clash instance directly, which is the point of
+// pkg/clash: it works against any sing-box, mihomo or clash, ours included.
+func connSource() (clash.Connections, error) {
+	if clashSecret != "" {
+		return clashClient().Connections()
 	}
-	return clash.New(clashAddr, secret)
+	return sdk().APIConnections()
+}
+
+func clashClient() *clash.Client {
+	return clash.New(clashAddr, clashSecret)
 }

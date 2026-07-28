@@ -149,24 +149,37 @@ var historyLsCmd = &cobra.Command{
 	Use:   "ls",
 	Short: "List completed connections, newest first",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		res, err := sdk().History(histQuery, histLimit)
+		page, err := sdk().HistoryPage(histQuery, histLimit)
 		if err != nil {
 			return err
 		}
 		if jsonOut {
-			return emit(res)
+			return emit(page)
 		}
-		items, _ := res["items"].([]any)
-		if len(items) == 0 {
+		if len(page.Items) == 0 {
 			fmt.Println("(no history)")
 			return nil
 		}
-		fmt.Printf("%-22s %-34s %-12s %-12s %s\n", "CLOSED", "HOST", "UP", "DOWN", "OUTBOUND")
-		for _, it := range items {
-			m, _ := it.(map[string]any)
-			fmt.Printf("%-22s %-34s %-12v %-12v %s\n",
-				truncate(str(m["closed_at"]), 22), truncate(str(m["host"]), 34),
-				m["upload"], m["download"], truncate(str(m["outbound"]), 20))
+		// Typed, so a field name that does not exist stops the build. Read from a
+		// map[string]any these were closed_at / host / upload / download / outbound,
+		// none of which the record has — so this printed the right number of rows with
+		// nothing in them, and --json looked fine the whole time.
+		fmt.Printf("%-21s %-34s %-10s %-10s %-8s %s\n", "WHEN", "HOST", "UP", "DOWN", "TOOK", "OUTBOUND")
+		for _, it := range page.Items {
+			outbound := it.Outbound
+			if it.Denied {
+				outbound = "blocked"
+			}
+			took := "-"
+			if it.DurationMS > 0 {
+				took = fmt.Sprintf("%dms", it.DurationMS)
+			}
+			fmt.Printf("%-21s %-34s %-10s %-10s %-8s %s\n",
+				truncate(it.Time, 21), truncate(it.Host, 34),
+				humanBytes(it.Up), humanBytes(it.Down), took, truncate(outbound, 20))
+		}
+		if page.Total > len(page.Items) {
+			fmt.Printf("\n  %d of %d — raise --limit to see more\n", len(page.Items), page.Total)
 		}
 		return nil
 	},
