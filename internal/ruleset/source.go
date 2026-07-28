@@ -126,6 +126,15 @@ func PickReachable(cands []string, budget time.Duration) string {
 // four probes between them rather than a dozen. Probing per set was 13 × 6s and
 // the CLI gave up before the API answered.
 func ResolveSources(sets []apitypes.RuleSet, budget time.Duration) []string {
+	return ResolveSourcesWith(sets, func(probe map[string]string) map[string]bool {
+		return ReachableHosts(probe, budget)
+	})
+}
+
+// ResolveSourcesWith is ResolveSources with the reachability check injected, so a
+// test can decide what answers without reaching the network — otherwise it would be
+// measuring GitHub's availability rather than this code.
+func ResolveSourcesWith(sets []apitypes.RuleSet, reach func(probe map[string]string) map[string]bool) []string {
 	// One representative URL per host, so a probe proves a real object is served
 	// and not merely that something accepts connections there.
 	probe := map[string]string{}
@@ -147,7 +156,7 @@ func ResolveSources(sets []apitypes.RuleSet, budget time.Duration) []string {
 	if len(probe) == 0 {
 		return nil
 	}
-	reachable := reachableHosts(probe, budget)
+	reachable := reach(probe)
 
 	var disabled []string
 	for i := range sets {
@@ -176,8 +185,8 @@ func ResolveSources(sets []apitypes.RuleSet, budget time.Duration) []string {
 	return disabled
 }
 
-// reachableHosts probes one URL per host, all at once, within a single budget.
-func reachableHosts(probe map[string]string, budget time.Duration) map[string]bool {
+// ReachableHosts probes one URL per host, all at once, within a single budget.
+func ReachableHosts(probe map[string]string, budget time.Duration) map[string]bool {
 	type result struct {
 		host string
 		ok   bool

@@ -264,6 +264,12 @@ type Server struct {
 	// throttle bounds the public endpoints that do real work for an
 	// unauthenticated caller; nil disables it (tests that do not care).
 	throttle *throttle
+	// reach answers "can this machine fetch from these hosts", for rule-set source
+	// selection. A field so a test can drive the posture handler without asking the
+	// question of the actual internet — otherwise the test measures GitHub's
+	// availability rather than the code, and the bug it exists for (a seeded slot
+	// never being re-resolved) lives in the handler rather than in the resolver.
+	reach func(probe map[string]string) map[string]bool
 }
 
 // NewServer builds the API server.

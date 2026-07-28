@@ -88,31 +88,39 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if req.Active == apitypes.PostureSplit && !toSlot.Seeded {
-		toSlot = posture.SeedSplit()
-		// Point every seeded rule set at a source this machine can actually reach,
+	if req.Active == apitypes.PostureSplit {
+		if !toSlot.Seeded {
+			toSlot = posture.SeedSplit()
+			logging.L().Info().Int("rules", len(toSlot.CustomRules)).
+				Int("rule_sets", len(toSlot.RuleSets)).Msg("posture: seeded Split")
+		}
+		// Point every catalog rule set at a source this machine can actually reach,
 		// and disable the ones it cannot.
 		//
-		// Split seeds the catalog's *remote* rule sets, and sing-box refuses to
-		// start when it cannot fetch one — so on a gateway that has no exit node
-		// yet and cannot reach GitHub, switching to Split failed outright, eight
-		// lines of "initialize rule-set: Get https://raw.githubusercontent.com/…"
-		// deep. Which is the first thing a new user behind the GFW tries: no node
-		// means the download cannot go through the proxy either.
+		// On every switch, not only on the first seed. Split seeds the catalog's
+		// *remote* rule sets and sing-box treats a rule set it cannot fetch on initial
+		// load as fatal — so this is what stands between a new user behind the GFW and
+		// a switch that simply does not work: no exit node means the download cannot go
+		// through the proxy either, and the only way out is a mirror. The catalog has
+		// carried one for every entry from the beginning.
 		//
-		// The catalog has carried a jsdelivr mirror for every entry since the
-		// beginning, with a comment explaining it is the one that works there.
-		// Nothing read it.
-		unreachable = ruleset.ResolveSources(toSlot.RuleSets, 6*time.Second)
+		// Behind `!Seeded` it was worse than absent. The slot is persisted before the
+		// apply that may fail, so a first attempt wrote primary URLs, marked the slot
+		// seeded, failed to start the box, and every retry then skipped the resolution
+		// and failed identically. Measured on a real machine: five rule sets timing
+		// out and no command sequence that could recover.
+		changed, unreach := resolveSlotSources(toSlot.RuleSets, s.reachability())
+		unreachable = unreach
 		if len(unreachable) > 0 {
 			logging.L().Warn().Strs("rule_sets", unreachable).
-				Msg("posture: no reachable source for these rule sets — seeded disabled; add an exit node and enable them")
+				Msg("posture: no reachable source for these rule sets — disabled; add an exit node and enable them")
 		}
-		if err := s.posture.PutSlot(apitypes.PostureSplit, toSlot); err != nil {
-			writeErr(w, http.StatusInternalServerError, err.Error())
-			return
+		if changed || !toSlot.Seeded {
+			if err := s.posture.PutSlot(apitypes.PostureSplit, toSlot); err != nil {
+				writeErr(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
-		logging.L().Info().Int("rules", len(toSlot.CustomRules)).Int("rule_sets", len(toSlot.RuleSets)).Msg("posture: seeded Split")
 	}
 
 	// Keep a copy of current live for rollback.
@@ -227,5 +235,45 @@ func (s *Server) syncActiveSlotFromLive() {
 	}
 	if err := s.posture.PutSlot(active, slot); err != nil {
 		logging.L().Warn().Err(err).Msg("posture sync active slot")
+	}
+}
+
+// resolveSlotSources points a slot's catalog rule sets at a source this machine can
+// reach, and reports whether anything changed.
+//
+// Split out and called on *every* switch to Split rather than only on the first
+// seed. The resolution used to sit behind `!toSlot.Seeded`, and the slot is
+// persisted before the apply that may fail — so a first attempt wrote a slot full
+// of primary URLs, marked it seeded, failed to start the box on them, and every
+// retry afterwards skipped the resolution and failed on exactly the same URLs.
+// Measured on a real machine: five rule sets timing out, and no sequence of
+// commands that could recover. "Retrying cannot help" is the worst property a
+// failure can have, because retrying is what everybody does.
+//
+// Sets whose URL no longer matches the catalog's are left alone, so running this
+// repeatedly cannot undo something the operator typed.
+func resolveSlotSources(sets []apitypes.RuleSet, reach func(map[string]string) map[string]bool) (changed bool, disabled []string) {
+	before := make([]string, len(sets))
+	enabled := make([]bool, len(sets))
+	for i := range sets {
+		before[i], enabled[i] = sets[i].URL, sets[i].Enabled
+	}
+	disabled = ruleset.ResolveSourcesWith(sets, reach)
+	for i := range sets {
+		if sets[i].URL != before[i] || sets[i].Enabled != enabled[i] {
+			changed = true
+		}
+	}
+	return changed, disabled
+}
+
+// reachability returns the probe the source selection should use: the injected one
+// when a test has set it, the real network otherwise.
+func (s *Server) reachability() func(map[string]string) map[string]bool {
+	if s.reach != nil {
+		return s.reach
+	}
+	return func(probe map[string]string) map[string]bool {
+		return ruleset.ReachableHosts(probe, 6*time.Second)
 	}
 }
