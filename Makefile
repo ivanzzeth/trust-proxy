@@ -14,7 +14,7 @@ TAGS ?= with_clash_api with_quic with_utls with_grpc with_gvisor with_wireguard 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
-.PHONY: help run app build build-ui build-go build-embed build-app check-build-owner tidy \
+.PHONY: help run app build build-ui build-go build-embed build-app cross check-build-owner tidy \
 	e2e-fleet e2e-linux e2e-policy e2e-dataplane e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
 	deps clean e2e redeploy desktop desktop-dev desktop-sidecar app-service-hint \
 	release version-check
@@ -43,7 +43,7 @@ help:
 	@echo "  make deps         first time: fetch the sing-box submodule"
 	@echo ""
 	@echo "  build-* = the individual pieces, when you know which one you need:"
-	@awk '/^## /{ if (!blk) { c = substr($$0,4); blk = 1 } next } { blk = 0 } /^build-[a-z-]+:/{ printf "    %-14s %s\n", substr($$0,1,index($$0,":")-1), c }' $(MAKEFILE_LIST)
+	@awk '/^## /{ if (!blk) { c = substr($$0,4); blk = 1 } next } { blk = 0 } /^(build-[a-z-]+|cross):/{ printf "    %-14s %s\n", substr($$0,1,index($$0,":")-1), c }' $(MAKEFILE_LIST)
 	@echo ""
 	@echo "  tests (each skips when its dependency is not installed):"
 	@awk '/^## /{ if (!blk) { c = substr($$0,4); blk = 1 } next } { blk = 0 } /^(e2e[a-z-]*|dashboard-test):/{ printf "    %-14s %s\n", substr($$0,1,index($$0,":")-1), c }' $(MAKEFILE_LIST)
@@ -175,6 +175,22 @@ build-ui: check-build-owner
 ## Not what you want to install as a service — `service install` refuses it.
 build-go:
 	go build $(if $(TAGS),-tags "$(TAGS)",) -ldflags "$(LDFLAGS)" -o trust-proxy .
+
+## Does it still build for linux / windows / darwin? Run before pushing.
+## 
+## Nothing else in the inner loop asks: `go vet ./...` and `go test ./...` compile
+## for the host only, so anything behind a build tag or a per-OS constant is
+## invisible here until CI says so.
+## 
+## This exists because syscall.O_NOFOLLOW went in green on darwin and broke the
+## Windows job — a one-line fix, found ten minutes after pushing by the one job
+## that looks. ~1m, writes nothing.
+cross:
+	@for t in linux/amd64 linux/arm64 windows/amd64 darwin/arm64; do \
+		GOOS=$${t%/*} GOARCH=$${t#*/} CGO_ENABLED=0 \
+			go build -tags "$(TAGS)" -o /dev/null . || exit 1; \
+		echo "  ok   $$t"; \
+	done
 
 ## Single self-contained binary: build the console then embed it (embed_ui)
 build-embed: build-ui

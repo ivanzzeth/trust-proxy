@@ -20,7 +20,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/paths"
@@ -149,7 +148,7 @@ func write(path string, f File, owner *paths.Owner) error {
 	// O_EXCL as well: a leftover tmp from a crashed run is not something to write
 	// through blindly, and refusing is recoverable (remove it) while overwriting is
 	// the whole bug.
-	fh, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|syscall.O_NOFOLLOW, 0o600)
+	fh, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL|noFollow, 0o600)
 	if err != nil {
 		if os.IsExist(err) {
 			return fmt.Errorf("%s already exists: remove it and try again (refusing to write "+
