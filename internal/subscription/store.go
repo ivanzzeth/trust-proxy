@@ -179,18 +179,71 @@ func (s *Store) Add(name, url, userAgent, via, content string) (apitypes.Subscri
 	return s.Refresh(id)
 }
 
-// SetApplied marks id as the applied subscription (and clears the flag on the
-// others, since the data plane runs one subscription at a time).
+// SetApplied marks id as applied without clearing others. Multiple applied
+// subscriptions are merged into the live proxy group (see AppliedNodes) so
+// several airports can back each other up. Call ClearApplied to drop one.
+//
+// Profiles still snapshot only the first applied id today; activating a
+// profile will re-assert a single SubID until profiles grow a multi-id field.
 func (s *Store) SetApplied(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.data[id]; !ok {
+	sub, ok := s.data[id]
+	if !ok {
 		return fmt.Errorf("subscription %q not found", id)
 	}
-	for k, sub := range s.data {
-		sub.Applied = k == id
+	sub.Applied = true
+	return s.save()
+}
+
+// ClearApplied removes id from the applied set. The caller is expected to
+// re-Apply AppliedNodes() (or an empty list) so the data plane matches.
+func (s *Store) ClearApplied(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sub, ok := s.data[id]
+	if !ok {
+		return fmt.Errorf("subscription %q not found", id)
+	}
+	sub.Applied = false
+	return s.save()
+}
+
+// ClearAllApplied clears every applied flag. Used when activating a profile
+// that still snapshots a single SubID — the live set must shrink to that one
+// (or none) so flags match the nodes ApplyProfile just loaded.
+func (s *Store) ClearAllApplied() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for _, sub := range s.data {
+		if sub.Applied {
+			sub.Applied = false
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
 	}
 	return s.save()
+}
+
+// AppliedNodes returns every node from every applied subscription, in a
+// stable order (by subscription name — same order as List). Tag
+// collisions across subscriptions are fine: gateway.memberTags renames
+// duplicates with -2/-3.
+func (s *Store) AppliedNodes() []apitypes.Node {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	subs := s.listLocked()
+	var out []apitypes.Node
+	for i := range subs {
+		if !subs[i].Applied {
+			continue
+		}
+		out = append(out, subs[i].Nodes...)
+	}
+	return out
 }
 
 // Delete removes a subscription.

@@ -23,22 +23,23 @@ var subLsCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if len(subs) == 0 {
-			fmt.Println("(no subscriptions)")
-			return nil
-		}
-		fmt.Printf("%-14s %-20s %-6s %s\n", "ID", "NAME", "NODES", "URL")
-		for _, s := range subs {
-			name := s.Name
-			if name == "" {
-				name = "-"
+		return out(subs, func() {
+			if len(subs) == 0 {
+				fmt.Println("(no subscriptions)")
+				return
 			}
-			fmt.Printf("%-14s %-20s %-6d %s\n", s.ID, name, s.NodeCount, s.Source)
-			if s.LastError != "" {
-				fmt.Printf("   ! last error: %s\n", s.LastError)
+			fmt.Printf("%-14s %-20s %-6s %-8s %s\n", "ID", "NAME", "NODES", "APPLIED", "URL")
+			for _, s := range subs {
+				name := s.Name
+				if name == "" {
+					name = "-"
+				}
+				fmt.Printf("%-14s %-20s %-6d %-8s %s\n", s.ID, name, s.NodeCount, yesNo(s.Applied), s.Source)
+				if s.LastError != "" {
+					fmt.Printf("   ! last error: %s\n", s.LastError)
+				}
 			}
-		}
-		return nil
+		})
 	},
 }
 
@@ -96,15 +97,31 @@ var subImportCmd = &cobra.Command{
 
 var subApplyCmd = &cobra.Command{
 	Use:   "apply <id>",
-	Short: "Apply a subscription's nodes to the running gateway (hot reload)",
+	Short: "Add a subscription's nodes to the live proxy group (merges with other applied)",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		s, err := sdk().ApplySubscription(args[0])
 		if err != nil {
 			return err
 		}
-		fmt.Printf("applied %s (%s): %d nodes now live in the `proxy` group\n", s.ID, s.Name, s.NodeCount)
-		return nil
+		return out(s, func() {
+			fmt.Printf("applied %s (%s): %d nodes from this sub now merged into the `proxy` group\n", s.ID, s.Name, s.NodeCount)
+		})
+	},
+}
+
+var subUnapplyCmd = &cobra.Command{
+	Use:   "unapply <id>",
+	Short: "Remove a subscription from the live proxy group (others stay)",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		s, err := sdk().UnapplySubscription(args[0])
+		if err != nil {
+			return err
+		}
+		return out(s, func() {
+			fmt.Printf("unapplied %s (%s); remaining applied subscriptions stay live\n", s.ID, s.Name)
+		})
 	},
 }
 
@@ -140,7 +157,7 @@ func init() {
 	subAddCmd.Flags().StringVar(&subAddUA, "ua", "", "User-Agent for fetching (default: clash-verge/v2.0.0)")
 	subAddCmd.Flags().StringVar(&subAddVia, "via", "", "fetch through a proxy (socks5://host:port or http://host:port)")
 	subImportCmd.Flags().StringVar(&subImportName, "name", "", "friendly name")
-	subCmd.AddCommand(subLsCmd, subAddCmd, subImportCmd, subApplyCmd, subRmCmd, subRefreshCmd)
+	subCmd.AddCommand(subLsCmd, subAddCmd, subImportCmd, subApplyCmd, subUnapplyCmd, subRmCmd, subRefreshCmd)
 }
 
 // sdk builds the SDK client from the shared client flags (see cmd/cli.go).

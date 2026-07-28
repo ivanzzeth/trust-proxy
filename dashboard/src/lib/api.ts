@@ -641,6 +641,7 @@ export const api = {
     post<Subscription>('/subscriptions', { name, url, user_agent: userAgent, via }),
   importNodes: (name: string, content: string) => post<Subscription>('/subscriptions', { name, content }),
   applySub: (id: string) => post<Subscription>(`/subscriptions/${id}/apply`),
+  unapplySub: (id: string) => post<Subscription>(`/subscriptions/${id}/unapply`),
   refreshSub: (id: string) => post<Subscription>(`/subscriptions/${id}/refresh`),
   delSub: (id: string) => del<void>(`/subscriptions/${id}`),
 

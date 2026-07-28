@@ -118,3 +118,46 @@ func TestAddSurfacesErrorWhenBrandNewSubscriptionHasZeroNodes(t *testing.T) {
 		t.Fatal("expected LastError to be set so the user knows why it's empty")
 	}
 }
+
+func TestSetAppliedIsAdditive(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "subscriptions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := s.Add("a", "", "", "", oneNodeYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bYAML := `proxies:
+  - { name: "node2", type: "ss", server: "5.6.7.8", port: 8388, cipher: "aes-256-gcm", password: "pw" }
+`
+	b, err := s.Add("b", "", "", "", bYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetApplied(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetApplied(b.ID); err != nil {
+		t.Fatal(err)
+	}
+	a2, _ := s.Get(a.ID)
+	b2, _ := s.Get(b.ID)
+	if !a2.Applied || !b2.Applied {
+		t.Fatalf("both must stay applied: a=%v b=%v", a2.Applied, b2.Applied)
+	}
+	nodes := s.AppliedNodes()
+	if len(nodes) != 2 {
+		t.Fatalf("AppliedNodes = %d, want 2", len(nodes))
+	}
+	if err := s.ClearApplied(a.ID); err != nil {
+		t.Fatal(err)
+	}
+	a3, _ := s.Get(a.ID)
+	if a3.Applied {
+		t.Fatal("ClearApplied left a applied")
+	}
+	if len(s.AppliedNodes()) != 1 {
+		t.Fatalf("after clear, AppliedNodes = %d, want 1", len(s.AppliedNodes()))
+	}
+}

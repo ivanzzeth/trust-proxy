@@ -121,9 +121,16 @@ func (s *Server) handleActivateProfile(w http.ResponseWriter, r *http.Request) {
 	// writing it back would be a no-op at best.
 	diverged := s.alignLiveStores(in, p.ProxyGroups != nil, p.DNS != nil, p.Final, p.Final != "", "profile activate:")
 	s.notePolicyDivergence(diverged)
-	if p.SubID != "" && s.store != nil {
-		if err := s.store.SetApplied(p.SubID); err != nil {
-			logging.L().Warn().Err(err).Msg("profile activate: SetApplied")
+	if s.store != nil {
+		// Profiles still snapshot a single SubID. Shrink the applied set to
+		// match what ApplyProfile just loaded (or clear it when SubID is empty).
+		if err := s.store.ClearAllApplied(); err != nil {
+			logging.L().Warn().Err(err).Msg("profile activate: ClearAllApplied")
+		}
+		if p.SubID != "" {
+			if err := s.store.SetApplied(p.SubID); err != nil {
+				logging.L().Warn().Err(err).Msg("profile activate: SetApplied")
+			}
 		}
 	}
 	if err := s.profStore.SetActive(p.ID); err != nil {

@@ -36,7 +36,7 @@ export default function Overview() {
   const banned24 = detStats?.banned_24h ?? 0;
   const intelDomains = detStats?.intel_domains ?? st?.threats.domains ?? 0;
   const intelIps = detStats?.intel_ips ?? st?.threats.ips ?? 0;
-  const appliedSub = subs.find((s) => s.applied);
+  const appliedSubs = subs.filter((s) => s.applied);
   const recent = detRecent?.items ?? [];
 
   return (
@@ -138,7 +138,15 @@ export default function Overview() {
           </CardHeader>
           <CardContent className="space-y-3 pt-0 text-sm">
             <Row label={t('pages.overview.exitNode')}>
-              {appliedSub ? <Badge variant="success">{appliedSub.name}</Badge> : <span className="text-muted-foreground">{t('pages.overview.direct')}</span>}
+              {appliedSubs.length > 0 ? (
+                <span className="flex flex-wrap gap-1">
+                  {appliedSubs.map((s) => (
+                    <Badge key={s.id} variant="success">{s.name}</Badge>
+                  ))}
+                </span>
+              ) : (
+                <span className="text-muted-foreground">{t('pages.overview.direct')}</span>
+              )}
             </Row>
             <Row label={t('pages.overview.whitelistedDomains')}><span className="tnum">{wl?.domains.length ?? 0}</span></Row>
             <Row label={t('pages.overview.whitelistedIps')}><span className="tnum">{wl?.ips.length ?? 0}</span></Row>

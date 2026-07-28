@@ -25,6 +25,7 @@ export default function Subscriptions() {
   const addUrl = useMutation({ mutationFn: (v: { name: string; url: string; via?: string }) => api.addSub(v.name, v.url, undefined, v.via), onSuccess: invalidate, onError: err });
   const paste = useMutation({ mutationFn: (v: { name: string; content: string }) => api.importNodes(v.name, v.content), onSuccess: invalidate, onError: err });
   const apply = useMutation({ mutationFn: api.applySub, onSuccess: () => { toast.success(t('pages.subscriptions.applySuccess')); invalidate(); }, onError: err });
+  const unapply = useMutation({ mutationFn: api.unapplySub, onSuccess: () => { toast.success(t('pages.subscriptions.unapplySuccess')); invalidate(); }, onError: err });
   const refresh = useMutation({ mutationFn: api.refreshSub, onSuccess: invalidate, onError: err });
   const del = useMutation({ mutationFn: api.delSub, onSuccess: invalidate, onError: err });
 
@@ -119,9 +120,15 @@ export default function Subscriptions() {
                     <TableCell></TableCell>
                     <TableCell>
                       <div className="flex items-center justify-end gap-1">
-                        <Button size="xs" variant={s.applied ? 'secondary' : 'default'} disabled={apply.isPending} onClick={() => apply.mutate(s.id)}>
-                          {t('pages.subscriptions.apply')}
-                        </Button>
+                        {s.applied ? (
+                          <Button size="xs" variant="secondary" disabled={unapply.isPending} onClick={() => unapply.mutate(s.id)}>
+                            {t('pages.subscriptions.unapply')}
+                          </Button>
+                        ) : (
+                          <Button size="xs" disabled={apply.isPending} onClick={() => apply.mutate(s.id)}>
+                            {t('pages.subscriptions.apply')}
+                          </Button>
+                        )}
                         <Button size="icon" variant="ghost" className="size-7" disabled={refresh.isPending} onClick={() => refresh.mutate(s.id)}>
                           <RefreshCw className="size-3.5" />
                         </Button>

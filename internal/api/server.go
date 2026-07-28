@@ -307,6 +307,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.route(mux, "DELETE /api/subscriptions/{id}", s.handleDeleteSub)
 	s.route(mux, "POST /api/subscriptions/{id}/refresh", s.handleRefreshSub)
 	s.route(mux, "POST /api/subscriptions/{id}/apply", s.handleApplySub)
+	s.route(mux, "POST /api/subscriptions/{id}/unapply", s.handleUnapplySub)
 	s.route(mux, "GET /api/connections", s.handleConnections)
 	s.route(mux, "DELETE /api/connections/{id}", s.handleKillConn)
 	s.route(mux, "DELETE /api/connections", s.handleKillAll)
@@ -593,9 +594,21 @@ func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleDeleteSub(w http.ResponseWriter, r *http.Request) {
-	if err := s.store.Delete(r.PathValue("id")); err != nil {
+	id := r.PathValue("id")
+	wasApplied := false
+	if sub, ok := s.store.Get(id); ok {
+		wasApplied = sub.Applied
+	}
+	if err := s.store.Delete(id); err != nil {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
+	}
+	if wasApplied && s.applier != nil {
+		if err := s.applier.Apply(s.store.AppliedNodes()); err != nil {
+			logging.L().Error().Err(err).Msg("re-apply after deleting applied subscription")
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -608,6 +621,16 @@ func (s *Server) handleRefreshSub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		logging.L().Warn().Err(err).Msg("subscription refresh")
+	}
+	// Refresh replaces node list in the store; if this sub is live, push the
+	// merged applied set so the data plane does not keep stale outbounds.
+	if sub.Applied && s.applier != nil {
+		if err := s.applier.Apply(s.store.AppliedNodes()); err != nil {
+			logging.L().Error().Err(err).Msg("re-apply after subscription refresh")
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		sub, _ = s.store.Get(sub.ID)
 	}
 	writeJSON(w, http.StatusOK, subscription.Public(sub))
 }
@@ -634,12 +657,48 @@ func (s *Server) handleApplySub(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, "gateway applier not available")
 		return
 	}
-	if err := s.applier.Apply(sub.Nodes); err != nil {
+	// Additive: mark first so AppliedNodes includes this sub, then push the
+	// merged set. Roll the flag back if Apply fails so store matches the plane.
+	already := sub.Applied
+	if !already {
+		if err := s.store.SetApplied(sub.ID); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	if err := s.applier.Apply(s.store.AppliedNodes()); err != nil {
+		if !already {
+			_ = s.store.ClearApplied(sub.ID)
+		}
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if err := s.store.SetApplied(sub.ID); err != nil {
-		logging.L().Warn().Err(err).Msg("mark subscription applied")
+	sub, _ = s.store.Get(sub.ID)
+	writeJSON(w, http.StatusOK, subscription.Public(sub))
+}
+
+func (s *Server) handleUnapplySub(w http.ResponseWriter, r *http.Request) {
+	sub, ok := s.store.Get(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "subscription not found")
+		return
+	}
+	if s.applier == nil {
+		writeErr(w, http.StatusServiceUnavailable, "gateway applier not available")
+		return
+	}
+	if !sub.Applied {
+		writeJSON(w, http.StatusOK, subscription.Public(sub))
+		return
+	}
+	if err := s.store.ClearApplied(sub.ID); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if err := s.applier.Apply(s.store.AppliedNodes()); err != nil {
+		_ = s.store.SetApplied(sub.ID)
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
 	}
 	sub, _ = s.store.Get(sub.ID)
 	writeJSON(w, http.StatusOK, subscription.Public(sub))

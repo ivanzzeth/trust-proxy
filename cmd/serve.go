@@ -595,15 +595,17 @@ func runServe() error {
 			logging.L().Error().Err(err).Msg("quarantine apply")
 		}
 	})
-	// Re-apply the previously-applied subscription so a restart/upgrade keeps the
-	// exit node instead of dropping to a direct-only proxy group (which is "no
-	// net" on a box whose only egress is the node).
-	for _, sub := range store.List() {
-		if sub.Applied && len(sub.Nodes) > 0 {
-			mgr.SetInitialNodes(sub.Nodes)
-			logging.L().Info().Str("subscription", sub.Name).Int("nodes", len(sub.Nodes)).Msg("re-applying subscription on startup")
-			break
+	// Re-apply every previously-applied subscription so a restart/upgrade keeps
+	// the merged exit set (multi-airport HA) instead of dropping to direct-only.
+	if nodes := store.AppliedNodes(); len(nodes) > 0 {
+		mgr.SetInitialNodes(nodes)
+		nApplied := 0
+		for _, sub := range store.List() {
+			if sub.Applied {
+				nApplied++
+			}
 		}
+		logging.L().Info().Int("subscriptions", nApplied).Int("nodes", len(nodes)).Msg("re-applying subscriptions on startup")
 	}
 	// Baseline the routing table once the data plane is up, so the routes the
 	// gateway itself installs are "expected" and only later arrivals are reported.

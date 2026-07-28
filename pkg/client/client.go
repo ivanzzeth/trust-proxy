@@ -85,10 +85,19 @@ func (c *Client) ImportNodes(name, content string) (apitypes.SubscriptionPublic,
 	return out, err
 }
 
-// ApplySubscription applies a subscription's nodes to the running gateway.
+// ApplySubscription adds a subscription's nodes to the live proxy group
+// (additive — other applied subscriptions stay). Use UnapplySubscription to drop one.
 func (c *Client) ApplySubscription(id string) (apitypes.SubscriptionPublic, error) {
 	var out apitypes.SubscriptionPublic
 	err := c.do(http.MethodPost, "/api/subscriptions/"+id+"/apply", nil, &out)
+	return out, err
+}
+
+// UnapplySubscription removes a subscription from the live proxy group; remaining
+// applied subscriptions stay merged.
+func (c *Client) UnapplySubscription(id string) (apitypes.SubscriptionPublic, error) {
+	var out apitypes.SubscriptionPublic
+	err := c.do(http.MethodPost, "/api/subscriptions/"+id+"/unapply", nil, &out)
 	return out, err
 }
 
