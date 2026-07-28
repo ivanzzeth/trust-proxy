@@ -1,7 +1,7 @@
 {
   "name": "trust-proxy-desktop",
   "private": true,
-  "version": "0.11.1",
+  "version": "0.11.2",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev",
