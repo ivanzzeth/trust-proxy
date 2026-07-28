@@ -991,8 +991,32 @@ func TestPresets_OverseasGroupRoutesOrFallsBack(t *testing.T) {
 	if m, _ := og["outbounds"].([]any); len(m) != 2 { // JP + US, not HK
 		t.Fatalf("Overseas group must exclude the HK node, got %v", og["outbounds"])
 	}
+	if og["url"] != "https://cp.cloudflare.com/" {
+		t.Fatalf("Overseas urltest must probe a real foreign edge, got %v", og["url"])
+	}
 	if !claudeAllowed(rulesA) {
 		t.Fatal("overseas-routed domain must join the ACL allow-set (A)")
+	}
+
+	// A2) Unflagged "info" outbounds must not enter Overseas — they cannot prove
+	// they are outside the excluded regions, and urltest would otherwise pick
+	// them (tiny delay) and break geofenced destinations.
+	mergedA2 := build([]apitypes.Node{
+		node("🇭🇰 HK-01"), node("🇯🇵 JP-01"),
+		node("Traffic Reset: 2 Days Left"), node("130.17 GB | 300 GB"),
+	}, []string{"HK"})
+	og2 := findOut(outbounds(t, mergedA2), overseas)
+	if og2 == nil {
+		t.Fatal("Overseas group missing when an identified non-excluded node exists")
+	}
+	for _, m := range og2["outbounds"].([]any) {
+		s, _ := m.(string)
+		if s == "Traffic Reset: 2 Days Left" || s == "130.17 GB | 300 GB" || s == "🇭🇰 HK-01" {
+			t.Fatalf("Overseas must not include unflagged/info or excluded nodes, got %v", og2["outbounds"])
+		}
+	}
+	if m, _ := og2["outbounds"].([]any); len(m) != 1 || m[0] != "🇯🇵 JP-01" {
+		t.Fatalf("Overseas should be JP only, got %v", og2["outbounds"])
 	}
 
 	// B) No node to exclude (only JP) → no Overseas group → rule falls back to the

@@ -27,7 +27,10 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Manager, State, WebviewWindow};
+use tauri::image::Image;
+use tauri::menu::{CheckMenuItem, MenuBuilder, MenuItem, PredefinedMenuItem, SubmenuBuilder};
+use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::{AppHandle, Manager, State, WebviewWindow, WindowEvent};
 
 const DEFAULT_API: &str = "127.0.0.1:21585";
 
@@ -116,6 +119,19 @@ struct Runtime {
     status: Mutex<Status>,
 }
 
+/// Menu / tray widgets the shell updates after `env` / `mode` / `routing` probes.
+/// Held so Refresh and mode switches can rewrite checkmarks without rebuilding
+/// the whole menu (macOS flickers if the menu is replaced under the cursor).
+struct TrayHandles {
+    status: MenuItem<tauri::Wry>,
+    mode_manual: CheckMenuItem<tauri::Wry>,
+    mode_system: CheckMenuItem<tauri::Wry>,
+    mode_tun: CheckMenuItem<tauri::Wry>,
+    routing_rule: CheckMenuItem<tauri::Wry>,
+    routing_global: CheckMenuItem<tauri::Wry>,
+    tray: TrayIcon<tauri::Wry>,
+}
+
 fn main() {
     // --print-config answers "what would you attach to, and with which sidecar"
     // without opening a window. It exists because a bundle left over from before
@@ -139,6 +155,12 @@ fn main() {
         return;
     }
 
+    // Must run before any WKWebView is created. HTML spellCheck/autoCorrect are
+    // soft hints on macOS; the app-domain defaults are what actually stop the
+    // system from rewriting search boxes and domain fields under the user.
+    #[cfg(target_os = "macos")]
+    disable_macos_webview_text_rewrite();
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             status,
@@ -159,15 +181,61 @@ fn main() {
                     ..Default::default()
                 }),
             });
+            install_tray(app.handle())?;
             let handle = app.handle().clone();
             // Off the UI thread: probing and elevation both block, and a frozen
             // splash is indistinguishable from a crash.
             std::thread::spawn(move || bring_up(&handle));
             Ok(())
         })
+        .on_window_event(|window, event| {
+            // Close means "back to the tray", not quit — Clash Verge style. Quit
+            // is only the tray menu item.
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .build(tauri::generate_context!())
         .expect("failed to build the trust-proxy shell")
         .run(|_app, _event| {});
+}
+
+/// Kill macOS WKWebView's "helpful" spelling / substitution for this app.
+///
+/// The console is full of domains, tags and search queries. Continuous spell
+/// checking + automatic spelling correction rewrite those under the caret
+/// even when every `<input spellcheck=false autocorrect=off>` attribute is
+/// set — those are soft hints; these defaults are what WebKit actually reads
+/// (bundle domain `io.trust-proxy.desktop`). Must run before the first
+/// webview is created or the change only takes effect on the next launch.
+#[cfg(target_os = "macos")]
+fn disable_macos_webview_text_rewrite() {
+    use objc2_foundation::{NSString, NSUserDefaults};
+
+    // SAFETY: NSUserDefaults / NSString are toll-free Foundation types used
+    // exactly as AppKit apps do at launch; no objects are retained across the
+    // call, and synchronize is best-effort.
+    unsafe {
+        let defaults = NSUserDefaults::standardUserDefaults();
+        for key in [
+            "WebContinuousSpellCheckingEnabled",
+            "WebAutomaticSpellingCorrectionEnabled",
+            "WebAutomaticTextReplacementEnabled",
+            "WebAutomaticQuoteSubstitutionEnabled",
+            "WebAutomaticDashSubstitutionEnabled",
+            "WebAutomaticLinkDetectionEnabled",
+            "NSAutomaticSpellingCorrectionEnabled",
+            "NSAutomaticTextReplacementEnabled",
+            "NSAutomaticCapitalizationEnabled",
+            "NSAutomaticPeriodSubstitutionEnabled",
+            "NSAutomaticQuoteSubstitutionEnabled",
+            "NSAutomaticDashSubstitutionEnabled",
+        ] {
+            defaults.setBool_forKey(false, &NSString::from_str(key));
+        }
+        let _ = defaults.synchronize();
+    }
 }
 
 /// bring_up decides, once, what this window is looking at.
@@ -187,6 +255,7 @@ fn bring_up(app: &AppHandle) {
             let why = sidecar_problem(&rt.binary);
             log(&format!("could not run the gateway binary: {why}"));
             set(app, |s| s.error = Some(why));
+            sync_tray(app);
             return;
         }
     };
@@ -267,6 +336,7 @@ fn apply_env(app: &AppHandle, env: &Env) {
         s.console_missing = env.gateway.healthy && !env.gateway.console;
         s.error = None;
     });
+    sync_tray(app);
 }
 
 /// open_the_console points the window at the gateway, logged in when it can be.
@@ -335,6 +405,269 @@ fn show_console(app: &AppHandle, url: &str) {
         }
     }) {
         log(&format!("could not reach the main thread to open {url}: {e}"));
+    }
+}
+
+// ---- tray (Clash Verge-style: menu for mode, Open Console to show UI) ------
+
+fn install_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let status = MenuItem::with_id(app, "status", "Gateway: …", false, None::<&str>)?;
+    let mode_manual = CheckMenuItem::with_id(app, "mode-manual", "Manual", false, false, None::<&str>)?;
+    let mode_system = CheckMenuItem::with_id(app, "mode-system", "System", false, false, None::<&str>)?;
+    let mode_tun = CheckMenuItem::with_id(app, "mode-tun", "TUN", false, false, None::<&str>)?;
+    let routing_rule = CheckMenuItem::with_id(app, "routing-rule", "Rule", false, false, None::<&str>)?;
+    let routing_global = CheckMenuItem::with_id(app, "routing-global", "Global", false, false, None::<&str>)?;
+
+    let capture = SubmenuBuilder::new(app, "Capture")
+        .item(&mode_manual)
+        .item(&mode_system)
+        .item(&mode_tun)
+        .build()?;
+    let routing = SubmenuBuilder::new(app, "Routing")
+        .item(&routing_rule)
+        .item(&routing_global)
+        .build()?;
+    let open = MenuItem::with_id(app, "open-console", "Open Console", true, None::<&str>)?;
+    let refresh_i = MenuItem::with_id(app, "refresh", "Refresh", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    let sep2 = PredefinedMenuItem::separator(app)?;
+
+    let menu = MenuBuilder::new(app)
+        .item(&status)
+        .item(&sep1)
+        .item(&capture)
+        .item(&routing)
+        .item(&sep2)
+        .item(&open)
+        .item(&refresh_i)
+        .item(&quit)
+        .build()?;
+
+    // Menu-bar template: black glyph + transparent background (see icons/tray-icon*.png).
+    // The colorful app icon with icon_as_template(true) becomes a solid black square —
+    // macOS treats every opaque pixel as part of the silhouette.
+    let icon = Image::from_bytes(include_bytes!("../icons/tray-icon@2x.png"))?.to_owned();
+
+    let tray = TrayIconBuilder::with_id("main")
+        .icon(icon)
+        .icon_as_template(true)
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .tooltip("Trust Proxy")
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "quit" => app.exit(0),
+            "open-console" => {
+                let app = app.clone();
+                std::thread::spawn(move || open_console_from_tray(&app));
+            }
+            "refresh" => {
+                let app = app.clone();
+                std::thread::spawn(move || {
+                    bring_up(&app);
+                    sync_tray(&app);
+                });
+            }
+            "mode-manual" => tray_set_mode(app, "manual"),
+            "mode-system" => tray_set_mode(app, "system"),
+            "mode-tun" => tray_set_mode(app, "tun"),
+            "routing-rule" => tray_set_routing(app, "Rule"),
+            "routing-global" => tray_set_routing(app, "Global"),
+            _ => {}
+        })
+        .build(app)?;
+
+    app.manage(TrayHandles {
+        status,
+        mode_manual,
+        mode_system,
+        mode_tun,
+        routing_rule,
+        routing_global,
+        tray,
+    });
+    Ok(())
+}
+
+fn tray_set_mode(app: &AppHandle, mode: &str) {
+    let app = app.clone();
+    let mode = mode.to_string();
+    std::thread::spawn(move || {
+        let rt = app.state::<Runtime>();
+        log(&format!("tray: mode set {mode}"));
+        match cli_run(
+            &rt.binary,
+            &rt.api,
+            &["mode", "set", &mode, "--yes"],
+        ) {
+            Ok(_) => {
+                // Guarded switches need the console visible so the dead-man's
+                // switch banner can be confirmed; otherwise the mode silently
+                // rolls back while the window is hidden.
+                open_console_from_tray(&app);
+                sync_tray(&app);
+            }
+            Err(e) => log(&format!("tray: mode set {mode} failed: {e}")),
+        }
+    });
+}
+
+fn tray_set_routing(app: &AppHandle, mode: &str) {
+    let app = app.clone();
+    let mode = mode.to_string();
+    std::thread::spawn(move || {
+        let rt = app.state::<Runtime>();
+        log(&format!("tray: routing set {mode}"));
+        match cli_run(
+            &rt.binary,
+            &rt.api,
+            &["routing", "set", &mode, "--yes"],
+        ) {
+            Ok(_) => sync_tray(&app),
+            Err(e) => log(&format!("tray: routing set {mode} failed: {e}")),
+        }
+    });
+}
+
+/// Open Console: the only tray path that shows the window. Left-click only
+/// opens the menu.
+fn open_console_from_tray(app: &AppHandle) {
+    show_main_window(app);
+    let healthy = app
+        .state::<Runtime>()
+        .status
+        .lock()
+        .map(|s| s.healthy && !s.console_missing)
+        .unwrap_or(false);
+    if healthy {
+        open_the_console(app);
+    }
+}
+
+fn show_main_window(app: &AppHandle) {
+    let handle = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || {
+        if let Some(window) = handle.get_webview_window("main") {
+            let _ = window.show();
+            let _ = window.set_focus();
+            let _ = window.unminimize();
+        }
+    }) {
+        log(&format!("could not show the window: {e}"));
+    }
+}
+
+fn cli_run(binary: &Path, api: &str, args: &[&str]) -> Result<serde_json::Value, String> {
+    let mut cmd = Command::new(binary);
+    cmd.args(args).args(["--json", "--api-addr", api]);
+    let out = cmd
+        .output()
+        .map_err(|e| format!("spawn {}: {e}", binary.display()))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !out.status.success() {
+        return Err(if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            format!("exit {}", out.status)
+        });
+    }
+    if stdout.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+    serde_json::from_str(&stdout).or_else(|_| {
+        Ok(serde_json::json!({ "raw": stdout }))
+    })
+}
+
+fn cli_mode_field(binary: &Path, api: &str, args: &[&str], field: &str) -> Option<String> {
+    let v = cli_run(binary, api, args).ok()?;
+    v.get(field)
+        .and_then(|x| x.as_str())
+        .map(|s| s.to_string())
+}
+
+fn status_summary(s: &Status) -> String {
+    if let Some(err) = s.error.as_deref().filter(|e| !e.is_empty()) {
+        let one = err.lines().next().unwrap_or(err);
+        let short = if one.len() > 48 {
+            format!("{}…", &one[..45])
+        } else {
+            one.to_string()
+        };
+        return format!("Gateway: {short}");
+    }
+    match s.action.as_str() {
+        "attach" if s.healthy => "Gateway: attached".into(),
+        "attach" => "Gateway: unreachable".into(),
+        "update" => "Gateway: update available".into(),
+        "takeover" => "Gateway: takeover needed".into(),
+        "install" => "Gateway: needs install".into(),
+        "repair" => "Gateway: service not running".into(),
+        "unsupported" => "Gateway: unsupported platform".into(),
+        other if !other.is_empty() => format!("Gateway: {other}"),
+        _ => "Gateway: …".into(),
+    }
+}
+
+fn sync_tray(app: &AppHandle) {
+    let Some(tray) = app.try_state::<TrayHandles>() else {
+        return;
+    };
+    let rt = app.state::<Runtime>();
+    let summary = rt
+        .status
+        .lock()
+        .map(|s| status_summary(&s))
+        .unwrap_or_else(|_| "Gateway: …".into());
+    let healthy = rt
+        .status
+        .lock()
+        .map(|s| s.healthy)
+        .unwrap_or(false);
+
+    let _ = tray.status.set_text(&summary);
+    let _ = tray.tray.set_tooltip(Some(&summary));
+
+    let mode = if healthy {
+        cli_mode_field(&rt.binary, &rt.api, &["mode", "get"], "mode")
+    } else {
+        None
+    };
+    let routing = if healthy {
+        cli_mode_field(&rt.binary, &rt.api, &["routing", "get"], "mode")
+    } else {
+        None
+    };
+
+    for (item, on) in [
+        (&tray.mode_manual, mode.as_deref() == Some("manual")),
+        (&tray.mode_system, mode.as_deref() == Some("system")),
+        (&tray.mode_tun, mode.as_deref() == Some("tun")),
+    ] {
+        let _ = item.set_enabled(healthy);
+        let _ = item.set_checked(on);
+    }
+    for (item, on) in [
+        (
+            &tray.routing_rule,
+            routing
+                .as_deref()
+                .map(|m| m.eq_ignore_ascii_case("rule"))
+                .unwrap_or(false),
+        ),
+        (
+            &tray.routing_global,
+            routing
+                .as_deref()
+                .map(|m| m.eq_ignore_ascii_case("global"))
+                .unwrap_or(false),
+        ),
+    ] {
+        let _ = item.set_enabled(healthy);
+        let _ = item.set_checked(on);
     }
 }
 
@@ -859,6 +1192,19 @@ mod tests {
 
     // A missing sidecar and a quarantined one are different failures with
     // different fixes, and neither is guessable from "the app will not open".
+    #[test]
+    fn tray_status_summary_names_the_action() {
+        let mut s = Status::default();
+        s.action = "attach".into();
+        s.healthy = true;
+        assert_eq!(status_summary(&s), "Gateway: attached");
+        s.action = "install".into();
+        s.healthy = false;
+        assert_eq!(status_summary(&s), "Gateway: needs install");
+        s.error = Some("boom\nmore".into());
+        assert_eq!(status_summary(&s), "Gateway: boom");
+    }
+
     #[test]
     fn a_missing_sidecar_says_so_rather_than_blaming_gatekeeper() {
         let msg = sidecar_problem(Path::new("/nowhere/trust-proxy"));

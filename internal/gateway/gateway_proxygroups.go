@@ -15,6 +15,19 @@ import (
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
+// urltestProbeURL is the HTTP HEAD target urltest uses to rank members.
+// Overseas must exercise a real foreign edge (Cloudflare) so the ranking
+// reflects "can this exit reach the open internet", not a soft domestic 204
+// that captive/info paths can answer without a usable egress. Auto / country
+// groups keep the lighter gstatic probe — they are latency pickers among
+// already-trusted members, not a geofence.
+func urltestProbeURL(groupTag string) string {
+	if groupTag == proxygroups.OverseasGroupTag || strings.HasPrefix(groupTag, proxygroups.OverseasGroupTag+"-") {
+		return "https://cp.cloudflare.com/"
+	}
+	return "https://www.gstatic.com/generate_204"
+}
+
 // injectEndpoints appends enabled WireGuard/Tailscale exits to endpoints[] and
 // returns their tags (to be added to the proxy group). WireGuard peers keep the
 // pasted allowed_ips; Tailscale gets a per-tag state dir under data/.
@@ -247,7 +260,12 @@ func buildProxyGroups(tags []string, loopback map[string]bool, pg proxygroups.Co
 			// Failover is primarily driven by dial/IO failures (patched urltest
 			// retries other members immediately). The periodic probe is a backup
 			// only — keep it short so a quietly-dead node cannot stick for minutes.
-			g["url"] = "https://www.gstatic.com/generate_204"
+			//
+			// Probe a real Cloudflare edge (204) rather than a soft generate_204
+			// that captive/info outbounds can fake. urltest still only measures
+			// "can dial + get an HTTP answer"; membership rules below decide who
+			// is even eligible for Overseas.
+			g["url"] = urltestProbeURL(tag)
 			g["interval"] = "30s"
 			g["idle_timeout"] = "30m"
 			g["interrupt_exist_connections"] = true
@@ -277,19 +295,28 @@ func buildProxyGroups(tags []string, loopback map[string]bool, pg proxygroups.Co
 	}
 
 	// Shared "Overseas" group: urltest over every non-loopback node whose country
-	// is NOT excluded (default HK/MO/CN). Built ONLY when the exclusion actually
-	// removes ≥1 node — if nothing is excluded, Auto is already a safe superset
-	// and any rule targeting Overseas self-heals back to Auto. This gives
-	// geofenced services (Anthropic/OpenAI/Cursor) failover across allowed
-	// regions that can never land on a blocked one.
+	// is known AND not excluded (default HK/MO/CN). Built ONLY when the exclusion
+	// actually removes ≥1 identified node — if nothing is excluded, Auto is
+	// already a safe superset and any rule targeting Overseas self-heals back to
+	// Auto. Tags with no detectable country are left out on purpose: they cannot
+	// prove they are outside the blocked regions, and airport "info" outbounds
+	// (quota / expiry lines) are almost always unflagged — putting them in
+	// Overseas lets urltest pick them and then Anthropic/OpenAI 403.
 	if ex := excludeSet(pg.ExcludeCountries); len(ex) > 0 {
 		var allowed []string
+		excludedIdentified := 0
 		for _, t := range remote {
-			if !ex[proxygroups.Country(t)] {
-				allowed = append(allowed, t)
+			c := proxygroups.Country(t)
+			if c == "" {
+				continue
 			}
+			if ex[c] {
+				excludedIdentified++
+				continue
+			}
+			allowed = append(allowed, t)
 		}
-		if len(allowed) > 0 && len(allowed) < len(remote) {
+		if len(allowed) > 0 && excludedIdentified > 0 {
 			add("urltest", uniq(proxygroups.OverseasGroupTag), allowed)
 		}
 	}

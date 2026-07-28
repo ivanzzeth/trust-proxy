@@ -8,6 +8,7 @@ import { api, TUNConfig } from '@/lib/api';
 import { LANGS } from '@/i18n';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Textarea } from '@/components/ui/textarea';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Label } from '@/components/ui/label';
@@ -83,7 +84,7 @@ function TUNCard() {
         <div className="space-y-1.5">
           <Label>{t('settings.tun.exclude')}</Label>
           <p className="text-xs text-muted-foreground">{t('settings.tun.excludeDesc')}</p>
-          <textarea
+          <Textarea
             className="min-h-16 w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-xs font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             placeholder={t('settings.tun.excludePh')}
             value={listToText(cfg.exclude_package)}
@@ -93,7 +94,7 @@ function TUNCard() {
         <div className="space-y-1.5">
           <Label>{t('settings.tun.include')}</Label>
           <p className="text-xs text-muted-foreground">{t('settings.tun.includeDesc')}</p>
-          <textarea
+          <Textarea
             className="min-h-16 w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-xs font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
             placeholder={t('settings.tun.includePh')}
             value={listToText(cfg.include_package)}

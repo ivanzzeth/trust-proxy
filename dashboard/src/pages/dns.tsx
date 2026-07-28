@@ -8,6 +8,7 @@ import { api, DNSConfig, DNSServer } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
@@ -141,7 +142,7 @@ export default function DNS() {
                   </div>
                 )}
                 {s.type === 'hosts' && (
-                  <textarea
+                  <Textarea
                     className="min-h-16 w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-xs font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     placeholder="one per line: host=1.2.3.4,5.6.7.8"
                     value={recordsToText(s.records)}

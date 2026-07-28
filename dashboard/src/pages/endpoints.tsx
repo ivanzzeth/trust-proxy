@@ -8,6 +8,7 @@ import { api } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
@@ -57,7 +58,7 @@ export default function Endpoints() {
               </TabsList>
               <TabsContent value="wg" className="space-y-2">
                 <Input placeholder={t('pages.endpoints.tagPlaceholder')} value={wgName} onChange={(e) => setWgName(e.target.value)} />
-                <textarea
+                <Textarea
                   className="min-h-40 w-full resize-y rounded-md border bg-background/40 p-2.5 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                   placeholder={'[Interface]\nPrivateKey = ...\nAddress = 10.0.0.2/32\n[Peer]\nPublicKey = ...\nEndpoint = host:51820\nAllowedIPs = 0.0.0.0/0, ::/0'}
                   value={wgConf}

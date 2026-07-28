@@ -22,10 +22,13 @@ export function ListSearch({
     <div className={cn('relative', className)}>
       <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" />
       <Input
+        type="search"
+        name="tp-list-search"
         className="h-8 w-full min-w-[12rem] pl-8 sm:w-64"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder ?? t('common.searchPlaceholder')}
+        enterKeyHint="search"
       />
     </div>
   );

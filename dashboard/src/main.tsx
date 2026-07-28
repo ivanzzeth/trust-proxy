@@ -28,6 +28,21 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },
 });
 
+/** Belt-and-suspenders for macOS WKWebView: attributes on <Input> are not
+ *  always enough when the system "correct spelling automatically" is on.
+ *  Re-stamp every focused field so search bars stop rewriting queries. */
+function disarmTextRewrite(el: EventTarget | null) {
+  if (!(el instanceof HTMLInputElement) && !(el instanceof HTMLTextAreaElement)) return;
+  if (el.type === 'password' || el.type === 'checkbox' || el.type === 'radio' || el.type === 'file') return;
+  el.setAttribute('autocorrect', 'off');
+  el.setAttribute('autocapitalize', 'none');
+  el.setAttribute('autocomplete', 'off');
+  el.setAttribute('spellcheck', 'false');
+  el.setAttribute('lang', 'zxx');
+  el.spellcheck = false;
+}
+document.addEventListener('focusin', (e) => disarmTextRewrite(e.target), true);
+
 const router = createHashRouter([
   {
     path: '/',

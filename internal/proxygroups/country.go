@@ -1,6 +1,9 @@
 package proxygroups
 
-import "strings"
+import (
+	"regexp"
+	"strings"
+)
 
 // Country guesses a node's country from its tag (the airport's node name),
 // which conventionally carries a flag emoji, a country name (zh/en), or an ISO
@@ -19,12 +22,27 @@ func Country(tag string) string {
 	}
 	// Bare 2-letter codes: only as a standalone token, never inside a word
 	// ("node" must not match "de", "status" must not match "us").
+	//
+	// "gb" is special: airport quota lines ("130.17 GB | 300 GB") use it as a
+	// data unit, which must not become Great Britain — that falsely admitted
+	// info outbounds into the Overseas urltest.
 	for _, run := range asciiRuns(low) {
 		if iso, ok := codeMap[run]; ok {
+			if run == "gb" && looksLikeDataSize(low) {
+				continue
+			}
 			return iso
 		}
 	}
 	return ""
+}
+
+// looksLikeDataSize reports tags that use "GB" as a traffic unit rather than
+// an ISO country code (quota / remaining-traffic lines in subscriptions).
+var dataSizeGB = regexp.MustCompile(`\d(\.\d+)?\s*gb`)
+
+func looksLikeDataSize(low string) bool {
+	return dataSizeGB.MatchString(low)
 }
 
 // flagCountry decodes the first regional-indicator flag emoji (two symbols in

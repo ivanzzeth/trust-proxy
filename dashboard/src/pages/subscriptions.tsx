@@ -9,6 +9,7 @@ import { PageHeader } from '@/components/page-header';
 import { ExitGenerator } from '@/components/exit-generator';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -66,7 +67,7 @@ export default function Subscriptions() {
               </TabsContent>
               <TabsContent value="paste" className="space-y-2">
                 <Input placeholder={t('pages.subscriptions.namePh')} value={pName} onChange={(e) => setPName(e.target.value)} />
-                <textarea
+                <Textarea
                   className="min-h-28 w-full resize-y rounded-md border bg-background/40 p-2.5 font-mono text-xs shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60"
                   placeholder={t('pages.subscriptions.contentPh')}
                   value={pContent}

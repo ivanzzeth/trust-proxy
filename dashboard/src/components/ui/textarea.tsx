@@ -1,24 +1,20 @@
 import * as React from 'react';
 import { cn } from '@/lib/utils';
 
-/** Technical fields (domains, tags, search). macOS WKWebView will rewrite
- *  them unless every substitution knob is forced off — and even then the
- *  desktop shell also disables WebContinuousSpellCheckingEnabled. */
 const noRewrite = {
   autoCorrect: 'off',
   autoCapitalize: 'none',
   autoComplete: 'off',
   spellCheck: false,
-  // ISO 639-2 "no linguistic content" — WebKit skips language-aware rewrite.
   lang: 'zxx',
 } as const;
 
-export const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<'input'>>(
+export const Textarea = React.forwardRef<HTMLTextAreaElement, React.ComponentProps<'textarea'>>(
   ({ className, ...props }, ref) => (
-    <input
+    <textarea
       ref={ref}
       className={cn(
-        'flex h-9 w-full rounded-md border bg-background/40 px-3 py-1 text-sm shadow-sm transition-colors',
+        'flex min-h-16 w-full rounded-md border bg-background/40 px-3 py-2 text-sm shadow-sm transition-colors',
         'placeholder:text-muted-foreground/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:border-ring',
         'disabled:cursor-not-allowed disabled:opacity-50',
         className,
@@ -28,4 +24,4 @@ export const Input = React.forwardRef<HTMLInputElement, React.ComponentProps<'in
     />
   ),
 );
-Input.displayName = 'Input';
+Textarea.displayName = 'Textarea';
