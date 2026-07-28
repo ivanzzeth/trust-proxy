@@ -2,6 +2,7 @@ package ruleset
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -27,6 +28,12 @@ import (
 // mirrorHosts are jsdelivr front-ends. One being blocked or rate-limited does
 // not mean the others are, and they serve byte-identical files.
 var mirrorHosts = []string{"cdn.jsdelivr.net", "testingcf.jsdelivr.net", "gcore.jsdelivr.net"}
+
+// maxRuleSetProbeBytes caps what a probe will read. The catalog's .srs files are
+// tens of kilobytes; the largest (geosite-geolocation-!cn) is a few hundred. 32 MiB
+// is far past anything legitimate and only there so a source answering with a
+// stream cannot hold a posture switch open.
+const maxRuleSetProbeBytes = 32 << 20
 
 // Sources lists everywhere a catalog entry can be fetched from, best-known
 // first. Duplicates and empties are dropped.
@@ -58,16 +65,28 @@ func Sources(e apitypes.RuleSetCatalogEntry) []string {
 	return out
 }
 
-// PickReachable returns the candidate that answers first, or "" when none do.
+// PickReachable returns the candidate that can be *downloaded* first, or "" when
+// none can.
 //
-// A race, not a sequence: the failure mode being designed around is a blackholed
-// TCP connect, which costs the full timeout, and trying four of those in a row
-// would stall a posture switch for the better part of a minute. Whichever host
-// answers first is also, usefully, the fastest one from here.
+// A race, not a sequence: the failure being designed around is a blackholed TCP
+// connect, which costs the full timeout, and trying four of those in a row would
+// stall a posture switch for the better part of a minute. Whichever source finishes
+// first is also, usefully, the fastest one from here.
 //
-// A HEAD may be refused by a CDN that is perfectly willing to GET, so this asks
-// for the first byte instead — enough to prove the object is really there,
-// cheap enough not to matter.
+// The whole object, not a range request. This asked for `Range: bytes=0-0` — one
+// byte — reasoning that it proves the object is there and costs nothing. The
+// cheapness was the bug: the failure being selected against is a path that
+// completes a handshake, returns a header and then stalls partway through the body,
+// which is what raw.githubusercontent.com does from inside the GFW, and a one-byte
+// range request is the one thing such a path can still satisfy.
+//
+// Measured on a real machine: every source answered 206 in under a second to a
+// range request, so the probe kept the primary URL, and sing-box then timed out
+// fetching five of thirteen rule sets from it — while the mirror the catalog has
+// always carried would have worked, and the probe had just voted against it.
+//
+// These files are tens of kilobytes. Downloading one is the question actually being
+// asked, and it costs nothing worth saving.
 func PickReachable(cands []string, budget time.Duration) string {
 	if len(cands) == 0 {
 		return ""
@@ -90,14 +109,34 @@ func PickReachable(cands []string, budget time.Duration) string {
 				results <- result{u, false}
 				return
 			}
-			req.Header.Set("Range", "bytes=0-0")
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				results <- result{u, false}
 				return
 			}
-			_ = resp.Body.Close()
-			results <- result{u, resp.StatusCode < 400}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 400 {
+				results <- result{u, false}
+				return
+			}
+			// Read it to the end, inside the same budget. A stalling body fails here,
+			// which is the entire point; a body cut short by the deadline fails as an
+			// io error rather than looking like a short file.
+			//
+			// Bounded, because a source that answers with something enormous should not
+			// be able to hold a posture switch open: no rule set is anywhere near this,
+			// so hitting the cap means the answer is not a rule set.
+			n, err := io.Copy(io.Discard, io.LimitReader(resp.Body, maxRuleSetProbeBytes+1))
+			switch {
+			case err != nil:
+				results <- result{u, false}
+			case n == 0:
+				results <- result{u, false} // a 200 with no body is not a rule set
+			case n > maxRuleSetProbeBytes:
+				results <- result{u, false}
+			default:
+				results <- result{u, true}
+			}
 		}(u)
 	}
 	go func() { wg.Wait(); close(results) }()
