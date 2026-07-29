@@ -33,15 +33,18 @@ var (
 )
 
 func detectNftablesInterfaceSupported() bool {
-	// Presence of the procfs interface indicates kernel nftables support.
-	// We intentionally do not use lsmod; containers may not expose it.
+	// Presence of the procfs interface is a strong signal of kernel nftables
+	// support, but some containers (and some kernel builds) hide it while
+	// `nft list ruleset` still works. Prefer the live probe when available.
 	_, err := statPath("/proc/net/netfilter/nf_tables")
 	return err == nil
 }
 
 func detectNftUsable(ctx context.Context) (bool, string) {
-	// "nft list ruleset" is a safe read-only probe; it fails when nftables
-	// kernel tables are missing, or when the nft binary is missing.
+	// "nft list ruleset" is the ground-truth probe: if it succeeds, sing-box
+	// can install auto_redirect rules. Prefer this over the procfs path —
+	// Docker already demonstrated nft works here even when
+	// /proc/net/netfilter/nf_tables is absent.
 	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	out, err := execCmdFn(cctx, "nft", "list", "ruleset").CombinedOutput()
@@ -101,7 +104,7 @@ func detectPkgMgr() (pkgMgr, bool) {
 // DetectNftables builds a report for the UI/doctor.
 func DetectNftables(ctx context.Context, canAutoInstall bool) NftablesReport {
 	rep := NftablesReport{
-		Supported:            runtime.GOOS == "linux" && detectNftablesInterfaceSupported(),
+		Supported:            false,
 		HasNftBinary:         false,
 		Usable:               false,
 		AutoInstallSupported: false,
@@ -116,13 +119,18 @@ func DetectNftables(ctx context.Context, canAutoInstall bool) NftablesReport {
 		rep.Errors = append(rep.Errors, "nft binary not found in PATH")
 	}
 
-	if rep.HasNftBinary && rep.Supported {
+	procOK := detectNftablesInterfaceSupported()
+	if rep.HasNftBinary {
 		ok, diag := detectNftUsable(ctx)
 		rep.Usable = ok
 		if !ok && diag != "" {
 			rep.Errors = append(rep.Errors, diag)
 		}
 	}
+	// Supported = kernel can speak nftables. Prefer the live probe; fall back
+	// to procfs for environments where listing needs root and we only have the
+	// interface path as evidence.
+	rep.Supported = rep.Usable || procOK
 
 	if canAutoInstall {
 		if pm, ok := detectPkgMgr(); ok {
