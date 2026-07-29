@@ -225,6 +225,17 @@ type QuarantineEntry struct {
 	Time   string `json:"time"`
 }
 
+// PermitQuarantineResult is the false-positive recovery response: the entry is
+// gone from quarantine and present on Permit so Strict default-deny does not
+// immediately re-block the same dial.
+type PermitQuarantineResult struct {
+	Quarantine []QuarantineEntry `json:"quarantine"`
+	Permitted  struct {
+		Type  string `json:"type"` // "domain" | "ip"
+		Value string `json:"value"`
+	} `json:"permitted"`
+}
+
 // DetectionConfig is the tunable half of the detection engine. Every threshold
 // that used to be a constant lives here so an operator can trade sensitivity for
 // noise without a rebuild. Zero values mean "use the default" (see

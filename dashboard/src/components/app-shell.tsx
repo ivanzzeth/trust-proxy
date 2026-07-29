@@ -39,6 +39,7 @@ import { useTrafficRate } from '@/hooks/use-traffic-rate';
 import { Logo } from '@/components/logo';
 import { ExitSwitcher } from '@/components/exit-switcher';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -440,6 +441,30 @@ function GlobalModeBanner() {
   );
 }
 
+// QuarantineBanner is the loud "you are banned locally" signal. Without it an
+// auto-/32 looks like remote SSH/frps died (SYN ok, then EOF).
+function QuarantineBanner() {
+  const { t } = useTranslation();
+  const { isAdmin } = useIsAdmin();
+  const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 5000 });
+  const n = st?.quarantine ?? 0;
+  if (!isAdmin || n <= 0) return null;
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-destructive/40 bg-destructive/10 px-6 py-2 text-sm">
+      <span className="flex items-center gap-2">
+        <ShieldAlert className="size-4 shrink-0 text-destructive" />
+        <span>{t('top.quarantineBanner', { count: n })}</span>
+      </span>
+      <NavLink
+        to="/acls"
+        className="shrink-0 rounded-md border border-destructive/30 bg-background px-2.5 py-1 text-xs font-medium hover:bg-destructive/10"
+      >
+        {t('top.quarantineReview')}
+      </NavLink>
+    </div>
+  );
+}
+
 function SplitModeBanner() {
   const { t } = useTranslation();
   const { data } = useQuery({ queryKey: ['posture'], queryFn: api.posture, refetchInterval: 5000 });
@@ -618,7 +643,12 @@ function SidebarBody({ onNavigate }: { onNavigate?: () => void }) {
                         )}
                       />
                       <Icon className="size-4" />
-                      {t(label)}
+                      <span className="flex-1">{t(label)}</span>
+                      {(to === '/detection' || to === '/acls') && (st?.quarantine ?? 0) > 0 && (
+                        <Badge variant="warning" className="tnum">
+                          {st?.quarantine}
+                        </Badge>
+                      )}
                     </>
                   )}
                 </NavLink>
@@ -751,6 +781,7 @@ export function AppShell() {
           </div>
         </header>
         <RevertBanner />
+        <QuarantineBanner />
         <SplitModeBanner />
         <GlobalModeBanner />
         <main className="min-h-0 flex-1 overflow-y-auto">

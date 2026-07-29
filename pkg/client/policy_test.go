@@ -421,3 +421,23 @@ func TestAPIKeySDK(t *testing.T) {
 		t.Fatalf("path %s", p)
 	}
 }
+
+// PermitQuarantine must hit the combined recovery endpoint — two separate
+// release+whitelist calls leave a window where Strict still looks banned.
+func TestPermitQuarantine(t *testing.T) {
+	c, seen := fakeAPI(t, `{"quarantine":[],"permitted":{"type":"ip","value":"47.108.206.242/32"}}`)
+	res, err := c.PermitQuarantine("47.108.206.242/32")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := last(t, seen)
+	if got.method != http.MethodPost || got.path != "/api/quarantine/permit" {
+		t.Fatalf("%s %s", got.method, got.path)
+	}
+	if !strings.Contains(got.body, `"value":"47.108.206.242/32"`) {
+		t.Fatalf("body = %s", got.body)
+	}
+	if res.Permitted.Type != "ip" || res.Permitted.Value != "47.108.206.242/32" {
+		t.Fatalf("result = %+v", res)
+	}
+}

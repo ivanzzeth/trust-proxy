@@ -100,3 +100,24 @@ func (e *Engine) exfilShaped(ev *Event, up int64) bool {
 	}
 	return false
 }
+
+// exfilBanReason is what lands in quarantine.json / the console. Naming the
+// process and destination turns "TCP connect then EOF" after a silent /32 ban
+// into an operator-visible "frpc uploaded 10MB to this EIP" finding.
+func exfilBanReason(ev *Event) string {
+	base := "large upload to non-whitelist destination"
+	if ev == nil {
+		return base
+	}
+	var parts []string
+	if ev.Process != "" {
+		parts = append(parts, "process="+ev.Process)
+	}
+	if ev.Destination != "" {
+		parts = append(parts, "dest="+ev.Destination)
+	}
+	if len(parts) == 0 {
+		return base
+	}
+	return base + " (" + strings.Join(parts, ", ") + ")"
+}

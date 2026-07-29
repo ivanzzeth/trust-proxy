@@ -431,7 +431,7 @@ func (e *Engine) finalize(ev *Event) {
 		// Includes LAN/private destinations — a local C2 / pivot is still exfil.
 		if auto && !ev.Denied && !e.isTrusted(ev) && e.canDispose() {
 			ev.Block = true
-			e.banEvent(ev, "large upload to non-whitelist destination")
+			e.banEvent(ev, exfilBanReason(ev))
 			if !already {
 				e.emitExfil(ev, e.exfilAction(), reason)
 			}
@@ -511,7 +511,9 @@ func (e *Engine) banEvent(ev *Event, reason string) {
 // checkExfilMidStream is called from the byte counter when upload grows. If the
 // threshold is crossed for a non-whitelist destination and auto-block is on,
 // marks the event Block-eligible and bans. Returns true when the caller should
-// kill the connection now.
+// kill the connection now. Same gates as finalize (shape + disposal-ready): a
+// mid-stream path that skipped them used to quarantine balanced syncs that
+// finalize would only have alerted on.
 func (e *Engine) checkExfilMidStream(ev *Event, up int64) bool {
 	// Lock-free fast path: this runs on every Read() of every connection, so
 	// the overwhelmingly common case (auto-block off, or still under
@@ -522,7 +524,7 @@ func (e *Engine) checkExfilMidStream(ev *Event, up int64) bool {
 	if !auto || thresh <= 0 || up < thresh || ev.Denied || ev.Block {
 		return false
 	}
-	if e.isTrusted(ev) {
+	if e.isTrusted(ev) || !e.exfilShaped(ev, up) || !e.canDispose() {
 		return false
 	}
 	reason := fmt.Sprintf("large upload %s (possible exfil)", humanBytes(up))
@@ -535,7 +537,7 @@ func (e *Engine) checkExfilMidStream(ev *Event, up int64) bool {
 	already := ev.exfilEmitted
 	action := e.disposalActionLocked()
 	e.mu.Unlock()
-	e.banEvent(ev, "large upload to non-whitelist destination")
+	e.banEvent(ev, exfilBanReason(ev))
 	if !already {
 		e.emitExfil(ev, action, reason)
 	}

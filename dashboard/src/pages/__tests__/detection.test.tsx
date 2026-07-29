@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 
 import Detection from '@/pages/detection';
 import { api } from '@/lib/api';
@@ -10,14 +11,19 @@ import { api } from '@/lib/api';
 // accepts `data?.sets ?? []` against an array). These render the page against a
 // mocked API and assert it displays what the backend actually returns.
 vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (k: string) => k }),
+  useTranslation: () => ({ t: (k: string, opts?: Record<string, unknown>) => {
+    if (opts && typeof opts === 'object') return `${k}:${JSON.stringify(opts)}`;
+    return k;
+  } }),
 }));
 
 function renderPage() {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <Detection />
+      <MemoryRouter>
+        <Detection />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -38,6 +44,9 @@ describe('Detection page', () => {
       require_warm_permit: true,
     });
     vi.spyOn(api, 'quarantine').mockResolvedValue([]);
+    vi.spyOn(api, 'fingerprints').mockResolvedValue({ learning: false, fingerprints: [] });
+    vi.spyOn(api, 'netcheck').mockResolvedValue({ supported: false });
+    vi.spyOn(api, 'dnsQueryStats').mockResolvedValue({ total: 0, nxdomain: 0, odd_type: 0, tracked_windows: 0, top_parents: [] });
 
     renderPage();
     await waitFor(() => {
@@ -49,18 +58,28 @@ describe('Detection page', () => {
     });
   });
 
-  it('lists quarantined destinations with the reason the gateway recorded', async () => {
+  it('lists quarantined destinations with release and permit actions', async () => {
     vi.spyOn(api, 'detectionConfig').mockResolvedValue({
       beacon_enabled: true, dga_enabled: true, auto_block: true, require_warm_permit: true,
     });
     vi.spyOn(api, 'quarantine').mockResolvedValue([
-      { value: 'evil.example', is_ip: false, reason: 'threat-intel auto-block', time: '2026-07-26T12:00:00Z' },
+      {
+        value: '47.108.206.242/32',
+        is_ip: true,
+        reason: 'large upload to non-whitelist destination (process=frpc, dest=47.108.206.242:7000)',
+        time: '2026-07-29T17:12:47+08:00',
+      },
     ]);
+    vi.spyOn(api, 'fingerprints').mockResolvedValue({ learning: false, fingerprints: [] });
+    vi.spyOn(api, 'netcheck').mockResolvedValue({ supported: false });
+    vi.spyOn(api, 'dnsQueryStats').mockResolvedValue({ total: 0, nxdomain: 0, odd_type: 0, tracked_windows: 0, top_parents: [] });
 
     renderPage();
     await waitFor(() => {
-      expect(screen.getByText('evil.example')).toBeDefined();
-      expect(screen.getByText('threat-intel auto-block')).toBeDefined();
+      expect(screen.getByText('47.108.206.242/32')).toBeDefined();
+      expect(screen.getByText(/process=frpc/)).toBeDefined();
+      expect(screen.getByText('pages.detection.permit')).toBeDefined();
+      expect(screen.getByText('pages.detection.release')).toBeDefined();
     });
   });
 });

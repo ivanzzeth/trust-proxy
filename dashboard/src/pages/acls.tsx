@@ -6,6 +6,7 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import Whitelist from '@/pages/whitelist';
 import Blacklist from '@/pages/blacklist';
 import DirectList from '@/pages/directlist';
+import { QuarantinePanel } from '@/components/quarantine-panel';
 
 // Policy: Permit ⊥ Route ⊥ Deny ⊥ Subjects.
 // Permit answers "may this destination leave?"; Route never opens that gate.
@@ -25,7 +26,12 @@ export default function ACLs() {
       </Tabs>
       {tab === 'permit' && <Whitelist embedded section="permit" />}
       {tab === 'route' && <DirectList embedded />}
-      {tab === 'deny' && <Blacklist embedded />}
+      {tab === 'deny' && (
+        <div className="space-y-4">
+          <QuarantinePanel compact />
+          <Blacklist embedded />
+        </div>
+      )}
       {tab === 'subjects' && <Whitelist embedded section="subjects" />}
     </div>
   );

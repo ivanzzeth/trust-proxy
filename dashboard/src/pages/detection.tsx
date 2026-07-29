@@ -1,16 +1,16 @@
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ShieldAlert, Save, Undo2 } from 'lucide-react';
+import { Save } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api, DetectionConfig } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
+import { QuarantinePanel } from '@/components/quarantine-panel';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { Switch } from '@/components/ui/switch';
-import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 
 // Detection tuning + the gateway's own quarantine list.
@@ -27,18 +27,12 @@ export default function Detection() {
   const { data: queries } = useQuery({ queryKey: ['dns-query-stats'], queryFn: () => api.dnsQueryStats(8), refetchInterval: 10000 });
   const { data: fps } = useQuery({ queryKey: ['fingerprints'], queryFn: () => api.fingerprints(20), refetchInterval: 15000 });
   const { data: net } = useQuery({ queryKey: ['netcheck'], queryFn: api.netcheck, refetchInterval: 15000 });
-  const { data: quarantined = [] } = useQuery({ queryKey: ['quarantine'], queryFn: api.quarantine, refetchInterval: 10000 });
   const [cfg, setCfg] = useState<DetectionConfig | null>(null);
   useEffect(() => { if (data) setCfg(data); }, [data]);
 
   const save = useMutation({
     mutationFn: (c: DetectionConfig) => api.setDetectionConfig(c),
     onSuccess: () => { toast.success(t('pages.detection.saved')); qc.invalidateQueries({ queryKey: ['detection-config'] }); },
-    onError: (e: Error) => toast.error(e.message),
-  });
-  const release = useMutation({
-    mutationFn: (value: string) => api.releaseQuarantine(value),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['quarantine'] }),
     onError: (e: Error) => toast.error(e.message),
   });
 
@@ -49,6 +43,12 @@ export default function Detection() {
   return (
     <div>
       <PageHeader title={t('pages.detection.title')} description={t('pages.detection.description')} />
+
+      {/* Quarantine first: an auto-ban buried below JA4/host/queries looks like
+          "remote frps died" (connect then EOF), not a local policy hit. */}
+      <div className="mb-6">
+        <QuarantinePanel compact />
+      </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
@@ -208,46 +208,6 @@ export default function Detection() {
                   <TableCell className="font-mono text-xs">{p.parent}</TableCell>
                   <TableCell className="tnum text-right text-xs">{p.queries}</TableCell>
                   <TableCell className="tnum text-right text-xs">{p.nxdomain}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <Card className="mt-6">
-        <CardHeader className="flex-row items-center gap-2 pb-3">
-          <ShieldAlert className="size-4 text-amber-500" />
-          <CardTitle className="text-sm">{t('pages.detection.quarantineTitle')}</CardTitle>
-          <Badge variant="muted" className="ml-auto tnum">{quarantined.length}</Badge>
-        </CardHeader>
-        <CardContent>
-          <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{t('pages.detection.quarantineHint')}</p>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t('pages.detection.colValue')}</TableHead>
-                <TableHead>{t('pages.detection.colWhen')}</TableHead>
-                <TableHead>{t('pages.detection.colReason')}</TableHead>
-                <TableHead></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {quarantined.length === 0 && (
-                <TableRow className="hover:bg-transparent">
-                  <TableCell colSpan={4} className="py-8 text-center text-muted-foreground">{t('pages.detection.quarantineEmpty')}</TableCell>
-                </TableRow>
-              )}
-              {quarantined.map((e) => (
-                <TableRow key={e.value}>
-                  <TableCell className="font-mono text-xs">{e.value}</TableCell>
-                  <TableCell className="tnum text-xs text-muted-foreground">{e.time}</TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{e.reason}</TableCell>
-                  <TableCell className="text-right">
-                    <Button size="xs" variant="secondary" onClick={() => release.mutate(e.value)}>
-                      <Undo2 className="size-3.5" /> {t('pages.detection.release')}
-                    </Button>
-                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

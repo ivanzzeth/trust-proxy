@@ -201,6 +201,27 @@ var quarantineReleaseCmd = &cobra.Command{
 	},
 }
 
+var quarantinePermitCmd = &cobra.Command{
+	Use:   "permit <value>",
+	Short: "Release and add to Permit (false-positive recovery)",
+	Long: "Lifts the gateway's own ban and adds the destination to the Permit\n" +
+		"whitelist in one step. `release` alone only removes the L1 floor — under\n" +
+		"Strict the dial still dies without Permit, which looks identical to\n" +
+		"\"still banned\". Prefer this when an operator infra EIP (frp/SSH) was\n" +
+		"quarantined for a large upload.",
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		res, err := sdk().PermitQuarantine(args[0])
+		if err != nil {
+			return err
+		}
+		return out(res, func() {
+			fmt.Printf("permitted %s=%s; %d still quarantined\n",
+				res.Permitted.Type, res.Permitted.Value, len(res.Quarantine))
+		})
+	},
+}
+
 // humanBytes renders a byte count for the settings table.
 func humanBytes(n int64) string {
 	const unit = 1024
@@ -279,5 +300,5 @@ func init() {
 
 	detectFingerprintsCmd.Flags().IntVar(&ja4Limit, "limit", 50, "max fingerprints to show")
 	detectCmd.AddCommand(detectGetCmd, detectSetCmd, detectFingerprintsCmd)
-	quarantineCmd.AddCommand(quarantineLsCmd, quarantineReleaseCmd)
+	quarantineCmd.AddCommand(quarantineLsCmd, quarantineReleaseCmd, quarantinePermitCmd)
 }

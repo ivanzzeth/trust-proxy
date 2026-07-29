@@ -270,6 +270,15 @@ func (c *Client) ClearQuarantine() ([]apitypes.QuarantineEntry, error) {
 	return out, err
 }
 
+// PermitQuarantine releases one false-positive AND adds it to Permit (whitelist).
+// Release alone only lifts the L1 floor; without Permit, Strict still blocks the
+// dial and it looks like the ban never left.
+func (c *Client) PermitQuarantine(value string) (apitypes.PermitQuarantineResult, error) {
+	var out apitypes.PermitQuarantineResult
+	err := c.do(http.MethodPost, "/api/quarantine/permit", map[string]any{"value": value}, &out)
+	return out, err
+}
+
 // ---- resolver / egress knobs -------------------------------------------
 
 // DNS returns the resolver policy.

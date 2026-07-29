@@ -76,6 +76,8 @@ export interface Status {
     errors?: string[];
   };
   threats: { domains: number; ips: number };
+  /** Destinations the gateway blocked by itself (exfil / threat-intel). */
+  quarantine?: number;
   revert?: { to: string; in_seconds: number };
 }
 export interface Whitelist {
@@ -678,6 +680,11 @@ export const api = {
   quarantine: () => get<QuarantineEntry[]>('/quarantine'),
   releaseQuarantine: (value: string) => del<QuarantineEntry[]>('/quarantine', { value }),
   clearQuarantine: () => del<QuarantineEntry[]>('/quarantine', { all: true }),
+  permitQuarantine: (value: string) =>
+    post<{ quarantine: QuarantineEntry[]; permitted: { type: string; value: string } }>(
+      '/quarantine/permit',
+      { value },
+    ),
   final: () => get<{ outbound: string }>('/final'),
   setFinal: (outbound: string) => put<{ outbound: string }>('/final', { outbound }),
   proxyGroups: () =>

@@ -329,6 +329,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.route(mux, "PUT /api/detection-config", s.handleSetDetectionConfig)
 	s.route(mux, "GET /api/quarantine", s.handleListQuarantine)
 	s.route(mux, "DELETE /api/quarantine", s.handleReleaseQuarantine)
+	s.route(mux, "POST /api/quarantine/permit", s.handlePermitQuarantine)
 	s.route(mux, "GET /api/detections", s.handleDetections)
 	s.route(mux, "GET /api/detections/stats", s.handleDetectionsStats)
 	s.route(mux, "GET /api/whitelist", s.handleGetWhitelist)
@@ -495,6 +496,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		d, ip := s.detect.ThreatCounts()
 		st["autoBlock"] = s.detect.AutoBlock()
 		st["threats"] = map[string]int{"domains": d, "ips": ip}
+	}
+	// Quarantine count belongs on status so every page can surface a loud banner
+	// without polling /api/quarantine — operators otherwise mistake a /32 ban for
+	// "remote frps/sshd died" (connect then EOF).
+	if s.quar != nil {
+		st["quarantine"] = len(s.quar.Get().Entries)
 	}
 	writeJSON(w, http.StatusOK, st)
 }
