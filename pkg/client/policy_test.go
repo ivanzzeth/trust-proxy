@@ -376,6 +376,31 @@ func TestUserAdminSDK(t *testing.T) {
 	}
 }
 
+func TestTUNSDK(t *testing.T) {
+	c, seen := fakeAPI(t, `{"stack":"gvisor","mtu":0,"strict_route":true,"auto_redirect":true}`)
+	got, err := c.TUN()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AutoRedirect || last(t, seen).path != "/api/tun" {
+		t.Fatalf("TUN() = %+v path=%s", got, last(t, seen).path)
+	}
+	cfg := apitypes.TUNConfig{
+		Stack: "mixed", MTU: 1400, StrictRoute: true, AutoRedirect: true,
+		Address: []string{"198.18.0.1/30"},
+	}
+	if _, err := c.SetTUN(cfg); err != nil {
+		t.Fatal(err)
+	}
+	r := last(t, seen)
+	if r.method != http.MethodPut || r.path != "/api/tun" {
+		t.Fatalf("%s %s", r.method, r.path)
+	}
+	if !strings.Contains(r.body, `"auto_redirect":true`) || !strings.Contains(r.body, `"198.18.0.1/30"`) {
+		t.Fatalf("SetTUN body = %s", r.body)
+	}
+}
+
 func TestAPIKeySDK(t *testing.T) {
 	c, seen := fakeAPI(t, `{"id":"k1","label":"cli","prefix":"tp_abc","created_at":"now","key":"tp_theactualkey"}`)
 	created, err := c.CreateAPIKey("u1", "cli", 30)

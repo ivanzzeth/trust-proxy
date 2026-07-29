@@ -598,10 +598,18 @@ type TUNConfig struct {
 	Stack          string   `json:"stack"`                     // system | gvisor | mixed (default gvisor)
 	MTU            int      `json:"mtu"`                       // 0 = auto (omit "mtu")
 	StrictRoute    bool     `json:"strict_route"`              // default true
+	AutoRedirect   bool     `json:"auto_redirect"`             // Linux: nftables redirect; captures Docker/containerd bridge egress (default true)
+	Address        []string `json:"address,omitempty"`         // TUN interface CIDRs; empty = DefaultTUNAddresses (198.18/30, avoids Docker 172.16/12)
 	ExcludePackage []string `json:"exclude_package,omitempty"` // Android: packages routed AROUND the tun
 	IncludePackage []string `json:"include_package,omitempty"` // Android: only these packages routed INTO the tun
 	ExcludeProcess []string `json:"exclude_process,omitempty"` // process names routed AROUND the tun
 }
+
+// DefaultTUNAddresses are used when TUNConfig.Address is empty. 198.18.0.0/15 is
+// the RFC 2544 benchmarking range — Clash/sing-box convention — and sits outside
+// Docker/CNI's usual 172.16/12 allocations so the TUN /30 does not collide with
+// a compose network.
+var DefaultTUNAddresses = []string{"198.18.0.1/30", "fdfe:dcba:9876::1/126"}
 
 // Endpoint is a WireGuard or Tailscale exit (sing-box `endpoints[]`). Enabled
 // endpoints join the `proxy` group so whitelisted traffic can egress through

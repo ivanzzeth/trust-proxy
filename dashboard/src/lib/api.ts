@@ -544,6 +544,10 @@ export interface TUNConfig {
   stack: string; // system | gvisor | mixed
   mtu: number; // 0 = auto
   strict_route: boolean;
+  /** Linux: nftables redirect — captures Docker/containerd bridge egress. */
+  auto_redirect?: boolean;
+  /** TUN interface CIDRs; empty = default 198.18.0.1/30 (avoids Docker 172.16/12). */
+  address?: string[];
   exclude_package?: string[];
   include_package?: string[];
   exclude_process?: string[];

@@ -31,7 +31,15 @@ function TUNCard() {
   const { data } = useQuery({ queryKey: ['tun'], queryFn: api.tun });
   const [cfg, setCfg] = useState<TUNConfig | null>(null);
   useEffect(() => {
-    if (data && !cfg) setCfg({ ...data, stack: data.stack || 'gvisor' });
+    if (data && !cfg) {
+      setCfg({
+        ...data,
+        stack: data.stack || 'gvisor',
+        // Missing/undefined must not save as false — that would silently disable
+        // Docker capture on the next Settings save after an older gateway reply.
+        auto_redirect: data.auto_redirect !== false,
+      });
+    }
   }, [data, cfg]);
 
   const save = useMutation({
@@ -80,6 +88,27 @@ function TUNCard() {
             <p className="text-xs text-muted-foreground">{t('settings.tun.strictDesc')}</p>
           </div>
           <Switch id="tun-strict" checked={cfg.strict_route} onCheckedChange={(v) => setCfg({ ...cfg, strict_route: v })} />
+        </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <Label htmlFor="tun-redirect">{t('settings.tun.redirect')}</Label>
+            <p className="text-xs text-muted-foreground">{t('settings.tun.redirectDesc')}</p>
+          </div>
+          <Switch
+            id="tun-redirect"
+            checked={cfg.auto_redirect !== false}
+            onCheckedChange={(v) => setCfg({ ...cfg, auto_redirect: v })}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label>{t('settings.tun.address')}</Label>
+          <p className="text-xs text-muted-foreground">{t('settings.tun.addressDesc')}</p>
+          <Textarea
+            className="min-h-16 w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-xs font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            placeholder={t('settings.tun.addressPh')}
+            value={listToText(cfg.address)}
+            onChange={(e) => setCfg({ ...cfg, address: textToList(e.target.value) })}
+          />
         </div>
         <div className="space-y-1.5">
           <Label>{t('settings.tun.exclude')}</Label>

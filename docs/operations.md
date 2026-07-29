@@ -163,6 +163,16 @@ trust-proxy request ls | approve <id> | deny <id> # 管理员批（Users 页也�
 
 `tun` 入站 + `auto_route` 网络层接管全部出入网流量（木马的裸 socket 也逃不掉）。需 **root**，与其它 TUN 工具（Surge 增强模式等）互斥 → 用于专用网关机 / 软路由。检测与策略逻辑不变（同一 route）。
 
+**Linux + Docker/containerd**：默认开启 `auto_redirect`（nftables），把 bridge 容器出网拉进同一套 Permit/检测——光靠 `auto_route` 经常抓不到 FORWARD 路径上的包。TUN 地址默认 `198.18.0.1/30`（避开 Docker 常用的 `172.16/12`）。可调：
+
+```bash
+trust-proxy tun get
+trust-proxy tun set --auto-redirect=false          # 关掉（例如没有 nft）
+trust-proxy tun set --address 10.255.255.1/30      # 自定义 TUN 网段
+```
+
+macOS 上 `auto_redirect` 会忽略（sing-box 不支持）；Docker Desktop 的容器在 Linux VM 里，**宿主机 TUN 管不到容器 netns**——敏感负载放到 Linux 网关，或显式代理进 `:21584`。
+
 服务是 root，所以 TUN **随时可切**，三种等价方式：
 
 ```bash
@@ -174,5 +184,5 @@ trust-proxy mode set tun                # 运行时切，默认 60s 死亡开关
 
 `can_tun` 由网关自己回答，UI 据此决定要不要给你按。它**不等于**「是不是 root」：Linux 上 setcap 过的非 root 二进制可以，Windows 上没提权的管理员不行。
 
-- **容器**：Docker 加 `--cap-add=NET_ADMIN --device=/dev/net/tun`；Proxmox 非特权 LXC 需宿主放行 `/dev/net/tun`。
+- **把网关本身装进容器跑**：Docker 加 `--cap-add=NET_ADMIN --device=/dev/net/tun`；Proxmox 非特权 LXC 需宿主放行 `/dev/net/tun`。这与「宿主机 TUN 接管本机上的容器出网」是两件事——后者靠上面的 `auto_redirect`。
 - **同一数据目录勿并跑两实例**（`cache.db` 是 bolt，单写锁）。`install` 会先把占着 API 端口的那个停掉再装，并且等它**进程真的退出**——只等端口释放的话，旧网关还在收尾、新服务已经起来，中间那段两个进程共用一个锁。
