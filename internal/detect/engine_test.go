@@ -228,7 +228,7 @@ func TestLargeUpload_NonWhitelistAutoBan(t *testing.T) {
 		bannedDomain, bannedIP, bannedReason = domain, ip, reason
 	})
 
-	ev := e.Track("tcp", "evil.example", "203.0.113.9:443", "x", "", "", "proxy/proxy")
+	ev := e.Track("tcp", "evil.example", "203.0.113.9:443", "x", "frpc", "", "proxy/proxy")
 	ev.Upload = 2048
 	e.finalize(ev)
 	if !ev.Block {
@@ -239,6 +239,9 @@ func TestLargeUpload_NonWhitelistAutoBan(t *testing.T) {
 	}
 	if bannedReason == "" {
 		t.Fatal("expected ban reason")
+	}
+	if !strings.Contains(bannedReason, "process=frpc") || !strings.Contains(bannedReason, "dest=203.0.113.9:443") {
+		t.Fatalf("ban reason must name process+dest for operator visibility, got %q", bannedReason)
 	}
 
 	// Whitelisted destination: alert only.

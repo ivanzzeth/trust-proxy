@@ -2,13 +2,15 @@ package api
 
 import (
 	"encoding/json"
-	"github.com/ivanzzeth/trust-proxy/internal/detect"
-	"github.com/ivanzzeth/trust-proxy/internal/netwatch"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/detectcfg"
+	"github.com/ivanzzeth/trust-proxy/internal/netwatch"
 	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
+	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
@@ -178,6 +180,102 @@ func (s *Server) handleReleaseQuarantine(w http.ResponseWriter, r *http.Request)
 		}
 	}
 	writeArray(w, http.StatusOK, list.Entries)
+}
+
+// handlePermitQuarantine is the false-positive recovery path: release the
+// gateway's own ban AND add the destination to Permit so default-deny doesn't
+// immediately re-block dial-by-IP traffic (frp/SSH to an EIP). Release alone
+// only lifts the L1 floor — without Permit the connection still dies under
+// Strict, which looks identical to "still banned".
+func (s *Server) handlePermitQuarantine(w http.ResponseWriter, r *http.Request) {
+	if s.quar == nil {
+		writeErr(w, http.StatusServiceUnavailable, "quarantine not available")
+		return
+	}
+	if s.wl == nil {
+		writeErr(w, http.StatusServiceUnavailable, "whitelist not available")
+		return
+	}
+	var req struct {
+		Value string `json:"value"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Value) == "" {
+		writeErr(w, http.StatusBadRequest, "value is required")
+		return
+	}
+	value := strings.TrimSpace(req.Value)
+
+	var entry quarantine.Entry
+	found := false
+	for _, e := range s.quar.Get().Entries {
+		if strings.EqualFold(e.Value, value) {
+			entry = e
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, "not quarantined: "+value)
+		return
+	}
+
+	prevWL := s.wl.Get()
+	prevQ := s.quar.Get()
+
+	var (
+		wlRules whitelist.Rules
+		err     error
+	)
+	if entry.IsIP {
+		wlRules, err = s.wl.AddIP(entry.Value)
+	} else {
+		wlRules, err = s.wl.AddDomain(entry.Value)
+	}
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if s.wlApplier != nil {
+		if err := s.wlApplier.SetWhitelist(wlRules); err != nil {
+			_, _ = s.wl.Set(prevWL)
+			writeErr(w, http.StatusBadGateway, "apply whitelist: "+err.Error())
+			return
+		}
+	}
+
+	list, err := s.quar.Release(entry.Value)
+	if err != nil {
+		_, _ = s.wl.Set(prevWL)
+		if s.wlApplier != nil {
+			_ = s.wlApplier.SetWhitelist(prevWL)
+		}
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if s.quarApplier != nil {
+		if err := s.quarApplier.ApplyQuarantine(list); err != nil {
+			_, _ = s.quar.Clear()
+			for _, e := range prevQ.Entries {
+				_, _ = s.quar.Add(nonIP(e), ipOf(e), e.Reason)
+			}
+			_ = s.quarApplier.ApplyQuarantine(prevQ)
+			_, _ = s.wl.Set(prevWL)
+			if s.wlApplier != nil {
+				_ = s.wlApplier.SetWhitelist(prevWL)
+			}
+			writeErr(w, http.StatusBadGateway, "apply quarantine: "+err.Error())
+			return
+		}
+	}
+
+	kind := "domain"
+	if entry.IsIP {
+		kind = "ip"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"quarantine": nonNil(list.Entries),
+		"permitted":  map[string]string{"type": kind, "value": entry.Value},
+	})
 }
 
 func nonIP(e quarantine.Entry) string {

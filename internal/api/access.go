@@ -109,8 +109,9 @@ func routeLevels() map[string]access {
 
 		"GET /api/detection-config": accessAdmin,
 		"PUT /api/detection-config": accessAdmin,
-		"GET /api/quarantine":       accessAdmin,
-		"DELETE /api/quarantine":    accessAdmin,
+		"GET /api/quarantine":          accessAdmin,
+		"DELETE /api/quarantine":       accessAdmin,
+		"POST /api/quarantine/permit":  accessAdmin,
 
 		"GET /api/whitelist":     accessAdmin,
 		"POST /api/whitelist":    accessAdmin,
