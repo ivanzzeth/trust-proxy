@@ -154,27 +154,7 @@ func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.Inboun
 		mixed["set_system_proxy"] = true
 		ins = []map[string]any{mixed}
 	case ModeTUN:
-		stack := tun.Stack
-		if stack == "" {
-			stack = "gvisor"
-		}
-		tunIn := map[string]any{
-			"type": "tun", "tag": "tun-in",
-			"address":      []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"},
-			"auto_route":   true,
-			"strict_route": tun.StrictRoute,
-			"stack":        stack,
-		}
-		if tun.MTU > 0 {
-			tunIn["mtu"] = tun.MTU
-		}
-		if len(tun.ExcludePackage) > 0 {
-			tunIn["exclude_package"] = tun.ExcludePackage
-		}
-		if len(tun.IncludePackage) > 0 {
-			tunIn["include_package"] = tun.IncludePackage
-		}
-		ins = []map[string]any{tunIn, mixed}
+		ins = []map[string]any{buildTUNInbound(tun), mixed}
 		if err := ensureTunExtras(cfg); err != nil {
 			return err
 		}
@@ -187,6 +167,43 @@ func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.Inboun
 	}
 	cfg["inbounds"] = raw
 	return nil
+}
+
+// buildTUNInbound assembles the sing-box tun inbound. On Linux, AutoRedirect
+// (nftables) is what actually pulls Docker/containerd bridge egress into the
+// same Permit/detect path as host processes — plain auto_route alone often
+// misses forwarded packets. Non-Linux builds omit the field (sing-box rejects
+// it there). Address defaults to apitypes.DefaultTUNAddresses so the /30 does
+// not collide with Docker's 172.16/12 pools.
+func buildTUNInbound(tun apitypes.TUNConfig) map[string]any {
+	stack := tun.Stack
+	if stack == "" {
+		stack = "gvisor"
+	}
+	addrs := tun.Address
+	if len(addrs) == 0 {
+		addrs = apitypes.DefaultTUNAddresses
+	}
+	tunIn := map[string]any{
+		"type": "tun", "tag": "tun-in",
+		"address":      append([]string(nil), addrs...),
+		"auto_route":   true,
+		"strict_route": tun.StrictRoute,
+		"stack":        stack,
+	}
+	if tunAutoRedirectEnabled(tun) {
+		tunIn["auto_redirect"] = true
+	}
+	if tun.MTU > 0 {
+		tunIn["mtu"] = tun.MTU
+	}
+	if len(tun.ExcludePackage) > 0 {
+		tunIn["exclude_package"] = tun.ExcludePackage
+	}
+	if len(tun.IncludePackage) > 0 {
+		tunIn["include_package"] = tun.IncludePackage
+	}
+	return tunIn
 }
 
 // ensureTunExtras adds the pieces TUN capture needs that the base client config

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"testing"
 
 	"github.com/sagernet/sing-box/experimental/deprecated"
@@ -502,6 +503,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 		Stack:          "system",
 		MTU:            1400,
 		StrictRoute:    false,
+		AutoRedirect:   true,
 		ExcludePackage: []string{"com.example.app"},
 	}
 	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, quarantine.List{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, nil, nil, "proxy", "", "s", "", t.TempDir())
@@ -522,6 +524,13 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 	if tunIn["mtu"] != float64(1400) {
 		t.Fatalf("mtu=%v want 1400", tunIn["mtu"])
 	}
+	addrs, _ := tunIn["address"].([]any)
+	if len(addrs) < 1 || addrs[0] != apitypes.DefaultTUNAddresses[0] {
+		t.Fatalf("default address=%v want %v", addrs, apitypes.DefaultTUNAddresses)
+	}
+	if _, has := tunIn["auto_redirect"]; has != (runtime.GOOS == "linux") {
+		t.Fatalf("auto_redirect present=%v on GOOS=%s", has, runtime.GOOS)
+	}
 	ep, ok := tunIn["exclude_package"].([]any)
 	if !ok || len(ep) != 1 || ep[0] != "com.example.app" {
 		t.Fatalf("exclude_package=%v want [com.example.app]", tunIn["exclude_package"])
@@ -536,6 +545,36 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 	_ = json.Unmarshal(cfg2["inbounds"], &ins2)
 	if _, present := ins2[0]["mtu"]; present {
 		t.Fatal("mtu should be omitted when 0 (auto)")
+	}
+	if _, present := ins2[0]["auto_redirect"]; present {
+		t.Fatal("auto_redirect must be omitted when AutoRedirect is false")
+	}
+}
+
+// Custom Address must win over DefaultTUNAddresses, and turning AutoRedirect
+// off must keep the field out of the inbound even on Linux — otherwise an
+// operator who disabled nft redirect cannot recover without editing JSON by hand.
+func TestApplyMode_TUNCustomAddressAndRedirectOff(t *testing.T) {
+	tun := apitypes.TUNConfig{
+		Stack:        "gvisor",
+		StrictRoute:  true,
+		AutoRedirect: false,
+		Address:      []string{"10.255.255.1/30"},
+	}
+	merged, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, quarantine.List{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, tun, nil, nil, "proxy", "", "s", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg map[string]json.RawMessage
+	_ = json.Unmarshal(merged, &cfg)
+	var ins []map[string]any
+	_ = json.Unmarshal(cfg["inbounds"], &ins)
+	addrs, _ := ins[0]["address"].([]any)
+	if len(addrs) != 1 || addrs[0] != "10.255.255.1/30" {
+		t.Fatalf("address=%v want [10.255.255.1/30]", addrs)
+	}
+	if _, present := ins[0]["auto_redirect"]; present {
+		t.Fatal("auto_redirect present despite AutoRedirect=false")
 	}
 }
 

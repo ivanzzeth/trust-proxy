@@ -29,9 +29,18 @@ function TUNCard() {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const { data } = useQuery({ queryKey: ['tun'], queryFn: api.tun });
+  const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status });
   const [cfg, setCfg] = useState<TUNConfig | null>(null);
   useEffect(() => {
-    if (data && !cfg) setCfg({ ...data, stack: data.stack || 'gvisor' });
+    if (data && !cfg) {
+      setCfg({
+        ...data,
+        stack: data.stack || 'gvisor',
+        // Missing/undefined must not save as false — that would silently disable
+        // Docker capture on the next Settings save after an older gateway reply.
+        auto_redirect: data.auto_redirect !== false,
+      });
+    }
   }, [data, cfg]);
 
   const save = useMutation({
@@ -43,6 +52,19 @@ function TUNCard() {
     },
     onError: (e) => toast.error(String((e as Error).message)),
   });
+
+  const installNft = useMutation({
+    mutationFn: () => api.installNftables(true),
+    onSuccess: () => {
+      toast.success(t('settings.tun.redirectNftInstalled'));
+      qc.invalidateQueries({ queryKey: ['status'] });
+    },
+    onError: (e) => toast.error(String((e as Error).message)),
+  });
+
+  const wantsRedirect = cfg ? cfg.auto_redirect !== false : false;
+  const nft = st?.nftables;
+  const nftMissing = wantsRedirect && nft && (!nft.supported || !nft.usable);
 
   if (!cfg) return null;
 
@@ -80,6 +102,42 @@ function TUNCard() {
             <p className="text-xs text-muted-foreground">{t('settings.tun.strictDesc')}</p>
           </div>
           <Switch id="tun-strict" checked={cfg.strict_route} onCheckedChange={(v) => setCfg({ ...cfg, strict_route: v })} />
+        </div>
+        <div className="flex items-center justify-between">
+          <div>
+            <Label htmlFor="tun-redirect">{t('settings.tun.redirect')}</Label>
+            <p className="text-xs text-muted-foreground">{t('settings.tun.redirectDesc')}</p>
+          </div>
+          <Switch
+            id="tun-redirect"
+            checked={cfg.auto_redirect !== false}
+            onCheckedChange={(v) => setCfg({ ...cfg, auto_redirect: v })}
+          />
+        </div>
+        {nftMissing && (
+          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive space-y-1">
+            <div className="font-medium">{t('settings.tun.redirectNftMissingTitle')}</div>
+            <div className="text-xs leading-relaxed">
+              {t('settings.tun.redirectNftMissingBody', { cmd: nft?.suggested_install_cmd ?? '' })}
+            </div>
+            {nft?.auto_install_supported && (
+              <div className="flex items-center justify-end">
+                <Button variant="secondary" size="sm" disabled={installNft.isPending} onClick={() => installNft.mutate()}>
+                  {t('settings.tun.redirectNftInstall')}
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
+        <div className="space-y-1.5">
+          <Label>{t('settings.tun.address')}</Label>
+          <p className="text-xs text-muted-foreground">{t('settings.tun.addressDesc')}</p>
+          <Textarea
+            className="min-h-16 w-full rounded-md border border-input bg-transparent px-2 py-1.5 text-xs font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            placeholder={t('settings.tun.addressPh')}
+            value={listToText(cfg.address)}
+            onChange={(e) => setCfg({ ...cfg, address: textToList(e.target.value) })}
+          />
         </div>
         <div className="space-y-1.5">
           <Label>{t('settings.tun.exclude')}</Label>

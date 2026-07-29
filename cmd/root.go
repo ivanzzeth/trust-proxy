@@ -41,7 +41,7 @@ func init() {
 	// gateway is running at all.
 	local := []*cobra.Command{
 		newInstallCmd(false), newUninstallCmd(false),
-		serveCmd, connCmd, proxyCmd, serviceCmd, selftestCmd, versionCmd,
+		serveCmd, connCmd, proxyCmd, serviceCmd, selftestCmd, doctorCmd, versionCmd,
 	}
 	rootCmd.AddCommand(append(clients, local...)...)
 	versionCmd.Flags().BoolVar(&jsonOut, "json", false, "print the raw JSON response instead of a table")

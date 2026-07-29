@@ -66,6 +66,15 @@ export interface Status {
    *  or Windows elevated with wintun present. Not the same as `root`. */
   can_tun?: boolean;
   os?: string; // runtime.GOOS: darwin | linux | windows
+  nftables?: {
+    supported?: boolean;
+    has_nft_binary?: boolean;
+    usable?: boolean;
+    auto_install_supported?: boolean;
+    suggested_install_cmd?: string;
+    suggested_packages?: string[];
+    errors?: string[];
+  };
   threats: { domains: number; ips: number };
   revert?: { to: string; in_seconds: number };
 }
@@ -544,6 +553,10 @@ export interface TUNConfig {
   stack: string; // system | gvisor | mixed
   mtu: number; // 0 = auto
   strict_route: boolean;
+  /** Linux: nftables redirect — captures Docker/containerd bridge egress. */
+  auto_redirect?: boolean;
+  /** TUN interface CIDRs; empty = default 198.18.0.1/30 (avoids Docker 172.16/12). */
+  address?: string[];
   exclude_package?: string[];
   include_package?: string[];
   exclude_process?: string[];
@@ -567,6 +580,7 @@ export interface ProxyGenResult {
 
 export const api = {
   status: () => get<Status>('/status'),
+  installNftables: (yes: boolean) => post('/doctor/nftables/install', { yes } as unknown),
   setMode: (mode: string, guardSeconds?: number) =>
     post<{ mode: string }>('/mode', { mode, guard_seconds: guardSeconds }),
   confirmMode: () => post<{ ok: boolean }>('/mode/confirm'),

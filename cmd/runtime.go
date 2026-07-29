@@ -412,7 +412,13 @@ var tunGetCmd = &cobra.Command{
 			return err
 		}
 		return out(t, func() {
-			fmt.Printf("stack: %s   mtu: %d   strict_route: %v\n", dash(t.Stack), t.MTU, t.StrictRoute)
+			fmt.Printf("stack: %s   mtu: %d   strict_route: %v   auto_redirect: %v\n",
+				dash(t.Stack), t.MTU, t.StrictRoute, t.AutoRedirect)
+			if len(t.Address) > 0 {
+				fmt.Printf("address: %v\n", t.Address)
+			} else {
+				fmt.Printf("address: %v (default)\n", apitypes.DefaultTUNAddresses)
+			}
 			if len(t.ExcludeProcess) > 0 {
 				fmt.Printf("exclude_process: %v\n", t.ExcludeProcess)
 			}
@@ -421,10 +427,12 @@ var tunGetCmd = &cobra.Command{
 }
 
 var (
-	tunFile   string
-	tunStack  string
-	tunMTU    int
-	tunStrict bool
+	tunFile         string
+	tunStack        string
+	tunMTU          int
+	tunStrict       bool
+	tunAutoRedirect bool
+	tunAddress      []string
 )
 
 var tunSetCmd = &cobra.Command{
@@ -451,6 +459,12 @@ var tunSetCmd = &cobra.Command{
 			}
 			if cmd.Flags().Changed("strict-route") {
 				cfg.StrictRoute = tunStrict
+			}
+			if cmd.Flags().Changed("auto-redirect") {
+				cfg.AutoRedirect = tunAutoRedirect
+			}
+			if cmd.Flags().Changed("address") {
+				cfg.Address = append([]string(nil), tunAddress...)
 			}
 		}
 		res, err := c.SetTUN(cfg)
@@ -667,6 +681,8 @@ func init() {
 	tunSetCmd.Flags().StringVar(&tunStack, "stack", "", "system|gvisor|mixed")
 	tunSetCmd.Flags().IntVar(&tunMTU, "mtu", 0, "MTU (0 = auto)")
 	tunSetCmd.Flags().BoolVar(&tunStrict, "strict-route", true, "strict route")
+	tunSetCmd.Flags().BoolVar(&tunAutoRedirect, "auto-redirect", true, "Linux: nftables redirect so Docker/containerd bridge egress hits the same Permit/detect path (no-op on macOS/Windows)")
+	tunSetCmd.Flags().StringSliceVar(&tunAddress, "address", nil, "TUN interface CIDRs (empty = default 198.18.0.1/30 + ULA; avoids Docker 172.16/12)")
 	groupsSetCmd.Flags().StringVarP(&groupsFile, "file", "f", "", "JSON document (- for stdin)")
 	endpointsAddCmd.Flags().StringVarP(&endpointsFile, "file", "f", "", "JSON endpoint document (- for stdin)")
 	endpointsToggleCmd.Flags().BoolVar(&customEnable, "enabled", true, "target state")

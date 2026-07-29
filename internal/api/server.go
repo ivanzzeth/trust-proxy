@@ -23,6 +23,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/detectcfg"
 	"github.com/ivanzzeth/trust-proxy/internal/directlist"
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
+	"github.com/ivanzzeth/trust-proxy/internal/doctor"
 	"github.com/ivanzzeth/trust-proxy/internal/endpoints"
 	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
@@ -294,6 +295,7 @@ func NewServer(o Options) *Server {
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.route(mux, "GET /api/health", s.handleHealth)
 	s.route(mux, "GET /api/status", s.handleStatus)
+	s.route(mux, "POST /api/doctor/nftables/install", s.handleInstallNftables)
 	s.route(mux, "GET /api/mode", s.handleGetMode)
 	s.route(mux, "POST /api/mode", s.handleSetMode)
 	s.route(mux, "GET /api/posture", s.handleGetPosture)
@@ -480,6 +482,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		"privileged": paths.Privileged(),
 		"can_tun":    paths.CanTUN(),
 	}
+	// Dependency status for "optional but recommended" capture features, e.g.
+	// Linux TUN auto_redirect (nftables redirect).
+	st["nftables"] = doctor.DetectNftables(r.Context(), paths.Privileged())
 	if s.mode != nil {
 		st["mode"] = s.mode.Mode()
 		if to, left, ok := s.mode.PendingRevert(); ok {
