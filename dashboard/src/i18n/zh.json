@@ -76,38 +76,6 @@
     "exitPick": "选择出口",
     "exitSwitched": "流量现在经 {{name}} 出网"
   },
-  "settings": {
-    "pageDesc": "网关配置。",
-    "language": "语言",
-    "languageDesc": "控制台显示语言。默认跟随系统语言；在此选择会保存在本浏览器。",
-    "tun": {
-      "title": "TUN 高级选项",
-      "desc": "TUN 捕获模式（接管全设备流量的 VPN）的高级调优。仅在捕获模式为 TUN 时生效；Manual/System 下忽略。",
-      "stack": "网络栈",
-      "stackDesc": "gvisor=用户态，安全通用 · system=更快，需权限 · mixed。",
-      "mtu": "MTU",
-      "mtuPh": "0 = 自动",
-      "strict": "严格路由",
-      "strictDesc": "强制所有包走 TUN（推荐——防泄漏）。",
-      "redirect": "自动重定向（Linux）",
-      "redirectDesc": "用 nftables 把 Docker/containerd bridge 容器出网拉进同一套 Permit/检测。macOS/Windows 无效。需要 nft。",
-      "address": "TUN 地址",
-      "addressPh": "每行一个 CIDR — 留空 = 198.18.0.1/30（避开 Docker）",
-      "addressDesc": "TUN 设备接口地址。留空使用默认值，位于 Docker 常用的 172.16/12 之外。",
-      "redirectNftMissingTitle": "缺少 nftables（auto-redirect 依赖）",
-      "redirectNftMissingBody": "Linux TUN 的 auto-redirect 需要 nftables。{cmd}（需要 root/admin）。如果自动安装不可用，请手动安装 nftables。",
-      "redirectNftInstall": "一键安装 nftables",
-      "redirectNftInstalled": "nftables 安装完成 — 可在状态/日志里验证",
-      "exclude": "排除应用",
-      "excludePh": "每行一个——绕过 TUN 走直连",
-      "excludeDesc": "这些应用绕过 TUN 直连（Android 包名）。",
-      "include": "仅包含",
-      "includePh": "每行一个——只有这些进入 TUN",
-      "includeDesc": "若填写，则仅捕获这些应用（与“排除”互斥）。",
-      "save": "保存",
-      "toast": "TUN 选项已保存"
-    }
-  },
   "common": {
     "empty": "空",
     "loading": "加载中…",

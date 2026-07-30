@@ -548,6 +548,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if s.quar != nil {
 		st["quarantine"] = len(s.quar.Get().Entries)
 	}
+	// Which build is running and where its files are. Admin-only, and for the
+	// same reason /api/health is loopback-only: an exact version handed to
+	// whoever can reach the port is free targeting information, and this is a
+	// security gateway. A client has no use for either — the console shows them
+	// under Settings → System, which a client cannot open anyway.
+	if u := s.caller(r); u != nil && u.Role == users.RoleAdmin {
+		st["version"] = s.version
+		st["data_dir"] = s.dataDir
+	}
 	writeJSON(w, http.StatusOK, st)
 }
 

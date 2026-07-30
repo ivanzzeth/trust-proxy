@@ -76,38 +76,6 @@
     "exitPick": "pick an exit",
     "exitSwitched": "Traffic now leaves via {{name}}"
   },
-  "settings": {
-    "pageDesc": "Gateway configuration.",
-    "language": "Language",
-    "languageDesc": "Console display language. Defaults to your system language; a choice here is saved in this browser.",
-    "tun": {
-      "title": "TUN options",
-      "desc": "Advanced tuning for TUN capture mode (full-device VPN that captures ALL traffic). Only applies when the capture mode is TUN; ignored in Manual/System.",
-      "stack": "Network stack",
-      "stackDesc": "gvisor = userspace, safe & portable · system = faster, needs privileges · mixed.",
-      "mtu": "MTU",
-      "mtuPh": "0 = auto",
-      "strict": "Strict route",
-      "strictDesc": "Force every packet through the TUN (recommended — prevents leaks).",
-      "redirect": "Auto redirect (Linux)",
-      "redirectDesc": "nftables redirect so Docker/containerd bridge containers hit the same Permit/detect path. No-op on macOS/Windows. Needs nft.",
-      "address": "TUN addresses",
-      "addressPh": "one CIDR per line — empty = 198.18.0.1/30 (avoids Docker)",
-      "addressDesc": "Interface CIDRs for the TUN device. Leave empty for the default outside Docker’s 172.16/12 range.",
-      "redirectNftMissingTitle": "Missing nftables for auto-redirect",
-      "redirectNftMissingBody": "Linux TUN auto-redirect needs nftables. {cmd} (run as root/admin). If auto-install is not available, install nftables manually.",
-      "redirectNftInstall": "Install nftables",
-      "redirectNftInstalled": "nftables installation finished — verify in log/status",
-      "exclude": "Exclude apps",
-      "excludePh": "one per line — routed AROUND the TUN",
-      "excludeDesc": "These apps bypass the TUN and go direct (Android package names).",
-      "include": "Include only",
-      "includePh": "one per line — ONLY these go INTO the TUN",
-      "includeDesc": "If set, ONLY these apps are captured (mutually exclusive with Exclude).",
-      "save": "Save",
-      "toast": "TUN options saved"
-    }
-  },
   "common": {
     "empty": "empty",
     "loading": "Loading…",

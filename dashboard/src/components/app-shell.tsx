@@ -12,7 +12,6 @@ import {
   History as HistoryIcon,
   Layers,
   ListTree,
-  Loader2,
   Menu,
   Moon,
   Radar,
@@ -33,17 +32,16 @@ import { useLocation } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
 import { api, currentNode, setNode } from '@/lib/api';
-import { inDesktopApp, installServiceViaApp } from '@/lib/desktop';
 import { cn, fmtBytes, fmtRate } from '@/lib/utils';
 import { useTrafficRate } from '@/hooks/use-traffic-rate';
 import { Logo } from '@/components/logo';
 import { ExitSwitcher } from '@/components/exit-switcher';
+// The four policy switches live in one shared module so the header and the
+// Settings page mount the same component instead of two copies that drift.
+import { AutoBlock, ModeSwitcher, PostureSwitcher, RoutingSwitcher } from '@/components/switchers';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 // Grouped by the user's mental model: what am I watching / what's my policy /
 // where does traffic exit / system.
@@ -101,8 +99,6 @@ const NAV_SECTIONS: { key: string; items: NavItem[] }[] = [
   },
 ];
 
-const MODE_LABEL: Record<string, string> = { manual: 'Manual', system: 'System', tun: 'TUN' };
-
 // A client sees the observability pages and nothing else: policy, nodes, users and
 // the fleet are an administrator's. The API refuses them anyway — hiding them keeps
 // the console from offering doors that do not open.
@@ -146,285 +142,6 @@ function useTheme() {
     document.documentElement.classList.toggle('dark', dark);
   }, [dark]);
   return { dark, toggle: () => setDark((d) => !d) };
-}
-
-function ModeSwitcher() {
-  const { t } = useTranslation();
-  const qc = useQueryClient();
-  const [help, setHelp] = useState<{ error?: string } | null>(null);
-  const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status, refetchInterval: 5000 });
-  const m = useMutation({
-    // TUN / system capture can sever remote access — arm a 60s dead-man's switch
-    // (auto-reverts unless confirmed). manual is safe, no guard.
-    mutationFn: (mode: string) => api.setMode(mode, mode === 'manual' ? undefined : 60),
-    onSuccess: () => {
-      setHelp(null);
-      qc.invalidateQueries({ queryKey: ['status'] });
-    },
-    onError: (e, mode) => {
-      // A TUN failure is a privilege problem → show the guidance dialog, not a
-      // scary toast. The gateway has already reverted, so we're still up.
-      if (mode === 'tun') setHelp({ error: String((e as Error).message) });
-      else toast.error(String((e as Error).message));
-    },
-  });
-  if (!st) return null;
-
-  const clickMode = (mode: string) => {
-    // A TUN switch that cannot work fails *after* the gateway has started
-    // reconfiguring the network, so guide first. "Can it work" is not the same
-    // question as "are we root" (a setcap'd Linux binary can; an elevated
-    // Windows process without wintun cannot), so the gateway answers it.
-    if (mode === 'tun' && !canTun(st)) {
-      setHelp({});
-      return;
-    }
-    m.mutate(mode);
-  };
-
-  return (
-    <TooltipProvider delayDuration={200}>
-      <div className="flex items-center gap-1 rounded-lg border bg-card p-0.5">
-        <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{t('top.capture')}</span>
-        {st.modes.map((mode) => {
-          const active = mode === st.mode;
-          const needRoot = mode === 'tun' && !canTun(st);
-          return (
-            <Tooltip key={mode}>
-              <TooltipTrigger asChild>
-                <button
-                  disabled={m.isPending}
-                  onClick={() => clickMode(mode)}
-                  className={cn(
-                    'rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer',
-                    active ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground',
-                  )}
-                >
-                  {MODE_LABEL[mode] ?? mode}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>{needRoot ? t('top.tunNeedsRoot') : t('top.captureMode', { mode })}</TooltipContent>
-            </Tooltip>
-          );
-        })}
-      </div>
-      <TunHelpDialog
-        open={help !== null}
-        os={st.os}
-        error={help?.error}
-        pending={m.isPending}
-        onTry={() => m.mutate('tun')}
-        onClose={() => setHelp(null)}
-      />
-    </TooltipProvider>
-  );
-}
-
-// Older gateways only reported `root`; treat that as the answer when the
-// capability flag is absent rather than declaring TUN impossible.
-function canTun(st: { root: boolean; can_tun?: boolean }) {
-  return st.can_tun ?? st.root;
-}
-
-// TunHelpDialog explains why TUN needs elevated privileges and how to grant
-// them, per OS. Shown before a doomed non-root switch, or after a TUN failure.
-function TunHelpDialog({
-  open,
-  os,
-  error,
-  pending,
-  onTry,
-  onClose,
-}: {
-  open: boolean;
-  os?: string;
-  error?: string;
-  pending: boolean;
-  onTry: () => void;
-  onClose: () => void;
-}) {
-  const { t } = useTranslation();
-  // Inside the desktop app there is a button for this, so the shell-command
-  // instructions below are the fallback for a browser, not the main event.
-  const desktop = inDesktopApp();
-  const [elevating, setElevating] = useState(false);
-  const elevate = async () => {
-    setElevating(true);
-    try {
-      await installServiceViaApp('tun');
-      toast.success(t('top.tunHelp.elevated'));
-      // The service now owns the gateway; the shell has re-attached to it, and a
-      // reload picks up the new /api/status (root, can_tun, mode).
-      setTimeout(() => window.location.reload(), 1200);
-    } catch (e) {
-      toast.error(String((e as Error).message));
-      setElevating(false);
-    }
-  };
-  const steps =
-    os === 'darwin'
-      ? [t('top.tunHelp.mac')]
-      : os === 'linux'
-        ? [t('top.tunHelp.linuxSudo'), t('top.tunHelp.linuxSetcap')]
-        : os === 'windows'
-          ? [t('top.tunHelp.win')]
-          : [t('top.tunHelp.mac'), t('top.tunHelp.linuxSetcap')];
-  return (
-    <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>{t('top.tunHelp.title')}</DialogTitle>
-          <DialogDescription>{t('top.tunHelp.intro')}</DialogDescription>
-        </DialogHeader>
-        {error && (
-          <div className="rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-            {error}
-          </div>
-        )}
-        {desktop ? (
-          <div className="space-y-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2.5">
-            <div className="text-sm font-medium">{t('top.tunHelp.appTitle')}</div>
-            <p className="text-xs text-muted-foreground">{t('top.tunHelp.appBody')}</p>
-          </div>
-        ) : (
-          <ul className="space-y-2 text-sm">
-            {steps.map((s, i) => (
-              <li key={i} className="rounded-md bg-muted/60 px-3 py-2 font-mono text-xs leading-relaxed">
-                {s}
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="text-xs text-muted-foreground">{t('top.tunHelp.guard')}</p>
-        <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>
-            {t('top.tunHelp.cancel')}
-          </Button>
-          {desktop ? (
-            <Button disabled={elevating} onClick={elevate}>
-              {elevating ? <Loader2 className="size-4 animate-spin" /> : <ShieldCheck className="size-4" />}{' '}
-              {t('top.tunHelp.appAction')}
-            </Button>
-          ) : (
-            <Button variant="secondary" disabled={pending} onClick={onTry}>
-              {t('top.tunHelp.tryAnyway')}
-            </Button>
-          )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// PostureSwitcher toggles Strict (default-deny) ↔ Split (default-allow; L4 routes still apply).
-// Dual-slot policy: each side keeps its own ACL/packs/DNS/etc.
-function PostureSwitcher() {
-  const { t } = useTranslation();
-  const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ['posture'], queryFn: api.posture, refetchInterval: 5000 });
-  const m = useMutation({
-    mutationFn: (active: string) => api.setPosture(active),
-    onSuccess: (res) => {
-      qc.clear();
-      if (res.forced_clash_rule) toast.message(t('top.postureForcedRule'));
-    },
-    onError: (e) => toast.error(String((e as Error).message)),
-  });
-  if (!data) return null;
-  const cur = data.active;
-  return (
-    <TooltipProvider delayDuration={200}>
-      <div className="flex items-center gap-1 rounded-lg border bg-card p-0.5">
-        <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{t('top.posture')}</span>
-        {(['strict', 'split'] as const).map((mode) => {
-          const active = mode === cur;
-          const isSplit = mode === 'split';
-          return (
-            <Tooltip key={mode}>
-              <TooltipTrigger asChild>
-                <button
-                  disabled={m.isPending}
-                  onClick={() => m.mutate(mode)}
-                  className={cn(
-                    'rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer',
-                    active
-                      ? isSplit
-                        ? 'bg-sky-600 text-white shadow-sm'
-                        : 'bg-primary text-primary-foreground shadow-sm'
-                      : 'text-muted-foreground hover:text-foreground',
-                  )}
-                >
-                  {t(`top.posture${mode === 'strict' ? 'Strict' : 'Split'}`)}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent className="max-w-xs">
-                {isSplit ? t('top.postureSplitTip') : t('top.postureStrictTip')}
-              </TooltipContent>
-            </Tooltip>
-          );
-        })}
-      </div>
-    </TooltipProvider>
-  );
-}
-
-// RoutingSwitcher toggles the live Clash routing mode: Rule (whitelist
-// default-deny, the safe default) <-> Global (default-deny OFF, unlisted traffic
-// egresses via proxy; security floor stays on). Global is styled amber as a
-// standing warning. Disabled while Split posture is active (Global fights CN-direct).
-function RoutingSwitcher() {
-  const { t } = useTranslation();
-  const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ['clash-mode'], queryFn: api.clashMode, refetchInterval: 5000 });
-  const { data: posture } = useQuery({ queryKey: ['posture'], queryFn: api.posture, refetchInterval: 5000 });
-  const split = posture?.active === 'split';
-  const m = useMutation({
-    mutationFn: (mode: string) => api.setClashMode(mode),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['clash-mode'] }),
-    onError: (e) => toast.error(String((e as Error).message)),
-  });
-  if (!data) return null;
-  const cur = data.mode?.toLowerCase();
-  return (
-    <TooltipProvider delayDuration={200}>
-      <div className="flex items-center gap-1 rounded-lg border bg-card p-0.5">
-        <span className="px-1.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{t('top.routing')}</span>
-        {data.modes.map((mode) => {
-          const active = mode.toLowerCase() === cur;
-          const isGlobal = mode.toLowerCase() === 'global';
-          const disabled = m.isPending || (split && isGlobal);
-          return (
-            <Tooltip key={mode}>
-              <TooltipTrigger asChild>
-                <button
-                  disabled={disabled}
-                  onClick={() => m.mutate(mode)}
-                  className={cn(
-                    'rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer',
-                    active
-                      ? isGlobal
-                        ? 'bg-amber-500 text-white shadow-sm'
-                        : 'bg-primary text-primary-foreground shadow-sm'
-                      : 'text-muted-foreground hover:text-foreground',
-                    disabled && !active && 'opacity-40 cursor-not-allowed',
-                  )}
-                >
-                  {mode}
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {split && isGlobal
-                  ? t('top.routingGlobalDisabledSplit')
-                  : isGlobal
-                    ? t('top.routingGlobalTip')
-                    : t('top.routingRuleTip')}
-              </TooltipContent>
-            </Tooltip>
-          );
-        })}
-      </div>
-    </TooltipProvider>
-  );
 }
 
 // GlobalModeBanner is a standing amber warning shown whenever routing is in
@@ -474,32 +191,6 @@ function SplitModeBanner() {
       <Globe className="size-4 shrink-0 text-sky-600" />
       <span>{t('top.splitBanner')}</span>
     </div>
-  );
-}
-
-function AutoBlock() {
-  const { t } = useTranslation();
-  const qc = useQueryClient();
-  const { data: st } = useQuery({ queryKey: ['status'], queryFn: api.status });
-  const m = useMutation({
-    mutationFn: api.setAutoBlock,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['status'] }),
-  });
-  if (!st) return null;
-  return (
-    <TooltipProvider delayDuration={200}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer select-none">
-            <Switch checked={st.autoBlock} onCheckedChange={(v) => m.mutate(v)} />
-            {t('top.autoBlock')}
-          </label>
-        </TooltipTrigger>
-        <TooltipContent className="max-w-xs">
-          {t('top.autoBlockTip', { domains: st.threats.domains, ips: st.threats.ips })}
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
   );
 }
 

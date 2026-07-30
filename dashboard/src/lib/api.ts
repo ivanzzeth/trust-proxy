@@ -79,6 +79,10 @@ export interface Status {
   /** Destinations the gateway blocked by itself (exfil / threat-intel). */
   quarantine?: number;
   revert?: { to: string; in_seconds: number };
+  /** Admin-only: which build is running, and where its files live. Absent for
+   *  a client — an exact version is targeting information. */
+  version?: string;
+  data_dir?: string;
 }
 export interface Whitelist {
   domains: string[];
@@ -641,6 +645,51 @@ export interface TUNConfig {
   include_package?: string[];
 }
 
+// Where the proxy inbound listens. Both halves are optional: blank means "use
+// the built-in default", so leaving a field empty keeps following the default
+// rather than freezing today's value into the store.
+export interface InboundListen {
+  listen?: string;
+  port?: number;
+}
+
+// GET/PUT /api/inbound. `listen` is what the operator chose, `resolved` is what
+// the gateway is actually using — an editor needs the first, a display the
+// second, and collapsing them would make every blank field look configured.
+export interface InboundListenState {
+  listen: InboundListen;
+  resolved: InboundListen;
+  /** Present while a guarded change is waiting to be confirmed. */
+  revert?: { to: InboundListen; in_seconds: number };
+}
+
+// Log and history rotation. Both are lumberjack policies; 0 means "use the
+// default" and -1 (log only) means "never rotate".
+export interface RetentionRule {
+  max_size_mb?: number;
+  max_backups?: number;
+  max_age_days?: number;
+  /** Tri-state on purpose: absent = default (on). Sending `false` is a choice. */
+  compress?: boolean;
+}
+export interface Retention {
+  log: RetentionRule;
+  history: RetentionRule;
+}
+
+// Every domain's built-in defaults, straight from the packages that own them.
+// The console never computes these itself: a second copy of a default is a
+// second source of truth, and it drifts the moment one side changes.
+export interface Defaults {
+  tun: TUNConfig;
+  dns: DNSConfig;
+  detection: DetectionConfig;
+  retention: Retention;
+  inbound: InboundListen;
+  failover: ProxyFailover;
+  scoring: ProxyScoring;
+}
+
 export interface ProxyGenRequest {
   type: string;
   server: string;
@@ -803,6 +852,20 @@ export const api = {
 
   tun: () => get<TUNConfig>('/tun'),
   setTUN: (c: TUNConfig) => put<TUNConfig>('/tun', c),
+
+  inbound: () => get<InboundListenState>('/inbound'),
+  // guardSeconds arms the dead-man's switch: moving the listen point strands
+  // every client pointed at the old one, so the gateway reverts unless the
+  // console confirms from the new address. Omitted, not zeroed, when unguarded —
+  // an absent field and a 0 are different requests to the handler.
+  setInbound: (l: InboundListen, guardSeconds?: number) =>
+    put<InboundListenState>('/inbound', guardSeconds ? { ...l, guard_seconds: guardSeconds } : l),
+  confirmInbound: () => post<InboundListenState>('/inbound/confirm'),
+
+  retention: () => get<Retention>('/retention'),
+  setRetention: (r: Retention) => put<Retention>('/retention', r),
+
+  defaults: () => get<Defaults>('/defaults'),
 
   endpoints: () => get<Endpoint[]>('/endpoints'),
   addEndpoint: (body: Record<string, unknown>) => post<{ tag: string }>('/endpoints', body),
