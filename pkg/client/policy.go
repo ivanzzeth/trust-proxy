@@ -418,6 +418,22 @@ func (c *Client) SetProxyGroupsConfig(cfg apitypes.ProxyGroupsConfig) (apitypes.
 	return out, err
 }
 
+// ProxyScores returns the live per-member scoring view, together with the
+// policy in force and the formula rendered with those weights — everything
+// needed to explain a ranking without re-deriving it client-side.
+func (c *Client) ProxyScores() (apitypes.ProxyScores, error) {
+	var out apitypes.ProxyScores
+	err := c.do(http.MethodGet, "/api/proxy-scores", nil, &out)
+	return out, err
+}
+
+// ResetProxyScores discards every observation, putting all members back into
+// warm-up. For "I changed provider / moved network and these numbers describe
+// a different path".
+func (c *Client) ResetProxyScores() error {
+	return c.do(http.MethodPost, "/api/proxy-scores/reset", nil, nil)
+}
+
 // Endpoints lists WireGuard/Tailscale exits.
 func (c *Client) Endpoints() ([]apitypes.Endpoint, error) {
 	var out []apitypes.Endpoint

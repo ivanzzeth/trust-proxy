@@ -441,3 +441,61 @@ func TestPermitQuarantine(t *testing.T) {
 		t.Fatalf("result = %+v", res)
 	}
 }
+
+// The scoring view has to survive the wire intact — the CLI and console both
+// render "why is this node ranked here" straight from it, so a field lost in
+// the SDK's struct tags shows up as a blank column nobody can explain.
+func TestProxyScoresSDK(t *testing.T) {
+	c, seen := fakeAPI(t, `{"scores":[{"tag":"jp-01","score":72.5,"reliability":80,"latency_score":65,
+		"throughput_score":70,"samples":4,"min_samples":10,"warming":true,"fail_streak":2,
+		"latency_ms":180,"breaker":"open","breaker_remaining_seconds":12,"preferred":false}],
+		"config":{"min_samples":10,"weight_latency":30},"formula":"score = (50×reliability …) / 100","enabled":true}`)
+	out, err := c.ProxyScores()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := last(t, seen); got.method != http.MethodGet || got.path != "/api/proxy-scores" {
+		t.Fatalf("%s %s", got.method, got.path)
+	}
+	if len(out.Scores) != 1 {
+		t.Fatalf("scores = %+v", out.Scores)
+	}
+	s := out.Scores[0]
+	if s.Tag != "jp-01" || s.Score != 72.5 || s.Samples != 4 || s.MinSamples != 10 || !s.Warming ||
+		s.FailStreak != 2 || s.LatencyMS != 180 || s.Breaker != "open" || s.BreakerRemaining != 12 || s.Preferred {
+		t.Fatalf("score decoded lossily: %+v", s)
+	}
+	if out.Formula == "" || !out.Enabled || out.Config.MinSamples != 10 {
+		t.Fatalf("explanation lost: formula=%q enabled=%v config=%+v", out.Formula, out.Enabled, out.Config)
+	}
+}
+
+func TestResetProxyScoresSDK(t *testing.T) {
+	c, seen := fakeAPI(t, `{"ok":true}`)
+	if err := c.ResetProxyScores(); err != nil {
+		t.Fatal(err)
+	}
+	if got := last(t, seen); got.method != http.MethodPost || got.path != "/api/proxy-scores/reset" {
+		t.Fatalf("%s %s", got.method, got.path)
+	}
+}
+
+// Scoring rides the proxygroups document, so a patch that reads-modifies-writes
+// must not drop it — that would silently reset the user's tuning on any
+// unrelated group edit.
+func TestProxyGroupsConfigCarriesScoring(t *testing.T) {
+	c, seen := fakeAPI(t, `{"auto_country":true,"scoring":{"min_samples":25,"weight_latency":70}}`)
+	cfg, err := c.ProxyGroupsConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Scoring.MinSamples != 25 || cfg.Scoring.WeightLatency != 70 {
+		t.Fatalf("scoring lost on read: %+v", cfg.Scoring)
+	}
+	if _, err := c.SetProxyGroupsConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if body := last(t, seen).body; !strings.Contains(body, `"min_samples":25`) {
+		t.Fatalf("scoring lost on write: %s", body)
+	}
+}
