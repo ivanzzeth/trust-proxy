@@ -727,6 +727,292 @@ var proxiesDelayCmd = &cobra.Command{
 	},
 }
 
+// ---- proxy scores --------------------------------------------------------
+
+var proxiesScoresCmd = &cobra.Command{
+	Use:   "scores",
+	Short: "Show how each node is scoring on real traffic (not just probe latency)",
+	Long: `Show the live scoring table.
+
+Groups rank their members by observed real traffic, not only by the
+generate_204 probe. Each node's score combines three terms:
+
+  reliability  dial successes/failures, with consecutive results amplified —
+               the 3rd failure in a row costs 3x the first
+  latency      real dial latency (median of the recent window)
+  throughput   bytes/second on connections that moved enough data to judge
+
+A node stays at a neutral 100 until it has accumulated MIN samples (shown as
+"warming N/MIN"): a cold start must not demote a node the gateway may be about
+to depend on. Equal scores are broken by latency.
+
+The breaker column is separate from the score and works from the first sample.
+An open breaker DEMOTES a node to last choice — it never removes it, because a
+group whose every member was excluded at once would leave the machine with no
+egress at all.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		res, err := sdk().ProxyScores()
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return emit(res)
+		}
+		if !res.Enabled {
+			fmt.Println("scoring is disabled; groups rank on probe latency alone")
+			fmt.Println()
+		}
+		fmt.Println(res.Formula)
+		fmt.Printf("weights: reliability=%d latency=%d throughput=%d | min samples=%d | tie margin=%d pts\n\n",
+			res.Config.WeightReliability, res.Config.WeightLatency, res.Config.WeightThroughput,
+			res.Config.MinSamples, res.Config.TieMarginPoints)
+		if len(res.Scores) == 0 {
+			fmt.Println("no group members yet (add nodes with `trust-proxy sub apply`)")
+			return nil
+		}
+		fmt.Printf("%-26s %-18s %-6s %-6s %-6s %-8s %-9s %s\n",
+			"TAG", "SCORE", "REL", "LAT", "TP", "LATENCY", "STREAK", "STATE")
+		for _, s := range res.Scores {
+			lat := "-"
+			if s.LatencyMS > 0 {
+				lat = fmt.Sprintf("%dms", s.LatencyMS)
+			}
+			fmt.Printf("%-26s %-18s %-6.0f %-6.0f %-6.0f %-8s %-9s %s\n",
+				truncate(s.Tag, 26), scoreText(s), s.Reliability, s.Latency, s.Throughput,
+				lat, streakText(s), scoreState(s))
+		}
+		return nil
+	},
+}
+
+// scoreColWidth is the SCORE column; the widest cell is the warming form.
+const scoreColWidth = 18
+
+// scoreText renders the score. A warming node prints its sample progress
+// beside the 100: a bare 100 reads as "measured and excellent", which is the
+// opposite of what it means.
+func scoreText(s apitypes.ProxyScore) string {
+	if s.Warming {
+		return fmt.Sprintf("%.0f (warming %d/%d)", s.Score, s.Samples, s.MinSamples)
+	}
+	return fmt.Sprintf("%.0f", s.Score)
+}
+
+// streakText shows the consecutive-result counter that drives the amplified
+// reward/penalty, so a big score move has a visible cause.
+func streakText(s apitypes.ProxyScore) string {
+	switch {
+	case s.FailStreak > 0:
+		return fmt.Sprintf("%d fail", s.FailStreak)
+	case s.OKStreak > 0:
+		return fmt.Sprintf("%d ok", s.OKStreak)
+	}
+	return "-"
+}
+
+func scoreState(s apitypes.ProxyScore) string {
+	if !s.Preferred {
+		st := "demoted (breaker " + dashDefault(s.Breaker, "open") + ")"
+		if s.BreakerRemaining > 0 {
+			st += fmt.Sprintf(", %ds left", s.BreakerRemaining)
+		}
+		return st
+	}
+	if s.Warming {
+		return "warming"
+	}
+	if s.LastErr != "" {
+		return "ok, last error: " + truncate(s.LastErr, 40)
+	}
+	return "ok"
+}
+
+var proxiesScoresResetCmd = &cobra.Command{
+	Use:   "scores-reset",
+	Short: "Discard every observation and put all nodes back into warm-up",
+	Long: `Throw away the measured scores.
+
+For when the numbers describe a path that no longer exists — a new
+subscription, a different network. Observations also expire on their own after
+the configured stale window.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := sdk().ResetProxyScores(); err != nil {
+			return err
+		}
+		fmt.Println("proxy scores reset; every node is back at 100 (warming)")
+		return nil
+	},
+}
+
+// ---- groups scoring ------------------------------------------------------
+
+var (
+	scMinSamples int
+	scWRel       int
+	scWLat       int
+	scWTp        int
+	scReward     int
+	scPenalty    int
+	scMaxStreak  int
+	scLatGood    int
+	scLatBad     int
+	scTpGood     int
+	scTieMargin  int
+	scBreakFails int
+	scBreakDelay int
+	scBreakOKs   int
+	scStale      int
+	scDisabled   bool
+)
+
+var scoringFlags = []string{
+	"min-samples", "weight-reliability", "weight-latency", "weight-throughput",
+	"reward", "penalty", "max-streak", "latency-good", "latency-bad",
+	"throughput-good", "tie-margin", "breaker-failures", "breaker-delay",
+	"breaker-successes", "stale-hours", "disabled",
+}
+
+func weightTouched(cmd *cobra.Command) bool {
+	return cmd.Flags().Changed("weight-reliability") ||
+		cmd.Flags().Changed("weight-latency") ||
+		cmd.Flags().Changed("weight-throughput")
+}
+
+func zeroWeights(c apitypes.ProxyScoring) bool {
+	return c.WeightReliability <= 0 && c.WeightLatency <= 0 && c.WeightThroughput <= 0
+}
+
+var groupsScoringCmd = &cobra.Command{
+	Use:   "scoring",
+	Short: "Show or tune how nodes are scored on real traffic",
+	Long: `Show or tune the scoring policy (see ` + "`trust-proxy proxies scores`" + ` for the result).
+
+  --min-samples         real outcomes before a node's score leaves the neutral
+                        100. Lower = reacts sooner but judges on less evidence.
+  --weight-*            relative weights of the three terms. They are ratios,
+                        not percentages: 50/30/20 and 5/3/2 behave identically.
+                        A weight of 0 turns that term off.
+  --reward/--penalty    points per success/failure, multiplied by the current
+                        consecutive streak (capped by --max-streak).
+  --latency-good/-bad   ms that score 100 and 0; linear between.
+  --throughput-good     KB/s that scores 100.
+  --tie-margin          score differences below this count as equal, and the
+                        tie is broken by latency.
+  --breaker-*           the circuit breaker, which is orthogonal to the score
+                        and works from the first sample. An open breaker only
+                        demotes a node to last choice, never removes it.
+  --stale-hours         discard observations older than this on restart.
+  --disabled            turn scoring off entirely; groups then rank on probe
+                        latency alone, exactly as before this feature existed.
+
+With no flags this prints the values in force.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c := sdk()
+		cfg, err := c.ProxyGroupsConfig()
+		if err != nil {
+			return err
+		}
+		touched := false
+		for _, f := range scoringFlags {
+			if cmd.Flags().Changed(f) {
+				touched = true
+			}
+		}
+		if !touched {
+			// Read the resolved values back from the gateway rather than
+			// re-deriving defaults here: a second copy of the defaults would
+			// drift, and the point of this view is what is actually in force.
+			live, err := c.ProxyScores()
+			if err != nil {
+				return err
+			}
+			return out(live.Config, func() {
+				k := live.Config
+				fmt.Println(live.Formula)
+				fmt.Println()
+				fmt.Printf("enabled            : %v\n", live.Enabled)
+				fmt.Printf("min samples        : %d\n", k.MinSamples)
+				fmt.Printf("weights            : reliability=%d latency=%d throughput=%d\n",
+					k.WeightReliability, k.WeightLatency, k.WeightThroughput)
+				fmt.Printf("reward / penalty   : +%d / -%d per result, streak x up to %d\n",
+					k.RewardPerSuccess, k.PenaltyPerFailure, k.MaxStreak)
+				fmt.Printf("latency 100 / 0    : %dms / %dms\n", k.LatencyGoodMS, k.LatencyBadMS)
+				fmt.Printf("throughput 100     : %d KB/s\n", k.ThroughputGoodKBps)
+				fmt.Printf("tie margin         : %d points (then lowest latency wins)\n", k.TieMarginPoints)
+				fmt.Printf("breaker            : opens after %d failures, %ds, closes after %d successes\n",
+					k.BreakerFailures, k.BreakerDelaySeconds, k.BreakerSuccesses)
+				fmt.Printf("stale after        : %dh\n", k.StaleHours)
+			})
+		}
+		patch := map[string]*int{
+			"min-samples":        &cfg.Scoring.MinSamples,
+			"weight-reliability": &cfg.Scoring.WeightReliability,
+			"weight-latency":     &cfg.Scoring.WeightLatency,
+			"weight-throughput":  &cfg.Scoring.WeightThroughput,
+			"reward":             &cfg.Scoring.RewardPerSuccess,
+			"penalty":            &cfg.Scoring.PenaltyPerFailure,
+			"max-streak":         &cfg.Scoring.MaxStreak,
+			"latency-good":       &cfg.Scoring.LatencyGoodMS,
+			"latency-bad":        &cfg.Scoring.LatencyBadMS,
+			"throughput-good":    &cfg.Scoring.ThroughputGoodKBps,
+			"tie-margin":         &cfg.Scoring.TieMarginPoints,
+			"breaker-failures":   &cfg.Scoring.BreakerFailures,
+			"breaker-delay":      &cfg.Scoring.BreakerDelaySeconds,
+			"breaker-successes":  &cfg.Scoring.BreakerSuccesses,
+			"stale-hours":        &cfg.Scoring.StaleHours,
+		}
+		values := map[string]int{
+			"min-samples": scMinSamples, "weight-reliability": scWRel,
+			"weight-latency": scWLat, "weight-throughput": scWTp,
+			"reward": scReward, "penalty": scPenalty, "max-streak": scMaxStreak,
+			"latency-good": scLatGood, "latency-bad": scLatBad,
+			"throughput-good": scTpGood, "tie-margin": scTieMargin,
+			"breaker-failures": scBreakFails, "breaker-delay": scBreakDelay,
+			"breaker-successes": scBreakOKs, "stale-hours": scStale,
+		}
+		for name, dst := range patch {
+			if cmd.Flags().Changed(name) {
+				*dst = values[name]
+			}
+		}
+		if cmd.Flags().Changed("disabled") {
+			cfg.Scoring.Disabled = scDisabled
+		}
+		// The three weights are one value, not three. Each is omitempty, and
+		// all-three-zero means "unset" to the store — so setting exactly one of
+		// them to 0 ("stop counting throughput") would leave a document the
+		// gateway reads back as defaults, silently turning the term on again.
+		// Materialise the other two from what is actually in force.
+		if weightTouched(cmd) && zeroWeights(cfg.Scoring) {
+			live, err := c.ProxyScores()
+			if err != nil {
+				return err
+			}
+			for _, w := range []struct {
+				name string
+				dst  *int
+				from int
+			}{
+				{"weight-reliability", &cfg.Scoring.WeightReliability, live.Config.WeightReliability},
+				{"weight-latency", &cfg.Scoring.WeightLatency, live.Config.WeightLatency},
+				{"weight-throughput", &cfg.Scoring.WeightThroughput, live.Config.WeightThroughput},
+			} {
+				if !cmd.Flags().Changed(w.name) {
+					*w.dst = w.from
+				}
+			}
+			if zeroWeights(cfg.Scoring) {
+				return fmt.Errorf("all three weights are 0; scoring needs at least one term (see `trust-proxy groups scoring --disabled` to turn it off instead)")
+			}
+		}
+		res, err := c.SetProxyGroupsConfig(cfg)
+		if err != nil {
+			return err
+		}
+		return out(res.Scoring, func() { fmt.Println("scoring updated") })
+	},
+}
+
 // ---- auto-block ----------------------------------------------------------
 
 var autoBlockCmd = &cobra.Command{
@@ -764,6 +1050,26 @@ func init() {
 	groupsFailoverCmd.Flags().IntVar(&foTolerance, "tolerance", proxygroups.DefaultProbeTolerance, "ms a challenger must beat the current node by; bigger = fewer switches")
 	groupsFailoverCmd.Flags().IntVar(&foIdle, "idle-timeout", proxygroups.DefaultIdleTimeout, "seconds without traffic before probing stops")
 	groupsFailoverCmd.Flags().BoolVar(&foInterrupt, "interrupt", false, "kill live connections when the elected node changes (breaks logins/uploads mid-flight)")
+	// Scoring knobs. Flag defaults are 0 = "unset"; only flags the user actually
+	// changed are patched, so the gateway keeps resolving the rest. Printing the
+	// real defaults here would mean a second copy of them that could drift —
+	// `groups scoring` with no flags reads them back from the gateway instead.
+	groupsScoringCmd.Flags().IntVar(&scMinSamples, "min-samples", 0, "real outcomes before a node's score leaves the neutral 100")
+	groupsScoringCmd.Flags().IntVar(&scWRel, "weight-reliability", 0, "relative weight of the reliability term (0 = ignore it)")
+	groupsScoringCmd.Flags().IntVar(&scWLat, "weight-latency", 0, "relative weight of the latency term (0 = ignore it)")
+	groupsScoringCmd.Flags().IntVar(&scWTp, "weight-throughput", 0, "relative weight of the throughput term (0 = ignore it)")
+	groupsScoringCmd.Flags().IntVar(&scReward, "reward", 0, "points per success, multiplied by the consecutive-success streak")
+	groupsScoringCmd.Flags().IntVar(&scPenalty, "penalty", 0, "points per failure, multiplied by the consecutive-failure streak")
+	groupsScoringCmd.Flags().IntVar(&scMaxStreak, "max-streak", 0, "cap on the streak multiplier")
+	groupsScoringCmd.Flags().IntVar(&scLatGood, "latency-good", 0, "ms that scores 100 on the latency term")
+	groupsScoringCmd.Flags().IntVar(&scLatBad, "latency-bad", 0, "ms that scores 0 on the latency term")
+	groupsScoringCmd.Flags().IntVar(&scTpGood, "throughput-good", 0, "KB/s that scores 100 on the throughput term")
+	groupsScoringCmd.Flags().IntVar(&scTieMargin, "tie-margin", 0, "score gap below which the lowest latency wins instead")
+	groupsScoringCmd.Flags().IntVar(&scBreakFails, "breaker-failures", 0, "consecutive failures that open a node's breaker")
+	groupsScoringCmd.Flags().IntVar(&scBreakDelay, "breaker-delay", 0, "seconds an open breaker stays open before a trial dial")
+	groupsScoringCmd.Flags().IntVar(&scBreakOKs, "breaker-successes", 0, "trial successes needed to close the breaker again")
+	groupsScoringCmd.Flags().IntVar(&scStale, "stale-hours", 0, "discard observations older than this on restart")
+	groupsScoringCmd.Flags().BoolVar(&scDisabled, "disabled", false, "turn scoring off; groups rank on probe latency alone")
 	endpointsAddCmd.Flags().StringVarP(&endpointsFile, "file", "f", "", "JSON endpoint document (- for stdin)")
 	endpointsToggleCmd.Flags().BoolVar(&customEnable, "enabled", true, "target state")
 
@@ -774,7 +1080,7 @@ func init() {
 	dnsQueriesCmd.Flags().IntVar(&dnsQueriesTop, "top", 10, "how many parent domains to show")
 	dnsCmd.AddCommand(dnsGetCmd, dnsSetCmd, dnsQueriesCmd)
 	tunCmd.AddCommand(tunGetCmd, tunSetCmd)
-	groupsCmd.AddCommand(groupsGetCmd, groupsSetCmd, groupsFailoverCmd)
+	groupsCmd.AddCommand(groupsGetCmd, groupsSetCmd, groupsFailoverCmd, groupsScoringCmd)
 	endpointsCmd.AddCommand(endpointsLsCmd, endpointsAddCmd, endpointsToggleCmd, endpointsRmCmd)
-	proxiesCmd.AddCommand(proxiesLsCmd, proxiesSelectCmd, proxiesDelayCmd)
+	proxiesCmd.AddCommand(proxiesLsCmd, proxiesSelectCmd, proxiesDelayCmd, proxiesScoresCmd, proxiesScoresResetCmd)
 }
