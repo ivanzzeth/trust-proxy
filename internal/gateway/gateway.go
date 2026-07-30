@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/proxyscore"
 	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
@@ -67,6 +69,11 @@ type Manager struct {
 	engine      *detect.Engine
 	clashSecret string
 	clashAddr   string
+	// scores ranks group members by observed real-traffic quality. It lives on
+	// the Manager rather than inside the box so an apply — which rebuilds the
+	// instance — does not throw away everything we learned about the nodes that
+	// were not touched.
+	scores *proxyscore.Store
 
 	rebuildMu sync.Mutex // serializes rebuilds
 
@@ -210,10 +217,18 @@ func (m *Manager) setAndRebuild(what string, mutate func() (revert func())) erro
 // NewManager returns a manager seeded with the initial whitelist, the detection
 // engine, and the Clash API secret to inject into the config.
 func NewManager(configPath, dataDir string, wl whitelist.Rules, engine *detect.Engine, clashSecret, clashAddr string) *Manager {
+	scorePath := ""
+	if dataDir != "" {
+		scorePath = filepath.Join(dataDir, "proxyscores.json")
+	}
 	return &Manager{
 		configPath: configPath, dataDir: dataDir, logger: log.StdLogger(),
 		wl: wl, engine: engine, clashSecret: clashSecret, clashAddr: clashAddr, mode: ModeManual,
 		final: "proxy", posture: apitypes.PostureStrict,
+		// Observations, not configuration: they live beside the other runtime
+		// data and are deliberately NOT part of a profile snapshot. Activating a
+		// week-old profile must not restore a week-old opinion of the nodes.
+		scores: proxyscore.New(scorePath, proxyscore.Config{}),
 	}
 }
 
@@ -588,6 +603,7 @@ func (m *Manager) SetInitialProxyGroups(pg proxygroups.Config) {
 	m.mu.Lock()
 	m.pg = pg
 	m.mu.Unlock()
+	m.applyScoring(pg)
 }
 
 // SetProxyGroups sets the proxy-group config and hot-reloads (reverts on failure).
@@ -595,8 +611,20 @@ func (m *Manager) SetProxyGroups(pg proxygroups.Config) error {
 	return m.setAndRebuild("proxy groups", func() func() {
 		prev := m.pg
 		m.pg = pg
-		return func() { m.pg = prev }
+		m.applyScoring(pg)
+		// The scoring policy reverts with the groups it travelled in: if the box
+		// refuses the new config we must not leave the store tuned for it.
+		return func() { m.pg = prev; m.applyScoring(prev) }
 	})
+}
+
+// applyScoring pushes the scoring policy into the store. Toggling Disabled needs
+// the box rebuilt (the scorer is read out of the context at construction), which
+// every caller does; every other knob takes effect live.
+func (m *Manager) applyScoring(pg proxygroups.Config) {
+	if m.scores != nil {
+		m.scores.SetConfig(pg.Scoring)
+	}
 }
 
 // SetInitialRuleSets sets the imported rule sets used by the first Start().
@@ -690,6 +718,7 @@ func (m *Manager) ApplyProfile(
 	m.cr = cr
 	m.rulesets = sets
 	m.pg = pg
+	m.applyScoring(pg)
 	m.dns = dns
 	if mode != "" && validMode(mode) {
 		m.mode = mode
@@ -706,6 +735,7 @@ func (m *Manager) ApplyProfile(
 		m.mu.Lock()
 		m.nodes, m.wl, m.bl, m.dl, m.cr = prevNodes, prevWL, prevBL, prevDL, prevCR
 		m.rulesets, m.pg, m.dns, m.mode, m.final, m.posture = prevSets, prevPG, prevDNS, prevMode, prevFinal, prevPosture
+		m.applyScoring(prevPG)
 		m.mu.Unlock()
 		_ = m.rebuild() // best-effort restore of the working policy
 		return fmt.Errorf("apply profile failed (reverted): %w", err)
@@ -812,9 +842,21 @@ func (m *Manager) rebuild() error {
 	return nil
 }
 
-func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
+// boxContext builds the service registry the box is constructed from. The
+// scorer must be in it BEFORE box.New, because each urltest group reads it out
+// of the context once, at construction — registering it afterwards would
+// silently produce a box whose groups still rank on latency alone.
+func (m *Manager) boxContext() context.Context {
 	ctx := service.ContextWith(context.Background(), deprecated.NewStderrManager(m.logger))
 	ctx = include.Context(ctx)
+	if m.scores != nil && !m.scores.Config().Disabled {
+		ctx = service.ContextWith[adapter.OutboundScorer](ctx, boxScorer{store: m.scores})
+	}
+	return ctx
+}
+
+func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
+	ctx := m.boxContext()
 
 	options, err := singjson.UnmarshalExtendedContext[option.Options](ctx, configBytes)
 	if err != nil {

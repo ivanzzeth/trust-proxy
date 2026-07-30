@@ -357,7 +357,6 @@ func runServe() error {
 		return err
 	}
 	defer histStore.Close()
-	engine.SetOnFinalize(histStore.Record)
 
 	detCfgStore, err := detectcfg.NewStore(filepath.Join(serveDataDir, "detection.json"))
 	if err != nil {
@@ -492,6 +491,16 @@ func runServe() error {
 	}
 
 	mgr := gateway.NewManager(serveConfig, serveDataDir, wlStore.Get(), engine, secret, serveClashAddr)
+	// One finalize sink, two consumers. The detection engine already resolves
+	// Event.Outbound down to the real group member (socks/gw-cloud, not "proxy"),
+	// so the throughput term costs no new plumbing in the data plane — only the
+	// closed connections we were already recording.
+	engine.SetOnFinalize(func(ev detect.Event) {
+		histStore.Record(ev)
+		if ev.DurationMS > 0 {
+			mgr.RecordTransfer(ev.Outbound, ev.Upload+ev.Download, time.Duration(ev.DurationMS)*time.Millisecond)
+		}
+	})
 	// Under --daemon this is the async ring (logging.Setup); in the foreground it
 	// is nil and sing-box keeps writing to the terminal.
 	mgr.SetLogWriter(logging.Sink())
@@ -625,6 +634,19 @@ func runServe() error {
 		return err
 	}
 	defer mgr.Close()
+	// Persist scores periodically as well as at exit: a kill -9 (which the
+	// service manager's KeepAlive makes routine) would otherwise put every node
+	// back into warm-up, and the first ten dials after a crash are exactly when
+	// knowing which node is dead matters most.
+	scoreFlush := time.NewTicker(2 * time.Minute)
+	defer scoreFlush.Stop()
+	go func() {
+		for range scoreFlush.C {
+			_ = mgr.FlushScores()
+		}
+	}()
+	defer func() { _ = mgr.FlushScores() }()
+
 	apiSrv := api.NewServer(api.Options{
 		Addr:         serveAPIAddr,
 		Store:        store,

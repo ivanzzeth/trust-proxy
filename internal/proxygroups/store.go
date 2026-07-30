@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+
+	"github.com/ivanzzeth/trust-proxy/internal/proxyscore"
 )
 
 // Group strategies + filter modes.
@@ -135,6 +137,11 @@ type Config struct {
 	Groups           []Group  `json:"groups"`
 	// Failover tunes every urltest group the gateway builds.
 	Failover Failover `json:"failover"`
+	// Scoring tunes how urltest ranks members by observed real-traffic quality
+	// (see internal/proxyscore). Same subject as Failover — "how a group picks
+	// a member" — so it rides the same profile/posture snapshot pipeline rather
+	// than opening a second store that a snapshot could forget to carry.
+	Scoring proxyscore.Config `json:"scoring"`
 }
 
 // normalizeCodes upper-cases, validates (2 ASCII letters) and dedups ISO codes,
@@ -256,6 +263,10 @@ func (s *Store) sanitize() int {
 		s.data.Failover = Failover{}
 		removed++
 	}
+	if err := s.data.Scoring.Validate(); err != nil {
+		s.data.Scoring = proxyscore.Config{}
+		removed++
+	}
 	return removed
 }
 
@@ -283,6 +294,7 @@ func snapshot(c Config) Config {
 		ExcludeCountries: append(make([]string, 0, len(c.ExcludeCountries)), c.ExcludeCountries...),
 		Groups:           append(make([]Group, 0, len(c.Groups)), c.Groups...),
 		Failover:         c.Failover,
+		Scoring:          c.Scoring,
 	}
 }
 
@@ -305,6 +317,9 @@ func (s *Store) Set(c Config) (Config, error) {
 	if err := validateFailover(&fo); err != nil {
 		return s.Get(), err
 	}
+	if err := c.Scoring.Validate(); err != nil {
+		return s.Get(), err
+	}
 	s.mu.Lock()
 	// A nil ExcludeCountries means the caller omitted the field — keep the current
 	// value rather than wiping it. A non-nil (even empty) slice replaces it.
@@ -312,7 +327,7 @@ func (s *Store) Set(c Config) (Config, error) {
 	if ex == nil {
 		ex = s.data.ExcludeCountries
 	}
-	s.data = Config{AutoCountry: c.AutoCountry, ExcludeCountries: normalizeCodes(ex), Groups: groups, Failover: fo}
+	s.data = Config{AutoCountry: c.AutoCountry, ExcludeCountries: normalizeCodes(ex), Groups: groups, Failover: fo, Scoring: c.Scoring}
 	snap := snapshot(s.data)
 	err := s.save()
 	s.mu.Unlock()
