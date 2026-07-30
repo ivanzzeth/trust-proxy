@@ -3,6 +3,7 @@ package gateway
 import (
 	"time"
 
+	"github.com/ivanzzeth/trust-proxy/internal/detect"
 	"github.com/ivanzzeth/trust-proxy/internal/proxyscore"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
@@ -30,11 +31,34 @@ func (b boxScorer) Observe(tag string, success bool, latency time.Duration, err 
 
 func (b boxScorer) TieMargin() float64 { return float64(b.store.Config().TieMargin()) }
 
-// RecordTransfer feeds the throughput term from a finished connection.
-func (m *Manager) RecordTransfer(tag string, bytes int64, d time.Duration) {
+// RecordTransfer feeds the throughput term from a finished connection, and the
+// blackhole detector — a node that completes handshakes and relays nothing is
+// invisible to the dial path, which only ever sees a successful dial.
+func (m *Manager) RecordTransfer(tag string, t proxyscore.Transfer) {
 	if m.scores != nil {
-		m.scores.RecordTransfer(tag, bytes, d)
+		m.scores.RecordTransfer(tag, t)
 	}
+}
+
+// RecordEvent is the finalize-sink entry point: it derives the transfer sample
+// from a closed connection and feeds it to the scorer. Callers hand over the
+// whole event rather than picking fields, so the mapping exists once — a second
+// copy in the caller is how a field stops being read without anything failing.
+func (m *Manager) RecordEvent(ev detect.Event) {
+	if m.scores == nil || ev.DurationMS <= 0 {
+		return
+	}
+	m.scores.RecordTransfer(ev.Outbound, proxyscore.Transfer{
+		Upload:   ev.Upload,
+		Download: ev.Download,
+		Duration: time.Duration(ev.DurationMS) * time.Millisecond,
+		// Connected, not ConnectMs > 0: phase timings are truncated
+		// milliseconds, so a fast node reports 0 and would read as "we never
+		// reached it". That distinction is the whole basis of the blackhole
+		// verdict — a dial that never landed is already a dial failure and is
+		// scored on the dial path.
+		Handshook: ev.Connected,
+	})
 }
 
 // Scores returns the current scoring view. A nil tags argument means "every

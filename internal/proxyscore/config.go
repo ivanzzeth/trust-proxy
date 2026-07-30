@@ -53,7 +53,20 @@ const (
 	// subscription change or a move to another network, yesterday's numbers
 	// describe a different path entirely.
 	DefaultStaleHours = 6
+
+	// DefaultBlackholeStreak is how many consecutive "handshake completed, we
+	// sent bytes, nothing came back" connections confirm a node as a blackhole.
+	// Subscriptions ship these: the provider's host answers its own handshake so
+	// the dial succeeds, but nothing is relayed. Three rather than one because a
+	// fire-and-forget push legitimately produces a single such connection; three
+	// in a row on the same node does not happen to a node that works.
+	DefaultBlackholeStreak = 3
 )
+
+// maxBreakerTrip bounds forceBreakerOpen's loop. It only needs BreakerFailures
+// iterations, but the loop must terminate even if a future failsafe-go changes
+// when RecordFailure advances state.
+const maxBreakerTrip = 64
 
 // minThroughputBytes is the floor for a transfer to count as a throughput
 // sample. A 200-byte request that finishes in 300ms is not a slow node, it is
@@ -96,6 +109,11 @@ type Config struct {
 	BreakerSuccesses    int `json:"breaker_successes,omitempty"`
 
 	StaleHours int `json:"stale_hours,omitempty"`
+
+	// BlackholeStreak confirms a blackhole after this many consecutive dead
+	// connections. -1 disables the detection entirely (0 means "unset" and
+	// resolves to the default, like every other field here).
+	BlackholeStreak int `json:"blackhole_streak,omitempty"`
 }
 
 func orDefault(v, def int) int {
@@ -126,7 +144,17 @@ func (c Config) Resolved() Config {
 		BreakerDelaySeconds: c.BreakDelay(),
 		BreakerSuccesses:    c.BreakOKs(),
 		StaleHours:          c.Stale(),
+		BlackholeStreak:     c.Blackhole(),
 	}
+}
+
+// Blackhole resolves the blackhole streak. Returns 0 when the operator disabled
+// it with -1, since every read site treats 0 as "off".
+func (c Config) Blackhole() int {
+	if c.BlackholeStreak < 0 {
+		return 0
+	}
+	return orDefault(c.BlackholeStreak, DefaultBlackholeStreak)
 }
 
 func (c Config) Samples() int { return orDefault(c.MinSamples, DefaultMinSamples) }
@@ -233,6 +261,13 @@ func (c Config) Validate() error {
 	}
 	if c.StaleHours > 24*30 {
 		return fmt.Errorf("scoring: stale_hours must be at most 720")
+	}
+	// Not in the negatives list above: -1 is the documented "off" for this one.
+	if c.BlackholeStreak < -1 {
+		return fmt.Errorf("scoring: blackhole_streak must be -1 (off), 0 (default) or positive")
+	}
+	if c.BlackholeStreak > 100 {
+		return fmt.Errorf("scoring: blackhole_streak must be at most 100")
 	}
 	return nil
 }

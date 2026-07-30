@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/proxyscore"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
@@ -811,6 +812,14 @@ func streakText(s apitypes.ProxyScore) string {
 }
 
 func scoreState(s apitypes.ProxyScore) string {
+	// Before the breaker line, because a blackhole is reported as breaker-open
+	// too and "demoted (breaker open)" would hide the one thing worth knowing:
+	// this node completes handshakes and relays nothing. A bare 0 reads as
+	// "very slow", and the remedy for slow (keep it, prefer others) is not the
+	// remedy for this (the node is not carrying traffic at all).
+	if s.Blackhole {
+		return fmt.Sprintf("BLACKHOLE (%d dead connections: handshake ok, nothing came back)", s.BlackholeStreak)
+	}
 	if !s.Preferred {
 		st := "demoted (breaker " + dashDefault(s.Breaker, "open") + ")"
 		if s.BreakerRemaining > 0 {
@@ -862,6 +871,7 @@ var (
 	scBreakDelay int
 	scBreakOKs   int
 	scStale      int
+	scBlackhole  int
 	scDisabled   bool
 )
 
@@ -869,7 +879,7 @@ var scoringFlags = []string{
 	"min-samples", "weight-reliability", "weight-latency", "weight-throughput",
 	"reward", "penalty", "max-streak", "latency-good", "latency-bad",
 	"throughput-good", "tie-margin", "breaker-failures", "breaker-delay",
-	"breaker-successes", "stale-hours", "disabled",
+	"breaker-successes", "stale-hours", "blackhole-streak", "disabled",
 }
 
 func weightTouched(cmd *cobra.Command) bool {
@@ -902,6 +912,11 @@ var groupsScoringCmd = &cobra.Command{
                         and works from the first sample. An open breaker only
                         demotes a node to last choice, never removes it.
   --stale-hours         discard observations older than this on restart.
+  --blackhole-streak    consecutive connections that completed a handshake,
+                        sent bytes and got nothing back before the node is
+                        called a blackhole (score 0, breaker forced open, but
+                        still listed). Subscriptions do ship these. -1 turns
+                        the detection off.
   --disabled            turn scoring off entirely; groups then rank on probe
                         latency alone, exactly as before this feature existed.
 
@@ -942,6 +957,11 @@ With no flags this prints the values in force.`,
 				fmt.Printf("breaker            : opens after %d failures, %ds, closes after %d successes\n",
 					k.BreakerFailures, k.BreakerDelaySeconds, k.BreakerSuccesses)
 				fmt.Printf("stale after        : %dh\n", k.StaleHours)
+				if k.BlackholeStreak > 0 {
+					fmt.Printf("blackhole after    : %d dead connections (handshake ok, nothing back)\n", k.BlackholeStreak)
+				} else {
+					fmt.Printf("blackhole detection: off\n")
+				}
 			})
 		}
 		patch := map[string]*int{
@@ -960,6 +980,7 @@ With no flags this prints the values in force.`,
 			"breaker-delay":      &cfg.Scoring.BreakerDelaySeconds,
 			"breaker-successes":  &cfg.Scoring.BreakerSuccesses,
 			"stale-hours":        &cfg.Scoring.StaleHours,
+			"blackhole-streak":   &cfg.Scoring.BlackholeStreak,
 		}
 		values := map[string]int{
 			"min-samples": scMinSamples, "weight-reliability": scWRel,
@@ -969,6 +990,7 @@ With no flags this prints the values in force.`,
 			"throughput-good": scTpGood, "tie-margin": scTieMargin,
 			"breaker-failures": scBreakFails, "breaker-delay": scBreakDelay,
 			"breaker-successes": scBreakOKs, "stale-hours": scStale,
+			"blackhole-streak": scBlackhole,
 		}
 		for name, dst := range patch {
 			if cmd.Flags().Changed(name) {
@@ -1069,6 +1091,7 @@ func init() {
 	groupsScoringCmd.Flags().IntVar(&scBreakDelay, "breaker-delay", 0, "seconds an open breaker stays open before a trial dial")
 	groupsScoringCmd.Flags().IntVar(&scBreakOKs, "breaker-successes", 0, "trial successes needed to close the breaker again")
 	groupsScoringCmd.Flags().IntVar(&scStale, "stale-hours", 0, "discard observations older than this on restart")
+	groupsScoringCmd.Flags().IntVar(&scBlackhole, "blackhole-streak", proxyscore.DefaultBlackholeStreak, "consecutive dead connections (handshake ok, nothing came back) before a node scores 0; -1 = off")
 	groupsScoringCmd.Flags().BoolVar(&scDisabled, "disabled", false, "turn scoring off; groups rank on probe latency alone")
 	endpointsAddCmd.Flags().StringVarP(&endpointsFile, "file", "f", "", "JSON endpoint document (- for stdin)")
 	endpointsToggleCmd.Flags().BoolVar(&customEnable, "enabled", true, "target state")

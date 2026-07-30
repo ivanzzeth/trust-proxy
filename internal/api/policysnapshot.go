@@ -41,13 +41,8 @@ func (s *Server) snapshotLivePolicy() apitypes.PolicySlot {
 		out := apitypes.ProxyGroupsConfig{
 			AutoCountry:      pg.AutoCountry,
 			ExcludeCountries: append([]string(nil), pg.ExcludeCountries...),
-			Failover: apitypes.ProxyFailover{
-				ProbeIntervalSeconds:         pg.Failover.ProbeIntervalSeconds,
-				ToleranceMS:                  pg.Failover.ToleranceMS,
-				IdleTimeoutSeconds:           pg.Failover.IdleTimeoutSeconds,
-				InterruptExistingConnections: pg.Failover.InterruptExistingConnections,
-			},
-			Scoring: scoringWire(pg.Scoring),
+			Failover:         failoverWire(pg.Failover),
+			Scoring:          scoringWire(pg.Scoring),
 		}
 		for _, g := range pg.Groups {
 			out.Groups = append(out.Groups, apitypes.ProxyGroup{

@@ -363,9 +363,12 @@ func TestLatencyBreakdown(t *testing.T) {
 	base := time.Unix(1_700_000_000, 0)
 
 	t.Run("nil timing", func(t *testing.T) {
-		dns, connect, tls := latencyBreakdown(nil)
+		dns, connect, tls, connected := latencyBreakdown(nil)
 		if dns != 0 || connect != 0 || tls != 0 {
 			t.Fatalf("got dns=%d connect=%d tls=%d, want all 0", dns, connect, tls)
+		}
+		if connected {
+			t.Fatalf("connected = true with no timing at all")
 		}
 	})
 
@@ -374,7 +377,7 @@ func TestLatencyBreakdown(t *testing.T) {
 			dialStart:   base,
 			connectDone: base.Add(50 * time.Millisecond),
 		}
-		dns, connect, tls := latencyBreakdown(ft)
+		dns, connect, tls, _ := latencyBreakdown(ft)
 		if dns != 0 {
 			t.Errorf("dns = %d, want 0 (no DNS phase for an IP destination)", dns)
 		}
@@ -395,7 +398,7 @@ func TestLatencyBreakdown(t *testing.T) {
 			tlsDone:     base.Add(101 * time.Millisecond), // TLS: 50ms after TCP
 			connectDone: base.Add(101 * time.Millisecond),
 		}
-		dns, connect, tls := latencyBreakdown(ft)
+		dns, connect, tls, _ := latencyBreakdown(ft)
 		if dns != 20 {
 			t.Errorf("dns = %d, want 20", dns)
 		}
@@ -406,4 +409,24 @@ func TestLatencyBreakdown(t *testing.T) {
 			t.Errorf("tls = %d, want 50", tls)
 		}
 	})
+}
+
+// A handshake that completes in under a millisecond still completed. The
+// blackhole detector asks "did we reach this node", and answering it with
+// "ConnectMs > 0" would call every fast node unreachable — inverting the one
+// distinction the verdict rests on. Loopback and LAN nodes are routinely this
+// fast, so this is not an edge case.
+func TestConnectedIsNotInferredFromTruncatedMilliseconds(t *testing.T) {
+	base := time.Unix(1_700_000_000, 0)
+	ft := fakeTiming{
+		dialStart:   base,
+		connectDone: base.Add(200 * time.Microsecond), // rounds to 0ms
+	}
+	_, connect, _, connected := latencyBreakdown(ft)
+	if connect != 0 {
+		t.Fatalf("setup: connect = %d, want the truncated 0 this test is about", connect)
+	}
+	if !connected {
+		t.Fatal("a sub-millisecond handshake reported as never connected")
+	}
 }

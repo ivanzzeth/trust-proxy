@@ -111,6 +111,40 @@ describe('Proxies page scoring', () => {
     });
   });
 
+  // The user's report: subscriptions ship nodes that dial fine and relay
+  // nothing, and traffic piles onto them. A bare "0" in the table reads as
+  // "very slow", and slow is worth keeping — so the row has to name the shape.
+  it('names a blackhole rather than showing it as a very low score', async () => {
+    mockPage([
+      score({ tag: 'good', score: 90, samples: 30 }),
+      score({
+        tag: 'fake-node',
+        score: 0,
+        samples: 2,
+        warming: true,
+        preferred: false,
+        breaker: 'open',
+        blackhole: true,
+        blackhole_streak: 3,
+      }),
+    ]);
+    renderPage();
+    const user = userEvent.setup();
+    await waitFor(() => expect(screen.getAllByText('fake-node').length).toBeGreaterThan(0));
+    await user.click(screen.getByText('pages.proxies.score.table'));
+    await waitFor(() => {
+      const row = screen.getAllByText('fake-node').map((el) => el.closest('tr')).find(Boolean);
+      expect(row).toBeTruthy();
+      expect(row!.textContent).toContain('pages.proxies.score.blackholeShort');
+      // Not "warming up": it is still inside warm-up by sample count, but the
+      // verdict is already conclusive and warming would read as "give it time".
+      expect(row!.textContent).not.toContain('pages.proxies.score.warmingShort');
+    });
+    // And it must still be listed — a group that drops every unhealthy member
+    // leaves the machine with no egress at all.
+    expect(screen.getAllByText('fake-node').length).toBeGreaterThan(0);
+  });
+
   it('degrades to no badges when the gateway has no scores', async () => {
     vi.spyOn(api, 'proxies').mockResolvedValue({
       proxies: { Auto: { type: 'URLTest', now: 'a', all: ['a'], history: [] } },

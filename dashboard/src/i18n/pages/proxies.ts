@@ -30,6 +30,9 @@ export default {
       warmingShort: 'warming up',
       okStreak: '{{n}} ok',
       failStreak: '{{n}} failed',
+      blackhole:
+        'Blackhole — {{n}} connections in a row completed the handshake, sent bytes and got nothing back. Scored 0 and moved to last choice; it stays in the group.',
+      blackholeShort: 'blackhole · {{n}} dead',
       demoted: 'demoted (breaker open)',
       demotedNote:
         'A demoted node is moved to last choice, never removed — a group whose members all trip at once must still have somewhere to send traffic.',
@@ -87,6 +90,9 @@ export default {
         tieMarginHint: 'Score gaps smaller than this count as equal, and the lower latency wins.',
         staleHours: 'Discard after (hours)',
         staleHoursHint: 'Observations older than this are dropped on restart — after a subscription or network change they describe a different path.',
+        blackholeStreak: 'Blackhole after (dead connections)',
+        blackholeStreakHint:
+          'Consecutive connections that completed this node’s handshake, sent bytes and got nothing back. Subscriptions do ship nodes like this: the dial succeeds so they look healthy and score well, while relaying nothing. On confirmation the node scores 0 and is moved to last choice — never removed. Set -1 to turn the detection off.',
         reward: 'Reward per success',
         rewardHint: 'Points added for a success. The Nth consecutive one counts N×.',
         penalty: 'Penalty per failure',
@@ -143,6 +149,9 @@ export default {
       warmingShort: '预热中',
       okStreak: '连续成功 {{n}} 次',
       failStreak: '连续失败 {{n}} 次',
+      blackhole:
+        '黑洞节点 —— 连续 {{n}} 条连接握手成功、也发出了数据，但一个字节都没回来。已判 0 分并排到最后备选，但仍保留在组内。',
+      blackholeShort: '黑洞 · {{n}} 条不通',
       demoted: '已降级（断路器打开）',
       demotedNote: '降级只是排到最后备选，绝不剔除——整组同时熔断时，流量仍然需要有地方可去。',
       nowIs: '当前 {{v}}',
@@ -199,6 +208,9 @@ export default {
         tieMarginHint: '分差小于该值视为同分，此时选延迟更低的。',
         staleHours: '过期作废（小时）',
         staleHoursHint: '重启时丢弃早于该时长的观测——换订阅或换网络之后，旧数据描述的是另一条链路。',
+        blackholeStreak: '判定黑洞（不通的连接数）',
+        blackholeStreakHint:
+          '连续多少条连接「握手通过、也发出了数据、却一个字节都没回来」就判定为黑洞。订阅里确实存在这种假节点：拨号是成功的，所以看起来健康、分数还很高，实际什么都不转发。判定后直接 0 分并排到最后备选——但绝不剔除。填 -1 关闭该检测。',
         reward: '单次成功奖励',
         rewardHint: '一次成功加多少分。连续第 N 次按 N 倍计。',
         penalty: '单次失败惩罚',

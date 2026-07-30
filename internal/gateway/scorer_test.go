@@ -94,7 +94,7 @@ func TestObserveCarriesTheErrorThrough(t *testing.T) {
 
 func TestRecordTransferFeedsTheThroughputTerm(t *testing.T) {
 	m := newScoringManager(t)
-	m.RecordTransfer("node-a", 8<<20, 2*time.Second)
+	m.RecordTransfer("node-a", proxyscore.Transfer{Download: 8 << 20, Duration: 2 * time.Second})
 	views := m.Scores([]string{"node-a"})
 	if len(views) != 1 || views[0].ThroughputKBps <= 0 {
 		t.Fatalf("throughput not recorded: %+v", views)

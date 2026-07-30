@@ -23,6 +23,7 @@ func scoreWire(v proxyscore.View) apitypes.ProxyScore {
 		OKStreak: v.OKStreak, FailStreak: v.FailStreak,
 		LatencyMS: v.LatencyMS, ThroughputKBps: v.ThroughputKBps,
 		Breaker: v.Breaker, BreakerRemaining: v.BreakerRemaining, Preferred: v.Preferred,
+		Blackhole: v.Blackhole, BlackholeStreak: v.BlackholeStreak,
 		LastOK: v.LastOK, LastErr: v.LastErr, UpdatedAt: v.UpdatedAt,
 	}
 }

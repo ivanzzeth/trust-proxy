@@ -497,9 +497,7 @@ func runServe() error {
 	// closed connections we were already recording.
 	engine.SetOnFinalize(func(ev detect.Event) {
 		histStore.Record(ev)
-		if ev.DurationMS > 0 {
-			mgr.RecordTransfer(ev.Outbound, ev.Upload+ev.Download, time.Duration(ev.DurationMS)*time.Millisecond)
-		}
+		mgr.RecordEvent(ev)
 	})
 	// Under --daemon this is the async ring (logging.Setup); in the foreground it
 	// is nil and sing-box keeps writing to the terminal.

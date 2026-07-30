@@ -21,6 +21,18 @@ func wireFailover(f apitypes.ProxyFailover) proxygroups.Failover {
 	}
 }
 
+// failoverWire is the other direction. It exists so the mapping is written
+// once: policysnapshot.go used to spell it out inline, and a second copy of a
+// field list is how the first copy goes stale.
+func failoverWire(f proxygroups.Failover) apitypes.ProxyFailover {
+	return apitypes.ProxyFailover{
+		ProbeIntervalSeconds:         f.ProbeIntervalSeconds,
+		ToleranceMS:                  f.ToleranceMS,
+		IdleTimeoutSeconds:           f.IdleTimeoutSeconds,
+		InterruptExistingConnections: f.InterruptExistingConnections,
+	}
+}
+
 // wireScoring / scoringWire convert the scoring policy between the wire shape
 // and the store shape. Same reason wireFailover exists: the policy travels
 // inside profile and posture snapshots, and a snapshot that dropped the field
@@ -43,6 +55,7 @@ func wireScoring(c apitypes.ProxyScoring) proxyscore.Config {
 		BreakerDelaySeconds: c.BreakerDelaySeconds,
 		BreakerSuccesses:    c.BreakerSuccesses,
 		StaleHours:          c.StaleHours,
+		BlackholeStreak:     c.BlackholeStreak,
 	}
 }
 
@@ -64,6 +77,7 @@ func scoringWire(c proxyscore.Config) apitypes.ProxyScoring {
 		BreakerDelaySeconds: c.BreakerDelaySeconds,
 		BreakerSuccesses:    c.BreakerSuccesses,
 		StaleHours:          c.StaleHours,
+		BlackholeStreak:     c.BlackholeStreak,
 	}
 }
 

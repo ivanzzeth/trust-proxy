@@ -192,6 +192,9 @@ export interface ProxyScoring {
   breaker_delay_seconds?: number;
   breaker_successes?: number;
   stale_hours?: number;
+  // Consecutive "handshake ok, we sent bytes, nothing came back" connections
+  // before a node is called a blackhole. -1 turns the detection off.
+  blackhole_streak?: number;
 }
 // One member's score with every input that produced it, so the UI can explain
 // a ranking instead of asserting one.
@@ -214,6 +217,11 @@ export interface ProxyScore {
   breaker: string;
   breaker_remaining_seconds?: number;
   preferred: boolean;
+  // Completes handshakes and relays nothing back — the fake node a
+  // subscription ships. Surfaced apart from the score because a bare 0 reads
+  // as "very slow", and slow is worth keeping while this is not.
+  blackhole?: boolean;
+  blackhole_streak?: number;
   last_ok: boolean;
   last_err?: string;
   updated_at?: string;

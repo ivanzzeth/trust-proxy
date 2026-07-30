@@ -379,9 +379,9 @@ func (e *Engine) RestoreEvents(evs []Event) {
 // latencyBreakdown derives human-meaningful phase durations (ms) from a
 // TimingSource's raw timestamps. Returns all zero if t is nil (no timing was
 // ever attached — e.g. UDP) or a phase's timestamps aren't both set.
-func latencyBreakdown(t TimingSource) (dnsMs, connectMs, tlsMs int64) {
+func latencyBreakdown(t TimingSource) (dnsMs, connectMs, tlsMs int64, connected bool) {
 	if t == nil {
-		return 0, 0, 0
+		return 0, 0, 0, false
 	}
 	dnsStart, dnsDone := t.DNSStartTime(), t.DNSDoneTime()
 	if !dnsStart.IsZero() && !dnsDone.IsZero() {
@@ -402,19 +402,23 @@ func latencyBreakdown(t TimingSource) (dnsMs, connectMs, tlsMs int64) {
 		// handshake isn't reported as a separate phase) — one combined number.
 		connectMs = connectDone.Sub(connectFrom).Milliseconds()
 	}
-	return dnsMs, connectMs, tlsMs
+	// connected is the timestamp's existence, not its magnitude: a handshake
+	// that took under a millisecond still happened, and connectMs would be 0.
+	connected = !tlsDone.IsZero() || !connectDone.IsZero() || !tcpDone.IsZero()
+	return dnsMs, connectMs, tlsMs, connected
 }
 
 // finalize is called when a connection closes: re-score with final byte counts.
 func (e *Engine) finalize(ev *Event) {
 	up := atomic.LoadInt64(&ev.Upload)
 	dur := e.now().Sub(ev.openedAt).Milliseconds()
-	dnsMs, connectMs, tlsMs := latencyBreakdown(ev.timing)
+	dnsMs, connectMs, tlsMs, connected := latencyBreakdown(ev.timing)
 	e.mu.Lock()
 	ev.DurationMS = dur
 	ev.DNSMs = dnsMs
 	ev.ConnectMs = connectMs
 	ev.TLSMs = tlsMs
+	ev.Connected = connected
 	e.mu.Unlock()
 	thresh := e.uploadAlertBytes.Load()
 	auto := e.autoBlock.Load()

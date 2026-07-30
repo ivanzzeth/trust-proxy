@@ -39,6 +39,7 @@ func TestEveryScoringKnobHasAFlag(t *testing.T) {
 		"breaker_delay_seconds": "breaker-delay",
 		"breaker_successes":     "breaker-successes",
 		"stale_hours":           "stale-hours",
+		"blackhole_streak":      "blackhole-streak",
 		"disabled":              "disabled",
 	}
 

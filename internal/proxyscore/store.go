@@ -31,6 +31,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,6 +64,11 @@ type Stats struct {
 	// down by an hour-old disaster.
 	LatencyMS      []int     `json:"latency_ms,omitempty"`
 	ThroughputKBps []float64 `json:"throughput_kbps,omitempty"`
+
+	// BlackholeStreak counts consecutive connections that completed a handshake
+	// through this node, sent bytes, and got nothing back. See RecordTransfer.
+	BlackholeStreak int       `json:"blackhole_streak,omitempty"`
+	BlackholedAt    time.Time `json:"blackholed_at,omitempty"`
 
 	LastOK    bool      `json:"last_ok"`
 	LastErr   string    `json:"last_err,omitempty"`
@@ -98,6 +104,13 @@ type View struct {
 	Breaker          string `json:"breaker"`
 	BreakerRemaining int    `json:"breaker_remaining_seconds,omitempty"`
 	Preferred        bool   `json:"preferred"`
+
+	// Blackhole marks a node that completed handshakes but relayed nothing back.
+	// Surfaced separately from the score because "0" alone reads as "very slow",
+	// and the fix is different: a slow node is worth keeping, this one is not
+	// carrying traffic at all.
+	Blackhole       bool `json:"blackhole,omitempty"`
+	BlackholeStreak int  `json:"blackhole_streak,omitempty"`
 
 	LastOK    bool   `json:"last_ok"`
 	LastErr   string `json:"last_err,omitempty"`
@@ -140,7 +153,18 @@ func (s *Store) load() {
 	}
 	cutoff := time.Now().Add(-time.Duration(s.cfg.Stale()) * time.Hour)
 	for _, st := range doc.Stats {
-		if st == nil || st.Tag == "" || st.UpdatedAt.Before(cutoff) {
+		if st == nil || st.UpdatedAt.Before(cutoff) {
+			continue
+		}
+		// A file written before tags were normalized holds both spellings of the
+		// same node. Fold them here rather than letting the duplicate linger for
+		// a whole StaleHours window: whichever half was observed more recently
+		// wins, since the two halves never carried the same fields anyway.
+		st.Tag = normalizeTag(st.Tag)
+		if !scorable(st.Tag) {
+			continue
+		}
+		if prev := s.stats[st.Tag]; prev != nil && prev.UpdatedAt.After(st.UpdatedAt) {
 			continue
 		}
 		if st.Reliability < 0 || st.Reliability > 100 {
@@ -183,6 +207,50 @@ func (s *Store) SetConfig(cfg Config) {
 	}
 }
 
+// normalizeTag reduces a tag to the one key this package stores it under: the
+// bare outbound tag the data plane dials by.
+//
+// Two callers arrive with two spellings of the same node, and getting this wrong
+// is silent. The dial path (the fork's urltest) reports RealTag(outbound) — a
+// bare "🇭🇰 Hong Kong丨02". The finalize sink arrives via detect.Event.Outbound,
+// which detector.outStr renders as type+"/"+tag for the connections UI —
+// "anytls/🇭🇰 Hong Kong丨02". Left unnormalized, every node splits into two
+// records: the dial one never receives a throughput sample (so its throughput
+// term sits at the neutral 50 forever) and the transfer one never leaves warm-up
+// at zero samples. Both halves look plausible on their own, which is why this
+// survived unit tests and only showed up as duplicate rows on a real gateway.
+//
+// Splitting on the FIRST "/" is what makes this safe: a tag may itself contain
+// slashes, and the prefix is an outbound type, never a user-chosen name.
+func normalizeTag(tag string) string {
+	if i := strings.IndexByte(tag, '/'); i >= 0 {
+		if _, isType := outboundTypes[tag[:i]]; isType {
+			return tag[i+1:]
+		}
+	}
+	return tag
+}
+
+// outboundTypes are the sing-box outbound types detector.outStr can prefix a tag
+// with. An allow-list rather than "strip anything before a slash": a node named
+// "airport/tokyo-01" must keep its name, or it becomes a third distinct key.
+var outboundTypes = map[string]struct{}{
+	"anytls": {}, "block": {}, "direct": {}, "http": {}, "hysteria": {},
+	"hysteria2": {}, "shadowsocks": {}, "shadowtls": {}, "socks": {},
+	"ssh": {}, "tor": {}, "trojan": {}, "tuic": {}, "vless": {}, "vmess": {},
+	"wireguard": {}, "tailscale": {}, "selector": {}, "urltest": {},
+}
+
+// scorable rejects the pseudo-outbounds that are not nodes to choose between.
+// Applied AFTER normalizeTag, so "direct/direct" is rejected as "direct".
+func scorable(tag string) bool {
+	switch tag {
+	case "", "direct", "block", "blocked":
+		return false
+	}
+	return true
+}
+
 // statLocked returns (creating if needed) the stats for a tag.
 func (s *Store) statLocked(tag string) *Stats {
 	st := s.stats[tag]
@@ -203,7 +271,8 @@ func (s *Store) statLocked(tag string) *Stats {
 // Observe records one real dial outcome. Called from the data plane's dial
 // path, so it must return immediately and never re-enter the router.
 func (s *Store) Observe(tag string, o Outcome) {
-	if tag == "" || tag == "direct" || tag == "block" || tag == "blocked" {
+	tag = normalizeTag(tag)
+	if !scorable(tag) {
 		return
 	}
 	s.mu.Lock()
@@ -243,17 +312,48 @@ func (s *Store) Observe(tag string, o Outcome) {
 	}
 }
 
-// RecordTransfer feeds the throughput term from a completed connection. Fed by
-// the detect engine's finalize sink, which already resolves the group down to
-// the real member — no new data-plane plumbing.
+// Transfer is one finished connection, as seen by the detect engine's finalize
+// sink. It carries more than the byte count because the byte count alone cannot
+// tell a working node from a blackhole — see RecordTransfer.
+type Transfer struct {
+	Upload   int64
+	Download int64
+	Duration time.Duration
+	// Handshook reports that the connection got through this node's own
+	// handshake (the gateway derives it from connect_ms/tls_ms being non-zero).
+	// It is what separates "the node relayed us to a dead destination" from
+	// "we never reached the node at all", which is already a dial failure.
+	Handshook bool
+}
+
+// RecordTransfer feeds the throughput term, and detects blackhole nodes.
 //
-// Transfers below minThroughputBytes are ignored: a 200-byte request that took
-// 300ms is a small request, not a slow node.
-func (s *Store) RecordTransfer(tag string, bytes int64, d time.Duration) {
-	if tag == "" || tag == "direct" || tag == "block" || tag == "blocked" {
-		return
-	}
-	if bytes < minThroughputBytes || d <= 0 {
+// **Throughput.** Transfers below minThroughputBytes are ignored: a 200-byte
+// request that took 300ms is a small request, not a slow node.
+//
+// **Blackholes.** Subscriptions ship nodes that answer their own handshake and
+// relay nothing: TCP to the provider's host connects, the proxy handshake
+// completes, so the dial is a *success* and reliability climbs — and then the
+// real destination never sends a byte back. Scoring was structurally blind to
+// this: the dial path only sees a successful dial, and this function used to
+// return early on `bytes < minThroughputBytes`, so a connection that moved
+// nothing produced no sample at all. A blackhole rode its perfect score to the
+// front of the group and swallowed the traffic.
+//
+// The shape is: the handshake completed, we sent bytes, and nothing came back.
+// Requiring Upload > 0 is what keeps a cancelled request out of it — those
+// abort before sending. One such connection means little (a fire-and-forget
+// push legitimately looks like this), so it takes BlackholeStreak consecutive
+// ones on the same node, and any single byte received resets the streak.
+//
+// On confirmation the node is scored 0 and its breaker forced open, which sorts
+// it last for new connections. It is NOT removed from the group: hard exclusion
+// once left this gateway with no egress at all. Connections already flowing
+// through it are left alone — a wrong call must not sever what the user is
+// doing; only the next connection is steered.
+func (s *Store) RecordTransfer(tag string, t Transfer) {
+	tag = normalizeTag(tag)
+	if !scorable(tag) || t.Duration <= 0 {
 		return
 	}
 	s.mu.Lock()
@@ -261,11 +361,67 @@ func (s *Store) RecordTransfer(tag string, bytes int64, d time.Duration) {
 	if s.cfg.Disabled {
 		return
 	}
+	// Decide before touching the map: statLocked creates the record, and a
+	// connection we learn nothing from must not conjure a node into the snapshot
+	// that the dial path has never seen.
+	bytes := t.Upload + t.Download
+	countable := bytes >= minThroughputBytes
+	limit := s.cfg.Blackhole()
+	relevant := limit > 0 && t.Handshook && (t.Download > 0 || t.Upload > 0)
+	if !countable && !relevant {
+		return
+	}
+
 	st := s.statLocked(tag)
-	kbps := float64(bytes) / 1024 / d.Seconds()
-	st.ThroughputKBps = pushFloat(st.ThroughputKBps, kbps)
-	st.UpdatedAt = time.Now()
-	s.dirty = true
+	now := time.Now()
+
+	if countable {
+		st.ThroughputKBps = pushFloat(st.ThroughputKBps, float64(bytes)/1024/t.Duration.Seconds())
+		st.UpdatedAt = now
+		s.dirty = true
+	}
+
+	if relevant {
+		switch {
+		case t.Download > 0:
+			// Anything came back: this node relays. Clear the streak whether or
+			// not it was already confirmed — recovery must not need a restart.
+			st.BlackholeStreak = 0
+			st.BlackholedAt = time.Time{}
+		case t.Upload > 0:
+			st.BlackholeStreak++
+			st.UpdatedAt = now
+			s.dirty = true
+			if st.BlackholeStreak >= limit {
+				st.BlackholedAt = now
+				st.LastOK = false
+				st.LastErr = "blackhole: handshake ok, nothing came back"
+				// Score 0 is not enough on its own: during warm-up scoreLocked
+				// returns the neutral 100 regardless. Zeroing reliability is what
+				// makes the 0 hold once samples arrive, and forcing the breaker
+				// open is what demotes it *now* — the breaker works from sample
+				// #1, which is the whole reason it is separate from the score.
+				st.Reliability = 0
+				st.OKStreak = 0
+				forceBreakerOpen(st)
+			}
+		}
+	}
+}
+
+// forceBreakerOpen trips the breaker regardless of its failure threshold. Used
+// for blackhole confirmation, where the evidence is already conclusive and
+// waiting for BreakerFailures more dead connections would mean waiting for more
+// traffic to be swallowed. failsafe-go only advances state while a permit is
+// held, so each failure is recorded behind its own acquire.
+func forceBreakerOpen(st *Stats) {
+	if st.breaker == nil {
+		return
+	}
+	for i := 0; i < maxBreakerTrip && !st.breaker.IsOpen(); i++ {
+		st.breaker.TryAcquirePermit()
+		st.breaker.RecordFailure()
+	}
 }
 
 // Score answers the data plane: the node's score, and whether it may be
@@ -282,7 +438,7 @@ func (s *Store) Score(tag string) (float64, bool) {
 	if s.cfg.Disabled {
 		return 0, true // all equal => pure latency ordering, i.e. stock sing-box
 	}
-	st := s.stats[tag]
+	st := s.stats[normalizeTag(tag)]
 	if st == nil {
 		return 100, true
 	}
@@ -311,10 +467,26 @@ func breakerState(st *Stats) (string, int) {
 	}
 }
 
+// blackholedLocked reports whether a node is currently a confirmed blackhole.
+// The streak is the state; BlackholedAt only records when it was confirmed, so
+// a single byte received anywhere clears it — recovery is immediate and does
+// not wait out a timer, because a provider fixing a broken node is normal.
+func (s *Store) blackholedLocked(st *Stats) bool {
+	limit := s.cfg.Blackhole()
+	return limit > 0 && st.BlackholeStreak >= limit
+}
+
 // scoreLocked computes the composite score. During warm-up every node reports
 // the neutral 100 — all-equal scores collapse the ordering back to pure
 // latency, which is exactly today's behaviour.
 func (s *Store) scoreLocked(st *Stats) float64 {
+	// A confirmed blackhole scores 0 even inside warm-up. Warm-up exists so a
+	// node is not condemned on one unlucky dial; it is not a reason to keep
+	// preferring a node that has proven it relays nothing. This is the one
+	// signal conclusive enough to skip it — see RecordTransfer.
+	if s.blackholedLocked(st) {
+		return 0
+	}
 	if st.Samples < s.cfg.Samples() {
 		return 100
 	}
@@ -372,7 +544,8 @@ func (s *Store) Snapshot(tags []string) []View {
 		out = append(out, s.viewLocked(st))
 	}
 	for _, t := range tags {
-		if t == "" || seen[t] {
+		t = normalizeTag(t)
+		if !scorable(t) || seen[t] {
 			continue
 		}
 		seen[t] = true
@@ -408,6 +581,9 @@ func (s *Store) viewLocked(st *Stats) View {
 		Breaker:          state,
 		BreakerRemaining: rem,
 		Preferred:        preferredOf(st),
+
+		Blackhole:       s.blackholedLocked(st),
+		BlackholeStreak: st.BlackholeStreak,
 
 		LastOK:  st.LastOK,
 		LastErr: st.LastErr,

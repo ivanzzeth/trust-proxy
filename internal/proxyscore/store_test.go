@@ -218,7 +218,7 @@ func TestPseudoOutboundsIgnored(t *testing.T) {
 	s := newTestStore(t, Config{})
 	for _, tag := range []string{"direct", "block", "blocked", ""} {
 		observeN(s, tag, 5, false, 0)
-		s.RecordTransfer(tag, 10<<20, time.Second)
+		s.RecordTransfer(tag, Transfer{Download: 10 << 20, Duration: time.Second})
 	}
 	if got := len(s.Snapshot(nil)); got != 0 {
 		t.Fatalf("snapshot has %d entries, want 0", got)
@@ -228,11 +228,11 @@ func TestPseudoOutboundsIgnored(t *testing.T) {
 // A tiny transfer is a small request, not a slow node.
 func TestThroughputIgnoresTinyTransfers(t *testing.T) {
 	s := newTestStore(t, Config{})
-	s.RecordTransfer("n", 1024, time.Second)
+	s.RecordTransfer("n", Transfer{Download: 1024, Duration: time.Second})
 	if len(s.Snapshot(nil)) != 0 {
 		t.Fatal("a 1KB transfer created a throughput sample")
 	}
-	s.RecordTransfer("n", 8<<20, time.Second)
+	s.RecordTransfer("n", Transfer{Download: 8 << 20, Duration: time.Second})
 	v := s.Snapshot(nil)[0]
 	if v.ThroughputKBps <= 0 {
 		t.Fatalf("throughput not recorded for an 8MB transfer: %+v", v)
@@ -368,5 +368,198 @@ func TestConfigValidate(t *testing.T) {
 	}
 	if zero.Formula() == "" {
 		t.Fatal("empty formula")
+	}
+}
+
+// The dial path reports a bare tag while the finalize sink arrives with
+// detector.outStr's "type/tag". Both must land on ONE record: with the two
+// spellings kept apart, the dial half never gets a throughput sample (its
+// throughput term sits at the neutral 50 forever) and the transfer half never
+// leaves warm-up at zero samples. Neither half looks wrong on its own — which is
+// how this shipped and only showed up as duplicate rows on a real gateway.
+func TestTagSpellingsCollapseToOneRecord(t *testing.T) {
+	s := New(filepath.Join(t.TempDir(), "s.json"), Config{MinSamples: 2})
+	s.Observe("🇭🇰 Hong Kong丨02", Outcome{Success: true, Latency: 50 * time.Millisecond})
+	s.Observe("🇭🇰 Hong Kong丨02", Outcome{Success: true, Latency: 50 * time.Millisecond})
+	s.RecordTransfer("anytls/🇭🇰 Hong Kong丨02", Transfer{Download: 8 << 20, Duration: time.Second})
+
+	views := s.Snapshot(nil)
+	if len(views) != 1 {
+		t.Fatalf("want 1 record, got %d: %+v", len(views), views)
+	}
+	v := views[0]
+	if v.Tag != "🇭🇰 Hong Kong丨02" {
+		t.Fatalf("stored under %q, want the bare dial tag", v.Tag)
+	}
+	// The teeth: both signals reached the same record. Samples proves the dial
+	// half is there; a throughput above the no-samples neutral 50 proves the
+	// transfer half joined it rather than starting a second record.
+	if v.Samples != 2 {
+		t.Fatalf("dial samples lost: %+v", v)
+	}
+	if v.ThroughputKBps == 0 || v.Throughput == 50 {
+		t.Fatalf("throughput never reached the dialed record: %+v", v)
+	}
+}
+
+// A node whose own name contains a slash must not be truncated into a third
+// distinct key — hence the outbound-type allow-list rather than "cut at /".
+func TestNormalizeTagOnlyStripsRealOutboundTypes(t *testing.T) {
+	cases := map[string]string{
+		"anytls/🇭🇰 Hong Kong丨02": "🇭🇰 Hong Kong丨02",
+		"socks/gw-cloud":         "gw-cloud",
+		"airport/tokyo-01":       "airport/tokyo-01", // not an outbound type: keep
+		"plain":                  "plain",
+		"vless/a/b":              "a/b", // only the first segment is the type
+	}
+	for in, want := range cases {
+		if got := normalizeTag(in); got != want {
+			t.Errorf("normalizeTag(%q) = %q, want %q", in, got, want)
+		}
+	}
+	// direct/block are pseudo-outbounds under either spelling.
+	for _, tag := range []string{"direct", "direct/direct", "block/block", ""} {
+		if scorable(normalizeTag(tag)) {
+			t.Errorf("%q should not be scorable", tag)
+		}
+	}
+}
+
+// A store written before normalization holds both halves of the same node. It
+// must fold on load rather than carry the duplicate for a whole StaleHours
+// window.
+func TestLoadFoldsLegacySplitRecords(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.json")
+	now := time.Now()
+	doc := `{"stats":[
+	  {"tag":"anytls/HK-02","reliability":90,"samples":3,"updated_at":"` + now.Add(-time.Minute).Format(time.RFC3339Nano) + `"},
+	  {"tag":"HK-02","reliability":60,"samples":9,"updated_at":"` + now.Format(time.RFC3339Nano) + `"}
+	]}`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	views := New(path, Config{}).Snapshot(nil)
+	if len(views) != 1 {
+		t.Fatalf("legacy split not folded: %+v", views)
+	}
+	// The more recently updated half wins; the two never held the same fields.
+	if views[0].Tag != "HK-02" || views[0].Samples != 9 {
+		t.Fatalf("wrong half kept: %+v", views[0])
+	}
+}
+
+// The user's report: subscriptions ship nodes that dial fine and relay nothing.
+// The dial path only ever sees a successful dial, so the node climbs to a
+// perfect score while swallowing traffic. Confirming the streak must drive the
+// score to 0 *inside warm-up* — waiting for MinSamples means 10 more dead
+// connections first.
+func TestBlackholeScoresZeroDuringWarmUp(t *testing.T) {
+	s := newTestStore(t, Config{BlackholeStreak: 3})
+	for i := 0; i < 2; i++ {
+		s.RecordTransfer("dead", Transfer{Upload: 4096, Duration: time.Second, Handshook: true})
+		if got, _ := s.Score("dead"); got != 100 {
+			t.Fatalf("dead connection %d: score = %v, want the warm-up 100 (not yet confirmed)", i+1, got)
+		}
+	}
+	s.RecordTransfer("dead", Transfer{Upload: 4096, Duration: time.Second, Handshook: true})
+	score, preferred := s.Score("dead")
+	if score != 0 {
+		t.Fatalf("confirmed blackhole score = %v, want 0", score)
+	}
+	// The breaker is what demotes it *now*: the score alone would still be the
+	// neutral 100 for every other node, so a blackhole would tie at the top.
+	if preferred {
+		t.Fatalf("confirmed blackhole is still preferred; breaker did not open")
+	}
+	v := s.Snapshot(nil)[0]
+	if !v.Blackhole || v.BlackholeStreak != 3 {
+		t.Fatalf("view does not surface the blackhole: %+v", v)
+	}
+}
+
+// A blackhole must never be dropped from the group: one bad measurement across
+// every member would otherwise leave the gateway with no egress at all. It sorts
+// last, it stays listed.
+func TestBlackholeStaysInTheSnapshot(t *testing.T) {
+	s := newTestStore(t, Config{BlackholeStreak: 1})
+	s.RecordTransfer("dead", Transfer{Upload: 1024, Duration: time.Second, Handshook: true})
+	views := s.Snapshot([]string{"dead", "alive"})
+	var found bool
+	for _, v := range views {
+		if v.Tag == "dead" {
+			found = true
+		}
+	}
+	if !found || len(views) != 2 {
+		t.Fatalf("blackhole excluded from the group: %+v", views)
+	}
+	// Score 0 sorts it last, which is the whole demotion mechanism.
+	if views[len(views)-1].Tag != "dead" {
+		t.Fatalf("blackhole did not sort last: %+v", views)
+	}
+}
+
+// One byte back proves the node relays. Recovery must not wait out a timer or a
+// restart — a provider fixing a broken node is routine.
+func TestBlackholeClearsOnAnyDownload(t *testing.T) {
+	s := newTestStore(t, Config{BlackholeStreak: 2, MinSamples: 1})
+	s.RecordTransfer("n", Transfer{Upload: 2048, Duration: time.Second, Handshook: true})
+	s.RecordTransfer("n", Transfer{Upload: 2048, Duration: time.Second, Handshook: true})
+	if got, _ := s.Score("n"); got != 0 {
+		t.Fatalf("setup: score = %v, want a confirmed blackhole at 0", got)
+	}
+	s.RecordTransfer("n", Transfer{Upload: 2048, Download: 1, Duration: time.Second, Handshook: true})
+	if got, _ := s.Score("n"); got == 0 {
+		t.Fatalf("score still 0 after bytes came back; blackhole did not clear")
+	}
+	if v := s.Snapshot(nil)[0]; v.Blackhole || v.BlackholeStreak != 0 {
+		t.Fatalf("streak not cleared: %+v", v)
+	}
+}
+
+// The two shapes that must NOT count. A connection that never reached the node
+// is already a dial failure and is scored there; a connection that sent nothing
+// (a cancelled request aborts before sending) proves nothing about the node.
+func TestBlackholeIgnoresNonEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		tr   Transfer
+	}{
+		{"never reached the node", Transfer{Upload: 4096, Duration: time.Second, Handshook: false}},
+		{"we sent nothing", Transfer{Duration: time.Second, Handshook: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t, Config{BlackholeStreak: 1})
+			s.RecordTransfer("n", tc.tr)
+			if got, _ := s.Score("n"); got != 100 {
+				t.Fatalf("score = %v, want 100: this is not evidence of a blackhole", got)
+			}
+			if len(s.Snapshot(nil)) != 0 {
+				t.Fatalf("a non-evidence transfer conjured a record: %+v", s.Snapshot(nil))
+			}
+		})
+	}
+}
+
+// -1 turns the detection off. 0 must keep meaning "unset => default", like every
+// other field in Config, which is why -1 is excluded from the generic negatives
+// rejection in Validate.
+func TestBlackholeCanBeDisabled(t *testing.T) {
+	s := newTestStore(t, Config{BlackholeStreak: -1})
+	for i := 0; i < 20; i++ {
+		s.RecordTransfer("n", Transfer{Upload: 4096, Duration: time.Second, Handshook: true})
+	}
+	if got, _ := s.Score("n"); got != 100 {
+		t.Fatalf("score = %v with detection off, want 100", got)
+	}
+	if err := (Config{BlackholeStreak: -1}).Validate(); err != nil {
+		t.Fatalf("-1 rejected: %v", err)
+	}
+	if err := (Config{BlackholeStreak: -2}).Validate(); err == nil {
+		t.Fatalf("-2 accepted; only -1 is the documented off switch")
+	}
+	if (Config{}).Resolved().BlackholeStreak != DefaultBlackholeStreak {
+		t.Fatalf("unset did not resolve to the default")
 	}
 }

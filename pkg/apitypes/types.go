@@ -445,6 +445,11 @@ type ProxyScoring struct {
 	BreakerSuccesses    int `json:"breaker_successes,omitempty"`
 
 	StaleHours int `json:"stale_hours,omitempty"`
+
+	// BlackholeStreak: consecutive "handshake ok, we sent bytes, nothing came
+	// back" connections that confirm a node as a blackhole. -1 turns the
+	// detection off; 0 means unset and resolves to the default.
+	BlackholeStreak int `json:"blackhole_streak,omitempty"`
 }
 
 // ProxyGroupsConfig mirrors internal/proxygroups.Config for wire/profile use.
@@ -484,6 +489,12 @@ type ProxyScore struct {
 	Breaker          string `json:"breaker"`
 	BreakerRemaining int    `json:"breaker_remaining_seconds,omitempty"`
 	Preferred        bool   `json:"preferred"`
+
+	// Blackhole marks a node that completes handshakes and relays nothing back.
+	// Reported separately from the score because a bare 0 reads as "very slow",
+	// and the remedy differs: a slow node is still worth keeping.
+	Blackhole       bool `json:"blackhole,omitempty"`
+	BlackholeStreak int  `json:"blackhole_streak,omitempty"`
 
 	LastOK    bool   `json:"last_ok"`
 	LastErr   string `json:"last_err,omitempty"`

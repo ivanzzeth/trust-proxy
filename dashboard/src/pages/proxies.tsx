@@ -47,6 +47,7 @@ function delayText(ms: number | undefined, timeoutLabel: string) {
 // number it is carrying: the score describes how good it has been, the breaker
 // describes whether it can be used right now, and those are different questions.
 function scoreVariant(s: ProxyScore): 'muted' | 'danger' | 'warning' | 'success' {
+  if (s.blackhole) return 'danger';
   if (!s.preferred) return 'danger';
   if (s.warming) return 'muted';
   if (s.score >= 75) return 'success';
@@ -58,7 +59,8 @@ function scoreVariant(s: ProxyScore): 'muted' | 'danger' | 'warning' | 'success'
 // opposite of "not measured yet", and a user reading a fleet of fresh 100s
 // would conclude every node is perfect.
 function scoreLabel(s: ProxyScore) {
-  return s.warming ? `${Math.round(s.score)} · ${s.samples}/${s.min_samples}` : String(Math.round(s.score));
+  if (s.warming) return `${Math.round(s.score)} · ${s.samples}/${s.min_samples}`;
+  return String(Math.round(s.score));
 }
 
 export default function Proxies() {
@@ -275,8 +277,13 @@ function ScoreBadge({ s }: { s: ProxyScore }) {
         <div className="font-medium">
           {s.tag} · {Math.round(s.score)}
         </div>
-        {s.warming && <div className="text-warning">{k('warming', { n: s.samples, min: s.min_samples })}</div>}
-        {!s.preferred && (
+        {s.blackhole && (
+          <div className="text-destructive">{k('blackhole', { n: s.blackhole_streak ?? 0 })}</div>
+        )}
+        {s.warming && !s.blackhole && (
+          <div className="text-warning">{k('warming', { n: s.samples, min: s.min_samples })}</div>
+        )}
+        {!s.preferred && !s.blackhole && (
           <div className="text-destructive">
             {k('demoted')}
             {s.breaker_remaining_seconds ? ` (${s.breaker_remaining_seconds}s)` : ''}
@@ -376,7 +383,11 @@ function ScoreBoard({ data }: { data?: ProxyScores }) {
                     <TableCell className="tnum text-right">{Math.round(s.throughput_score)}</TableCell>
                     <TableCell className="tnum text-right">{s.samples}</TableCell>
                     <TableCell className="text-xs">
-                      {!s.preferred ? (
+                      {s.blackhole ? (
+                        <span className="font-medium text-destructive">
+                          {k('blackholeShort', { n: s.blackhole_streak ?? 0 })}
+                        </span>
+                      ) : !s.preferred ? (
                         <span className="text-destructive">
                           {k('demoted')}
                           {s.breaker_remaining_seconds ? ` · ${s.breaker_remaining_seconds}s` : ''}
@@ -564,6 +575,7 @@ function ScoringSettings({
             {num(k('minSamples'), k('minSamplesHint'), 'min_samples')}
             {num(k('tieMargin'), k('tieMarginHint'), 'tie_margin_points')}
             {num(k('staleHours'), k('staleHoursHint'), 'stale_hours')}
+            {num(k('blackholeStreak'), k('blackholeStreakHint'), 'blackhole_streak')}
           </div>
 
           <div className="grid gap-3 sm:grid-cols-3">

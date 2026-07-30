@@ -83,6 +83,13 @@ type Event struct {
 	DNSMs     int64 `json:"dns_ms,omitempty"`
 	ConnectMs int64 `json:"connect_ms,omitempty"`
 	TLSMs     int64 `json:"tls_ms,omitempty"`
+	// Connected reports that the dial completed its handshake through the
+	// outbound — a separate field rather than "ConnectMs > 0" because those are
+	// truncated milliseconds and a fast node routinely reports 0. Inferring the
+	// handshake from the duration would read every quick connection as "we
+	// never reached the node", which is the opposite of the truth and is
+	// exactly the distinction the blackhole detector rests on.
+	Connected bool `json:"connected,omitempty"`
 
 	// openedAt is when Track() created this event; write-once, read by
 	// finalize() to compute DurationMS. Never mutated after Track() returns,

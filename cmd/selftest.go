@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -204,6 +205,11 @@ func runSelftest() error {
 
 	engine := detect.New(500)
 	mgr := gateway.NewManager(cfgPath, dataDir, whitelist.Rules{}, engine, "", "")
+	// The same sink serve.go installs. Without it the scorer never learns what a
+	// connection actually carried, and the blackhole section below — whose whole
+	// input is "bytes went out, none came back" — would be asserting against a
+	// harness that cannot observe its own subject.
+	engine.SetOnFinalize(mgr.RecordEvent)
 	mgr.SetInitialDNS(dns)
 	// The exit node: an http outbound at our tagging upstream.
 	nodeOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "NODE", "server": "node-exit.tp", "server_port": nodePort})
@@ -847,6 +853,183 @@ func runSelftest() error {
 			fail++
 			fmt.Printf("  FAIL  no real score after warm-up: %+v\n", good)
 		}
+
+		// restore for the sections below
+		_ = mgr.SetProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{{Name: "g", Type: "select", Filter: "manual", Nodes: []string{"NODE"}}}})
+		_ = mgr.Apply([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: nodeOB}})
+		mgr.ResetScores()
+	}
+
+	fmt.Println("== blackhole nodes ==")
+	// Subscriptions ship members that complete the handshake and then relay
+	// nothing. Every signal the dial path has says "healthy" — the dial DID
+	// succeed — so urltest keeps handing them traffic that silently goes
+	// nowhere. The verdict therefore has to come from the finished connection
+	// (bytes out, none back), and it has to beat warm-up: a fresh subscription's
+	// fake node would otherwise ride its neutral 100 for its first ten
+	// connections, which is exactly when it does its damage.
+	//
+	// Teeth: with the blackhole rules removed the node keeps reliability 100 and
+	// stays preferred, so all four assertions below fail (verified).
+	{
+		reset()
+		mgr.ResetScores()
+
+		// An upstream that speaks CONNECT correctly and then says nothing. It
+		// holds the tunnel open rather than closing it — a close would surface
+		// as an IO failure that the dial path already scores, which would prove
+		// nothing about the case that actually hurts.
+		//
+		// It swallows the payload for a beat and then drops the tunnel without
+		// ever writing a byte back. Holding it open forever would be the purer
+		// imitation, but the verdict is computed when the connection closes —
+		// so a tunnel that never ends is a test that asserts before its own
+		// evidence exists. Dropping it silently is the same signal (bytes out,
+		// none back) at a moment the test controls; it is also what these nodes
+		// do in practice once the far side times out.
+		bhPort := freePort()
+		bhLn, bhErr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", bhPort))
+		if bhErr != nil {
+			return bhErr
+		}
+		go func() {
+			for {
+				c, err := bhLn.Accept()
+				if err != nil {
+					return
+				}
+				go func(c net.Conn) {
+					defer c.Close()
+					br := bufio.NewReader(c)
+					for { // consume the CONNECT request head
+						line, err := br.ReadString('\n')
+						if err != nil {
+							return
+						}
+						if strings.TrimSpace(line) == "" {
+							break
+						}
+					}
+					_, _ = c.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+					done := make(chan struct{})
+					go func() { _, _ = io.Copy(io.Discard, br); close(done) }() // swallow the payload
+					select {
+					case <-done:
+					case <-time.After(300 * time.Millisecond):
+					}
+				}(c)
+			}
+		}()
+		defer bhLn.Close()
+
+		bhOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "SC-BH", "server": "node-exit.tp", "server_port": bhPort})
+		goodOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "SC-LIVE", "server": "node-exit.tp", "server_port": nodePort})
+		// MinSamples deliberately far above the streak: the point is that the
+		// verdict lands DURING warm-up.
+		_ = mgr.SetProxyGroups(proxygroups.Config{Scoring: proxyscore.Config{MinSamples: 10, BlackholeStreak: 2}})
+		// SC-BH first, so with no probe history it is the member that carries
+		// the traffic — the shape of a subscription whose fake node wins.
+		_ = mgr.Apply([]apitypes.Node{
+			{Tag: "SC-BH", Protocol: "http", Server: "node-exit.tp", Port: bhPort, Outbound: bhOB},
+			{Tag: "SC-LIVE", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: goodOB},
+		})
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}})
+		selectProxyGroup(clashPort, "Auto")
+		time.Sleep(250 * time.Millisecond)
+
+		// The probe drives the socket itself instead of going through
+		// http.Client. A blackhole answers by never answering, so the client's
+		// only exit is its timeout — and abandoning a request does not close the
+		// tunnel, it leaks it. The verdict is computed when the connection
+		// closes, so a probe that never closes cleanly cannot be observed at
+		// all: the assertions ran a second and a half before their own evidence
+		// arrived (that is how this was found). Closing explicitly makes the
+		// finalize sink fire at a point in the test we control.
+		bhGet := func() string {
+			c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", mixedPort), time.Second)
+			if err != nil {
+				return ""
+			}
+			defer c.Close()
+			req := fmt.Sprintf("GET http://allow.tp:%d/ HTTP/1.1\r\nHost: allow.tp:%d\r\nConnection: close\r\n\r\n",
+				directPort, directPort)
+			if _, err := c.Write([]byte(req)); err != nil {
+				return ""
+			}
+			_ = c.SetReadDeadline(time.Now().Add(900 * time.Millisecond))
+			b, _ := io.ReadAll(c)
+			if i := strings.Index(string(b), "\r\n\r\n"); i >= 0 {
+				return strings.TrimSpace(string(b)[i+4:])
+			}
+			return ""
+		}
+
+		// scoreOf reads one member out of the live view.
+		scoreOf := func(tag string) proxyscore.View {
+			for _, v := range mgr.Scores(nil) {
+				if v.Tag == tag {
+					return v
+				}
+			}
+			return proxyscore.View{}
+		}
+		// Drive dead connections until the verdict lands. The streak counts
+		// CLOSED connections and the close travels a path this test does not
+		// drive — the client hangs up, the gateway tears its half down, then the
+		// sink runs, a couple of seconds later. Polling for the verdict rather
+		// than sleeping a guessed interval is what keeps this from flaking; the
+		// bound is generous because being slow here is a stall, not a bug, while
+		// giving up early would report the feature broken.
+		for i := 0; i < 8 && !scoreOf("SC-BH").Blackhole; i++ {
+			if got := bhGet(); got != "" {
+				fmt.Printf("  note  blackhole probe %d unexpectedly answered %q\n", i+1, got)
+			}
+			for t := 0; t < 60 && scoreOf("SC-BH").BlackholeStreak <= i; t++ {
+				time.Sleep(50 * time.Millisecond)
+			}
+		}
+		// The claim is that the verdict lands on evidence, not on eventually:
+		// two dead connections were configured, so more than a handful of
+		// samples means the counter is not counting what it says it counts.
+		if n := scoreOf("SC-BH").Samples; n > 4 {
+			fmt.Printf("  note  blackhole verdict took %d samples for a streak of 2\n", n)
+		}
+
+		var bh, live proxyscore.View
+		for _, v := range mgr.Scores(nil) {
+			switch v.Tag {
+			case "SC-BH":
+				bh = v
+			case "SC-LIVE":
+				live = v
+			}
+		}
+
+		if bh.Blackhole && bh.Score == 0 {
+			pass++
+			fmt.Printf("  PASS  fake node scores 0 while still warming (samples=%d/%d)\n", bh.Samples, bh.MinSamples)
+		} else {
+			fail++
+			fmt.Printf("  FAIL  fake node not condemned: %+v\n", bh)
+		}
+		// Demote, never remove: a group that can empty itself is how the gateway
+		// once ended up with no egress at all.
+		if !bh.Preferred && bh.Breaker == "open" {
+			pass++
+			fmt.Println("  PASS  fake node demoted by the breaker, still listed in the group")
+		} else {
+			fail++
+			fmt.Printf("  FAIL  fake node not demoted: breaker=%q preferred=%v\n", bh.Breaker, bh.Preferred)
+		}
+		if live.Tag == "SC-LIVE" && !live.Blackhole {
+			pass++
+			fmt.Println("  PASS  the working node is untouched by its neighbour's verdict")
+		} else {
+			fail++
+			fmt.Printf("  FAIL  healthy node collateral: %+v\n", live)
+		}
+		// The payoff, and the user-visible claim: traffic stops going nowhere.
+		check("next connection leaves the fake node", "node", bhGet())
 
 		// restore for the sections below
 		_ = mgr.SetProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{{Name: "g", Type: "select", Filter: "manual", Nodes: []string{"NODE"}}}})
