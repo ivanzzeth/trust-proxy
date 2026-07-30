@@ -66,16 +66,21 @@ var (
 	serveMgmtPorts      string
 	serveMode           string
 	serveAutoBlock      bool
-	serveThreatFeeds    string
-	serveThreatRefresh  time.Duration
-	serveNoThreatFeed   bool
-	serveDaemon         bool
-	serveLog            string
-	servePid            string
-	serveLogMaxMB       int
-	serveLogKeep        int
-	serveLogMaxAge      int
-	serveLogCompress    bool
+	// serveAutoBlockSet records that --auto-block was given explicitly. The
+	// stored setting is the source of truth (the console and `detect set` write
+	// it, and it has to survive a restart), so the flag may only override it when
+	// somebody actually typed it.
+	serveAutoBlockSet  bool
+	serveThreatFeeds   string
+	serveThreatRefresh time.Duration
+	serveNoThreatFeed  bool
+	serveDaemon        bool
+	serveLog           string
+	servePid           string
+	serveLogMaxMB      int
+	serveLogKeep       int
+	serveLogMaxAge     int
+	serveLogCompress   bool
 
 	serveHistoryMaxMB    int
 	serveHistoryKeep     int
@@ -112,6 +117,11 @@ var serveCmd = &cobra.Command{
 		// Before anything is created — including by the daemon re-exec, and by
 		// sing-box, which writes cache.db and the Tailscale state itself.
 		tightenUmask()
+		// Whether --auto-block was typed, not what it resolved to: its default is
+		// true and so is the stored one, so the value alone cannot say "the
+		// operator asked for this". runServe needs the distinction to know when to
+		// override the persisted setting. See serveAutoBlockSet.
+		serveAutoBlockSet = cmd.Flags().Changed("auto-block")
 		dir, err := resolveDataDir(serveDataDir)
 		if err != nil {
 			return err
@@ -343,7 +353,6 @@ func runServe() error {
 	go ruleset.WarmPermitCache(rsStore.Get(), nil)
 
 	engine := detect.New(2000)
-	engine.SetAutoBlock(serveAutoBlock)
 
 	// Durable per-connection history: fold every completed connection into an
 	// append-only log + aggregates.
@@ -362,7 +371,11 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
-	engine.ApplyConfig(detCfgStore.Get())
+	detCfg, err := resolveAutoBlock(detCfgStore, serveAutoBlockSet, serveAutoBlock)
+	if err != nil {
+		logging.L().Warn().Err(err).Msg("could not persist --auto-block; applying it to this run only")
+	}
+	engine.ApplyConfig(detCfg)
 	// Disposal waits for the Permit index: it is built asynchronously and fetches
 	// remote rule sets, so until it lands every rule-set-derived Permit reads as
 	// "not permitted" — banning a destination the operator had in fact approved.
@@ -932,6 +945,38 @@ func resolveClashSecret(dataDir string) (string, error) {
 		return "", err
 	}
 	return secret, nil
+}
+
+// resolveAutoBlock folds the --auto-block flag into the stored detection config
+// and returns the config the engine should run with.
+//
+// The stored setting is the source of truth: the console switch and `detect set`
+// write it, and it has to survive a restart. So the flag may only override it
+// when somebody actually typed it — `flagSet`, not the flag's value, because the
+// flag defaults to true and so does the stored setting, leaving the value alone
+// unable to say "the operator asked for this".
+//
+// It must also run *before* ApplyConfig. The old code called
+// engine.SetAutoBlock(flag) a few lines earlier and then had
+// ApplyConfig(store.Get()) overwrite the field, which made the flag silently
+// inert. And it writes back to the store rather than only to the engine, so
+// there is one writer for the setting: otherwise `serve --auto-block=false`
+// would run with disposal off while the console showed it on, reading a file
+// the flag never touched.
+//
+// A save failure is reported, not fatal — the caller applies the returned
+// config to this run regardless.
+func resolveAutoBlock(store *detectcfg.Store, flagSet, flagValue bool) (apitypes.DetectionConfig, error) {
+	cfg := store.Get()
+	if !flagSet || cfg.AutoBlock == flagValue {
+		return cfg, nil
+	}
+	cfg.AutoBlock = flagValue
+	saved, err := store.Set(cfg)
+	if err != nil {
+		return cfg, err
+	}
+	return saved, nil
 }
 
 // detectApplier pushes tuned thresholds into the live engine (no rebuild: the

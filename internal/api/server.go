@@ -570,6 +570,16 @@ func (s *Server) handleConfirmMode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// handleAutoBlock is the one-knob shortcut for the same setting the Detection
+// page writes as DetectionConfig.AutoBlock — the top bar has a switch, and a
+// dedicated endpoint keeps it from having to read-modify-write 25 thresholds
+// just to flip one boolean.
+//
+// It must go through the store, not straight into the engine. It used to do the
+// latter, and disposal then came back on by itself at the next restart: the
+// engine field was set, nothing on disk was, and ApplyConfig(store) at boot
+// resolved AutoBlock from the file. Two writers for one setting where only one
+// of them remembers is worse than one writer — the switch looks like it worked.
 func (s *Server) handleAutoBlock(w http.ResponseWriter, r *http.Request) {
 	if s.detect == nil {
 		writeErr(w, http.StatusServiceUnavailable, "detection not available")
@@ -582,8 +592,26 @@ func (s *Server) handleAutoBlock(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "enabled is required")
 		return
 	}
-	s.detect.SetAutoBlock(req.Enabled)
-	writeJSON(w, http.StatusOK, map[string]any{"autoBlock": req.Enabled})
+	if s.detcfg == nil {
+		// No store wired (a test server, a probe built without one): fall back to
+		// the live engine so the switch still does something this run.
+		s.detect.SetAutoBlock(req.Enabled)
+		writeJSON(w, http.StatusOK, map[string]any{"autoBlock": req.Enabled})
+		return
+	}
+	cfg := s.detcfg.Get()
+	cfg.AutoBlock = req.Enabled
+	saved, err := s.detcfg.Set(cfg)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if s.detApplier != nil {
+		s.detApplier.ApplyDetectionConfig(saved)
+	} else {
+		s.detect.SetAutoBlock(saved.AutoBlock)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"autoBlock": saved.AutoBlock})
 }
 
 // Subscriptions leave this process redacted: the URL is a credential, so is

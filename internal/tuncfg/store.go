@@ -132,6 +132,5 @@ func clone(c apitypes.TUNConfig) apitypes.TUNConfig {
 	out.Address = append([]string(nil), c.Address...)
 	out.ExcludePackage = append([]string(nil), c.ExcludePackage...)
 	out.IncludePackage = append([]string(nil), c.IncludePackage...)
-	out.ExcludeProcess = append([]string(nil), c.ExcludeProcess...)
 	return out
 }

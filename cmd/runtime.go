@@ -421,8 +421,11 @@ var tunGetCmd = &cobra.Command{
 			} else {
 				fmt.Printf("address: %v (default)\n", apitypes.DefaultTUNAddresses)
 			}
-			if len(t.ExcludeProcess) > 0 {
-				fmt.Printf("exclude_process: %v\n", t.ExcludeProcess)
+			if len(t.ExcludePackage) > 0 {
+				fmt.Printf("exclude_package: %v\n", t.ExcludePackage)
+			}
+			if len(t.IncludePackage) > 0 {
+				fmt.Printf("include_package: %v\n", t.IncludePackage)
 			}
 		})
 	},
@@ -435,6 +438,8 @@ var (
 	tunStrict       bool
 	tunAutoRedirect bool
 	tunAddress      []string
+	tunExcludePkg   []string
+	tunIncludePkg   []string
 )
 
 var tunSetCmd = &cobra.Command{
@@ -467,6 +472,12 @@ var tunSetCmd = &cobra.Command{
 			}
 			if cmd.Flags().Changed("address") {
 				cfg.Address = append([]string(nil), tunAddress...)
+			}
+			if cmd.Flags().Changed("exclude-package") {
+				cfg.ExcludePackage = append([]string(nil), tunExcludePkg...)
+			}
+			if cmd.Flags().Changed("include-package") {
+				cfg.IncludePackage = append([]string(nil), tunIncludePkg...)
 			}
 		}
 		res, err := c.SetTUN(cfg)
@@ -1067,6 +1078,8 @@ func init() {
 	tunSetCmd.Flags().BoolVar(&tunStrict, "strict-route", true, "strict route")
 	tunSetCmd.Flags().BoolVar(&tunAutoRedirect, "auto-redirect", true, "Linux: nftables redirect so Docker/containerd bridge egress hits the same Permit/detect path (no-op on macOS/Windows)")
 	tunSetCmd.Flags().StringSliceVar(&tunAddress, "address", nil, "TUN interface CIDRs (empty = default 198.18.0.1/30 + ULA; avoids Docker 172.16/12)")
+	tunSetCmd.Flags().StringSliceVar(&tunExcludePkg, "exclude-package", nil, "Android: package names routed AROUND the tun (mutually exclusive with --include-package)")
+	tunSetCmd.Flags().StringSliceVar(&tunIncludePkg, "include-package", nil, "Android: route ONLY these package names into the tun (mutually exclusive with --exclude-package)")
 	groupsSetCmd.Flags().StringVarP(&groupsFile, "file", "f", "", "JSON document (- for stdin)")
 	groupsFailoverCmd.Flags().IntVar(&foInterval, "probe-interval", proxygroups.DefaultProbeInterval, "seconds between urltest probes (min 10)")
 	groupsFailoverCmd.Flags().IntVar(&foTolerance, "tolerance", proxygroups.DefaultProbeTolerance, "ms a challenger must beat the current node by; bigger = fewer switches")

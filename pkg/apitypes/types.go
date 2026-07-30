@@ -718,7 +718,11 @@ type TUNConfig struct {
 	Address        []string `json:"address,omitempty"`         // TUN interface CIDRs; empty = DefaultTUNAddresses (198.18/30, avoids Docker 172.16/12)
 	ExcludePackage []string `json:"exclude_package,omitempty"` // Android: packages routed AROUND the tun
 	IncludePackage []string `json:"include_package,omitempty"` // Android: only these packages routed INTO the tun
-	ExcludeProcess []string `json:"exclude_process,omitempty"` // process names routed AROUND the tun
+	// There is deliberately no ExcludeProcess: sing-box's tun inbound has no such
+	// option, so the field this type used to carry was stored, echoed back by
+	// `tun get`, and never injected anywhere — a setting that reads as applied
+	// and isn't. Keeping a process out of the tunnel is a Route decision, not a
+	// capture one: use a custom rule (process → direct) or no-proxy.
 }
 
 // DefaultTUNAddresses are used when TUNConfig.Address is empty. 198.18.0.0/15 is

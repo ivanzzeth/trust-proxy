@@ -635,9 +635,10 @@ export interface TUNConfig {
   auto_redirect?: boolean;
   /** TUN interface CIDRs; empty = default 198.18.0.1/30 (avoids Docker 172.16/12). */
   address?: string[];
+  /** Android: packages routed AROUND the tun (mutually exclusive with include_package). */
   exclude_package?: string[];
+  /** Android: route ONLY these packages into the tun. */
   include_package?: string[];
-  exclude_process?: string[];
 }
 
 export interface ProxyGenRequest {
