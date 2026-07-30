@@ -34,8 +34,8 @@ func Install(c Config) error {
 	// Stop an existing job before replacing its unit, so we never have systemd
 	// tracking one unit file while a process from another is still running.
 	_ = exec.Command("systemctl", "stop", UnitName).Run()
-	if err := os.WriteFile(UnitPath, []byte(unit), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", UnitPath, err)
+	if err := writeServiceDefinition(UnitPath, unit); err != nil {
+		return err
 	}
 	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
 		_ = os.Remove(UnitPath)

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 // Install writes the plist and bootstraps the job. Requires root — launchd
@@ -31,21 +32,70 @@ func Install(c Config) error {
 	}
 	// Replace an existing job rather than stacking two: bootout first, ignoring
 	// "not loaded" so a half-installed state still converges.
+	//
+	// bootout returns as soon as it has *signalled* the job. launchd then spends
+	// a beat in SIGTERMed → EXITED → PETRIFIED before the label is free again.
+	// An immediate bootstrap fails with "37: Operation already in progress"; we
+	// used to delete the plist on that failure and leave the machine with no
+	// gateway at all — which is exactly what the desktop Update button did on a
+	// live install. Wait for the label to clear, then retry on that specific race.
 	_ = exec.Command("launchctl", "bootout", "system/"+Label).Run()
-	if err := os.WriteFile(PlistPath, []byte(plist), 0o644); err != nil {
-		return fmt.Errorf("write %s: %w", PlistPath, err)
+	waitLaunchdJobGone(10 * time.Second)
+	if err := writeServiceDefinition(PlistPath, plist); err != nil {
+		return err
 	}
 	if err := os.Chown(PlistPath, 0, 0); err != nil {
 		return fmt.Errorf("chown %s: %w", PlistPath, err)
 	}
-	out, err := exec.Command("launchctl", "bootstrap", "system", PlistPath).CombinedOutput()
-	if err != nil {
+	if err := bootstrapLaunchd(PlistPath); err != nil {
 		// Leave nothing half-armed: a plist on disk that launchd rejected would
 		// come back at the next boot and fail there too, out of sight.
 		_ = os.Remove(PlistPath)
-		return fmt.Errorf("launchctl bootstrap: %v: %s", err, strings.TrimSpace(string(out)))
+		return err
 	}
 	return nil
+}
+
+// waitLaunchdJobGone polls until launchctl no longer knows the label, or the
+// deadline passes. Soft on timeout: bootstrapLaunchd still retries error 37.
+func waitLaunchdJobGone(timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !launchdJobLoaded() {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+func launchdJobLoaded() bool {
+	return exec.Command("launchctl", "print", "system/"+Label).Run() == nil
+}
+
+// bootstrapLaunchd loads the plist, retrying the bootout-settling race.
+func bootstrapLaunchd(plistPath string) error {
+	var lastOut []byte
+	var lastErr error
+	for attempt := 0; attempt < 25; attempt++ {
+		if attempt > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		lastOut, lastErr = exec.Command("launchctl", "bootstrap", "system", plistPath).CombinedOutput()
+		if lastErr == nil {
+			return nil
+		}
+		if !bootstrapInProgress(string(lastOut)) {
+			break
+		}
+	}
+	return fmt.Errorf("launchctl bootstrap: %v: %s", lastErr, strings.TrimSpace(string(lastOut)))
+}
+
+// bootstrapInProgress is the race we wait out: bootout has signalled the old
+// job but launchd has not finished removing the label yet.
+func bootstrapInProgress(out string) bool {
+	return strings.Contains(out, "Operation already in progress") ||
+		strings.Contains(out, "37:")
 }
 
 // Uninstall stops the job and removes the plist. Deliberately tolerant: this is
@@ -58,6 +108,7 @@ func Uninstall() error {
 	// this install actually put on the machine.
 	program := ProgramFromPlist()
 	_ = exec.Command("launchctl", "bootout", "system/"+Label).Run()
+	waitLaunchdJobGone(10 * time.Second)
 	if err := os.Remove(PlistPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("remove %s: %w", PlistPath, err)
 	}

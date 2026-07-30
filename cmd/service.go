@@ -128,11 +128,13 @@ var serviceStatusCmd = &cobra.Command{
 		installed, running, detail := service.Status()
 		program := service.Program()
 		missing := service.BinaryMissing(program)
+		unreadable := service.DefinitionUnreadable()
 		return out(map[string]any{
 			"platform": runtime.GOOS, "installed": installed, "running": running,
 			"detail": detail, "file": service.File(),
 			"program": program, "program_missing": missing,
-			"data_dir": paths.Data(),
+			"definition_unreadable": unreadable,
+			"data_dir":              paths.Data(),
 		}, func() {
 			fmt.Printf("%-11s %s\n", "platform:", runtime.GOOS)
 			fmt.Printf("%-11s %v (%s)\n", "installed:", installed, service.File())
@@ -141,6 +143,13 @@ var serviceStatusCmd = &cobra.Command{
 				fmt.Printf("%-11s %s\n", "program:", program)
 			}
 			fmt.Printf("%-11s %s\n", "data:", paths.Data())
+			if unreadable {
+				// Say it, rather than printing an empty program and letting the
+				// reader conclude there is nothing to check: every staleness check
+				// downstream of this field is disabled while it stays unreadable.
+				fmt.Printf("\n⚠ the service definition is not readable, so we cannot tell which binary it runs.\n")
+				fmt.Printf("  (installed before the mode fix; re-run `sudo trust-proxy install` to heal it)\n")
+			}
 			if missing {
 				// The exact state the managed copy exists to prevent: say it out
 				// loud, because the service manager will keep retrying it silently.

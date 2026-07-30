@@ -72,9 +72,18 @@ build: build-embed
 # APP_DIR is a variable of its own rather than $(dir $(APP_INSTALL)): make's $(dir)
 # splits on whitespace, and "Trust Proxy.app" is two words to it — which turned the
 # destination into "/Applications/ ./" and copied the bundle nowhere useful.
+#
+# Pin CARGO_TARGET_DIR next to the crate. Ambient CARGO_TARGET_DIR (IDE sandboxes,
+# shared caches) otherwise sends the .app somewhere else while APP_BUNDLE still
+# pointed at desktop/src-tauri/target — `make app` then either failed looking for
+# a missing tree, or silently installed a stale bundle that happened to still sit
+# at the default path. Makefile `:=` beats the environment; `make CARGO_TARGET_DIR=…`
+# on the command line still wins when you mean it.
 APP_NAME    ?= Trust Proxy.app
 APP_DIR     ?= /Applications
-APP_BUNDLE   = desktop/src-tauri/target/release/bundle/macos/$(APP_NAME)
+CARGO_TARGET_DIR := $(CURDIR)/desktop/src-tauri/target
+export CARGO_TARGET_DIR
+APP_BUNDLE   = $(CARGO_TARGET_DIR)/release/bundle/macos/$(APP_NAME)
 APP_INSTALL  = $(APP_DIR)/$(APP_NAME)
 
 ## Build the app, install it, and open it — the one command for "use the app".
@@ -90,6 +99,9 @@ ifeq ($(shell uname -s),Darwin)
 	@# of having it owned by launchd.
 	@osascript -e 'quit app "Trust Proxy"' >/dev/null 2>&1 || true
 	@pkill -f "$(APP_INSTALL)/Contents/MacOS/trust-proxy-desktop" >/dev/null 2>&1 || true
+	@test -x "$(APP_BUNDLE)/Contents/MacOS/trust-proxy" || { \
+		echo "no app at $(APP_BUNDLE)"; \
+		echo "  build-app should have put it there (CARGO_TARGET_DIR=$(CARGO_TARGET_DIR))"; exit 1; }
 	@# The bundle is only worth installing if its gateway carries the console: a
 	@# sidecar without one serves "dashboard not built" on every page, and there is
 	@# no dashboard/dist next to a .app for it to fall back to. The dependency
@@ -99,6 +111,13 @@ ifeq ($(shell uname -s),Darwin)
 	@"$(APP_BUNDLE)/Contents/MacOS/trust-proxy" version --json | grep -q '"console": *true' || { \
 		echo "the bundled gateway has no console in it — refusing to install a blank app"; \
 		echo "  (that binary should come from build-embed; check desktop-sidecar)"; exit 1; }
+	@# Refuse to install a stale .app that build-app did not actually refresh
+	@# (the CARGO_TARGET_DIR mismatch used to leave yesterday's bundle here).
+	@built=$$(./trust-proxy --version 2>/dev/null | awk '{print $$NF}'); \
+	bundled=$$("$(APP_BUNDLE)/Contents/MacOS/trust-proxy" --version 2>/dev/null | awk '{print $$NF}'); \
+	[ -n "$$built" ] && [ "$$built" = "$$bundled" ] || { \
+		echo "bundle sidecar is $$bundled but we just built $$built"; \
+		echo "  refusing to install a stale app from $(APP_BUNDLE)"; exit 1; }
 	@# Only ever delete something that is actually our bundle: APP_INSTALL is
 	@# overridable, and a typo must not take a directory with it.
 	@if [ -e "$(APP_INSTALL)" ] && [ ! -x "$(APP_INSTALL)/Contents/MacOS/trust-proxy-desktop" ]; then \
@@ -121,8 +140,8 @@ ifeq ($(shell uname -s),Darwin)
 	@$(MAKE) --no-print-directory app-service-hint
 	@open "$(APP_INSTALL)"
 else
-	@echo "==> launching the shell (bundles for this platform are in desktop/src-tauri/target/release/bundle/)"
-	./desktop/src-tauri/target/release/trust-proxy-desktop
+	@echo "==> launching the shell (bundles for this platform are in $(CARGO_TARGET_DIR)/release/bundle/)"
+	$(CARGO_TARGET_DIR)/release/trust-proxy-desktop
 endif
 
 # If a system service is installed but runs an older binary than the one just
@@ -134,8 +153,13 @@ app-service-hint:
 	@# hint existing is supposed to prevent.
 	@status=$$(./trust-proxy service status 2>/dev/null || true); \
 	prog=$$(printf '%s\n' "$$status" | sed -n 's/^program:[[:space:]]*//p'); \
-	if printf '%s\n' "$$status" | grep -q '^installed:.*true' && [ -x "$$prog" ] && \
-	   [ "$$("$$prog" --version 2>/dev/null)" != "$$(./trust-proxy --version 2>/dev/null)" ]; then \
+	if ! printf '%s\n' "$$status" | grep -q '^installed:.*true'; then :; \
+	elif [ -z "$$prog" ]; then \
+		echo "==> note: cannot read the service definition, so whether it runs an older"; \
+		echo "    gateway is unknown — and the app would attach to it either way."; \
+		echo "    heal it:  sudo ./trust-proxy install"; \
+	elif [ -x "$$prog" ] && \
+	     [ "$$("$$prog" --version 2>/dev/null)" != "$$(./trust-proxy --version 2>/dev/null)" ]; then \
 		echo "==> note: the installed service still runs an older gateway:"; \
 		echo "      $$prog ($$("$$prog" --version 2>/dev/null | awk '{print $$NF}'))"; \
 		echo "    the app attaches to that one, so the window would show the old code."; \
@@ -157,13 +181,13 @@ check-build-owner:
 		echo "don't build as root: it leaves root-owned files in the tree that your next"; \
 		echo "ordinary build cannot replace. Build as yourself; only the daemon needs root"; \
 		echo "(sudo ./trust-proxy serve / sudo ./trust-proxy service install)."; exit 1; fi
-	@bad=$$(find dashboard/dist desktop/src-tauri/target/release/bundle \
+	@bad=$$(find dashboard/dist "$(CARGO_TARGET_DIR)/release/bundle" \
 		! -user "$$(id -un)" -print -quit 2>/dev/null); \
 	if [ -n "$$bad" ]; then \
 		echo "build output owned by someone else (a previous sudo build), e.g."; \
 		echo "    $$bad"; \
 		echo "the bundlers have to delete these and cannot. Remove them once:"; \
-		echo "    sudo rm -rf dashboard/dist desktop/src-tauri/target/release/bundle"; \
+		echo "    sudo rm -rf dashboard/dist \"$(CARGO_TARGET_DIR)/release/bundle\""; \
 		exit 1; fi
 
 ## Just the console -> dashboard/dist
@@ -312,4 +336,4 @@ desktop-dev: desktop-sidecar
 
 clean:
 	rm -f trust-proxy
-	rm -rf desktop/src-tauri/binaries desktop/src-tauri/target
+	rm -rf desktop/src-tauri/binaries "$(CARGO_TARGET_DIR)"

@@ -33,8 +33,16 @@ func InstallBinary(src string) (string, error) {
 	if dstSum, err := fileSum(ManagedBinary); err == nil && dstSum == srcSum {
 		return ManagedBinary, nil
 	}
-	if err := os.MkdirAll(filepath.Dir(ManagedBinary), 0o755); err != nil {
-		return "", fmt.Errorf("create %s: %w", filepath.Dir(ManagedBinary), err)
+	dir := filepath.Dir(ManagedBinary)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("create %s: %w", dir, err)
+	}
+	// MkdirAll respects umask. `install` tightens umask to 0077 so data files
+	// stay owner-only, which would leave a freshly created libexec as 0700 —
+	// then a non-root `env` / diagnosis cannot even look inside. Force the
+	// conventional 0755 regardless of umask (and heal an older 0700 dir).
+	if err := os.Chmod(dir, 0o755); err != nil {
+		return "", fmt.Errorf("chmod %s: %w", dir, err)
 	}
 	// Write beside the target and rename: a half-copied gateway that launchd
 	// picks up would fail at boot with a truncated binary.
@@ -81,6 +89,27 @@ func InstallBinary(src string) (string, error) {
 	return ManagedBinary, nil
 }
 
+// writeServiceDefinition writes the plist/unit and forces it world-readable.
+//
+// The mode passed to WriteFile is a request, not a result: `install` tightens
+// umask to 0077 so data files stay owner-only, which lands the definition at
+// 0600 — same masking that used to leave libexec at 0700. That one was loud (a
+// non-root `env` could not look inside); this one is silent, because the readers
+// degrade instead of failing. ProgramFromPlist/ProgramFromUnit return "" on an
+// unreadable file, BinaryMissing("") is false, and every check downstream —
+// `service status`, `env`'s program_missing, the stale-gateway hint in the
+// Makefile — reads that as "nothing to warn about". A service definition is
+// public by design; the secrets live in the data directory.
+func writeServiceDefinition(path, content string) error {
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o644); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	return nil
+}
+
 // RemoveManagedBinary deletes the daemon's program, but only when it is the copy
 // we made.
 //
@@ -95,6 +124,24 @@ func RemoveManagedBinary(program string) error {
 		return err
 	}
 	return nil
+}
+
+// DefinitionUnreadable reports that the service is installed but we cannot read
+// its definition back — so Program() returned "" for lack of permission, not for
+// lack of a service.
+//
+// Worth its own answer because "" is otherwise indistinguishable from "not
+// installed", and every check downstream treats that as fine: BinaryMissing is
+// false, the stale-gateway comparison is skipped. Installs before the chmod
+// above left the definition at 0600, and this is how a machine in that state
+// says so instead of quietly reporting nothing.
+func DefinitionUnreadable() bool {
+	f := File()
+	if f == "" || !Installed() {
+		return false
+	}
+	_, err := os.ReadFile(f)
+	return err != nil
 }
 
 // BinaryMissing reports whether the plist's program is gone — the brick symptom

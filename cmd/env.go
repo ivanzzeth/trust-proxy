@@ -40,6 +40,10 @@ type envServiceInfo struct {
 	File           string `json:"file,omitempty"`
 	Program        string `json:"program,omitempty"`
 	ProgramMissing bool   `json:"program_missing"`
+	// DefinitionUnreadable separates "we cannot read the definition" from "there
+	// is no program": both leave Program empty, but only the first means the
+	// staleness checks that key off it are silently switched off.
+	DefinitionUnreadable bool `json:"definition_unreadable,omitempty"`
 }
 
 type envGatewayInfo struct {
@@ -133,6 +137,9 @@ var envCmd = &cobra.Command{
 				if e.Service.ProgramMissing {
 					fmt.Printf("%-16s ⚠ the program is gone; the service manager retries it at every boot\n", "")
 				}
+				if e.Service.DefinitionUnreadable {
+					fmt.Printf("%-16s ⚠ %s is not readable; which binary it runs cannot be checked\n", "", e.Service.File)
+				}
 			}
 			fmt.Printf("%-16s healthy=%v console=%v managed=%v version=%s\n", "gateway:",
 				e.Gateway.Healthy, e.Gateway.Console, e.Gateway.Managed, dash(e.Gateway.Version))
@@ -183,7 +190,8 @@ func collectEnv() envInfo {
 		Supported: service.File() != "" || runtime.GOOS == "windows",
 		Installed: installed, Running: running, Detail: detail,
 		File: service.File(), Program: program,
-		ProgramMissing: service.BinaryMissing(program),
+		ProgramMissing:       service.BinaryMissing(program),
+		DefinitionUnreadable: service.DefinitionUnreadable(),
 	}
 	e.Gateway = probeGateway(apiAddr)
 	// Stale is decided here, against *this* binary: on a desktop, "this binary" is
