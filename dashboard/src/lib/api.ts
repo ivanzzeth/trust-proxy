@@ -426,6 +426,20 @@ export interface DetectionConfig {
   exfil_upload_bytes?: number;
   exfil_min_ratio?: number;
   exfil_new_dest_hours?: number;
+  // Query-level DNS, host observation and JA4. These were in the Go type from
+  // the start but never in this one, so the console round-tripped them only by
+  // accident of object spread — a field the editor cannot see is a field one
+  // careless rewrite silently zeroes.
+  query_window_s?: number;
+  query_nxdomain_burst?: number;
+  query_parent_rate?: number;
+  query_odd_type_at?: number;
+  dns_bypass_detect: boolean;
+  dns_bypass_realert_s?: number;
+  route_watch_s?: number;
+  route_watch_host_routes?: boolean;
+  ja4_enabled: boolean;
+  ja4_learn_minutes?: number;
   auto_block: boolean;
   require_warm_permit: boolean;
 }

@@ -5,6 +5,7 @@ import { createHashRouter, Navigate, RouterProvider } from 'react-router-dom';
 
 import './index.css';
 import '@/i18n';
+import { applyTheme } from '@/lib/theme';
 import { AppShell } from '@/components/app-shell';
 import { AuthGate } from '@/components/auth-gate';
 import { Toaster } from '@/components/ui/sonner';
@@ -23,6 +24,10 @@ import Settings from '@/pages/settings';
 import Endpoints from '@/pages/endpoints';
 import Detection from '@/pages/detection';
 import Users from '@/pages/users';
+
+// Before the first paint, not in an effect: a saved light preference applied
+// after mount is a full-page flash of the dark class index.html ships with.
+applyTheme();
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { refetchOnWindowFocus: false, retry: 1 } },

@@ -68,6 +68,60 @@ export default {
     detObservation: 'Query & host observation',
     detObservationHint: 'DNS query-level detection, client DoH/DoT bypass, route-table watching and JA4 fingerprint learning.',
 
+    det: {
+      thresholdsDesc: 'What the connection-side detectors count as suspicious. A signal set to 0 is ignored.',
+      observationDesc:
+        'Signals that never become a connection, plus two host-side bypasses the data plane cannot see. All observation — none of these ever cuts a connection.',
+      beaconTitle: 'Beaconing (periodic re-connection)',
+      beaconHint:
+        'Regular re-connections to one destination look like a C2 heartbeat. The cooldown must outlast the cadence it reports, or a 10-minute poller re-alerts every cycle — ~144 alerts/day from one process.',
+      beaconMinSample: 'Connections before judging a cadence',
+      beaconCV: 'Max interval variation (cv)',
+      beaconWindow: 'Ignore cadences faster than (s)',
+      beaconWindowMax: 'Ignore cadences slower than (s)',
+      beaconReAlert: 'Re-alert cooldown floor (s)',
+      beaconFactor: 'Cooldown = N observed periods',
+      dgaTitle: 'DGA / DNS tunnel',
+      dgaHint:
+        'High-entropy registrable labels look like malware C2; long high-entropy subdomain labels look like data encoded into DNS. Permitted destinations are exempt, and hosting-provider suffixes (elb.amazonaws.com, herokuapp.com) are scored as what they are.',
+      dgaLabel: 'Min registrable label length',
+      dgaEntropy: 'Min entropy (DGA)',
+      tunnelLabel: 'Min subdomain label length',
+      tunnelEntropy: 'Min entropy (tunnel)',
+      subdomainAt: 'Distinct subdomains before alerting',
+      exfilTitle: 'Exfiltration',
+      exfilHint:
+        'A large upload alone is a photo sync or a container push. Exfil is the shape: lopsided, or bound for a destination never seen before.',
+      exfilBytes: 'Upload size of interest (bytes)',
+      exfilRatio: 'Upload/download ratio (0 = ignore)',
+      exfilNewDest: 'Unseen-for hours counts as new (0 = ignore)',
+      queriesTitle: 'DNS queries',
+      queriesHint:
+        'A DGA sweep is mostly NXDOMAIN and a tunnel encodes payload into the names themselves — neither ever becomes a connection, so the connection-side detectors are blind to both. Counted in fixed windows.',
+      queryWindow: 'Counting window (s)',
+      queryNX: 'NXDOMAIN per client per window',
+      queryParent: 'Queries under one parent per window',
+      queryOddType: 'TXT/NULL/ANY under one parent',
+      bypassTitle: 'Client DNS bypass',
+      bypassHint:
+        'A client resolving through public DoH/DoT never asks us, so the domain-based Permit gate only ever sees an IP. The cooldown is per endpoint: such a client keeps using it, and without one this fired 614 times in an hour on a real machine.',
+      bypassEnabled: 'Report clients using public DoH/DoT',
+      bypassReAlert: 'Per-endpoint cooldown (s)',
+      routeTitle: 'Host route watching',
+      routeHint:
+        'Polls the routing table for routes that appeared after the tunnel came up and can carry traffic around it (TunnelVision / DHCP option 121). 0 disables.',
+      routeWatch: 'Poll interval (s, 0 = off)',
+      routeHostRoutes: 'Also report /32 and /128 routes',
+      routeHostRoutesHint:
+        'Off by default: the data plane installs one host route per direct dial, so turning this on trades a finding per connection for coverage of a host-route hijack.',
+      ja4Title: 'TLS fingerprints (JA4)',
+      ja4Hint:
+        'A fingerprint describes the client stack, not its destination, so it keeps working once ECH encrypts the server name policy matches on. Nothing is reported during the baseline window — from a cold start, "unknown hash" would fire on every browser update.',
+      ja4Enabled: 'Fingerprint TLS handshakes',
+      ja4Learn: 'Baseline window (minutes)',
+      saved: 'Detection settings applied',
+    },
+
     retention: 'Logs & history',
     retentionHint:
       'How much disk the daemon log and the connection history are allowed to use. These used to be start-up arguments only, so a plain re-install silently reset them.',
@@ -196,6 +250,57 @@ export default {
     detThresholdsHint: 'beacon / DGA / 外泄的阈值。这些以前全是编译进二进制的常量——一条要重新编译才能调的告警流，没人调得动。',
     detObservation: '查询与主机观测',
     detObservationHint: 'DNS 查询级检测、客户端 DoH/DoT 绕过、路由表监控与 JA4 指纹学习期。',
+
+    det: {
+      thresholdsDesc: '连接侧检测器把什么算作可疑。某个信号设为 0 即忽略它。',
+      observationDesc: '不会变成连接的那些信号，加上两种数据面看不见的主机侧绕过。**全部只观测**，都不会断连。',
+      beaconTitle: 'Beacon（周期性回连）',
+      beaconHint:
+        '对同一目的地规律回连像 C2 心跳。冷却期必须长于它所报告的周期，否则 10 分钟一次的轮询每轮都会再报一次——单个进程一天 ~144 条。',
+      beaconMinSample: '判定周期前需观察的连接数',
+      beaconCV: '区间变异系数上限 (cv)',
+      beaconWindow: '忽略快于此的周期（秒）',
+      beaconWindowMax: '忽略慢于此的周期（秒）',
+      beaconReAlert: '重复告警冷却下限（秒）',
+      beaconFactor: '冷却期 = N 个实测周期',
+      dgaTitle: 'DGA / DNS 隧道',
+      dgaHint:
+        '高熵注册域名像恶意软件 C2；又长又高熵的子域名标签像把数据编码进 DNS。已 Permit 的目的地豁免；托管商后缀（elb.amazonaws.com、herokuapp.com）按其本来面目计分。',
+      dgaLabel: '注册域名最小长度',
+      dgaEntropy: '最小熵（DGA）',
+      tunnelLabel: '子域名标签最小长度',
+      tunnelEntropy: '最小熵（隧道）',
+      subdomainAt: '不同子域名达到多少才告警',
+      exfilTitle: '数据外泄',
+      exfilHint: '光是「上传很大」可能只是照片同步或推镜像。外泄的特征是形状：严重不对称，或目的地从未见过。',
+      exfilBytes: '值得关注的上传量（字节）',
+      exfilRatio: '上传/下载比（0 = 忽略）',
+      exfilNewDest: '多少小时未见算「新目的地」（0 = 忽略）',
+      queriesTitle: 'DNS 查询',
+      queriesHint:
+        'DGA 扫描绝大多数是 NXDOMAIN，隧道把载荷编码进域名本身——两者都不会变成连接，连接侧检测器对它们完全看不见。按固定窗口计数。',
+      queryWindow: '计数窗口（秒）',
+      queryNX: '每客户端每窗口 NXDOMAIN 条数',
+      queryParent: '每窗口单父域查询数',
+      queryOddType: '单父域下 TXT/NULL/ANY 条数',
+      bypassTitle: '客户端 DNS 绕过',
+      bypassHint:
+        '走公共 DoH/DoT 的客户端根本不问我们，基于域名的 Permit 闸只能看见一个 IP。冷却按 endpoint：这类客户端会一直用它，没有冷却时真机上一小时报了 614 条。',
+      bypassEnabled: '报告使用公共 DoH/DoT 的客户端',
+      bypassReAlert: '每 endpoint 冷却（秒）',
+      routeTitle: '主机路由监控',
+      routeHint:
+        '轮询路由表，找出隧道起来之后新出现、又能把流量带出隧道的路由（TunnelVision / DHCP option 121）。0 = 关闭。',
+      routeWatch: '轮询间隔（秒，0 = 关）',
+      routeHostRoutes: '同时报告 /32 与 /128 路由',
+      routeHostRoutesHint: '默认关：数据面每次直连拨号都会装一条主机路由，打开＝用「每条连接一个发现」换「覆盖主机路由劫持」。',
+      ja4Title: 'TLS 指纹（JA4）',
+      ja4Hint:
+        '指纹刻画的是客户端「用什么栈」而不是「去哪」，所以 ECH 把策略所依据的服务器名加密之后它依然有效。基线窗口内只记录不告警——冷启动就报「未知哈希」会在每次浏览器升级时炸一遍。',
+      ja4Enabled: '对 TLS 握手做指纹',
+      ja4Learn: '基线学习窗口（分钟）',
+      saved: '检测设置已应用',
+    },
 
     retention: '日志与历史',
     retentionHint:

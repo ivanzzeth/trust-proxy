@@ -33,6 +33,7 @@ import { useTranslation } from 'react-i18next';
 
 import { api, currentNode, setNode } from '@/lib/api';
 import { cn, fmtBytes, fmtRate } from '@/lib/utils';
+import { useTheme } from '@/lib/theme';
 import { useTrafficRate } from '@/hooks/use-traffic-rate';
 import { Logo } from '@/components/logo';
 import { ExitSwitcher } from '@/components/exit-switcher';
@@ -134,14 +135,6 @@ function AccountMenu() {
       </button>
     </div>
   );
-}
-
-function useTheme() {
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains('dark'));
-  useEffect(() => {
-    document.documentElement.classList.toggle('dark', dark);
-  }, [dark]);
-  return { dark, toggle: () => setDark((d) => !d) };
 }
 
 // GlobalModeBanner is a standing amber warning shown whenever routing is in

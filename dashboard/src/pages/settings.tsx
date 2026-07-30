@@ -3,10 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { useTranslation } from 'react-i18next';
 
-import { api, Defaults, InboundListen, Retention, RetentionRule, TUNConfig } from '@/lib/api';
+import { api, Defaults, DetectionConfig, InboundListen, Retention, RetentionRule, TUNConfig } from '@/lib/api';
 import { LANGS } from '@/i18n';
+import { ThemePref, useTheme } from '@/lib/theme';
 import { PageHeader } from '@/components/page-header';
 import { SettingGroup, SettingRow } from '@/components/setting-row';
+import { FinalRow, OpenRegistrationRow } from '@/components/policy-rows';
 import { AutoBlock, ModeSwitcher, PostureSwitcher, RoutingSwitcher } from '@/components/switchers';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -31,7 +33,6 @@ import { Textarea } from '@/components/ui/textarea';
 //   - Anything complicated gets a dialog, so the page stays a readable list.
 
 const STACKS = ['gvisor', 'system', 'mixed'];
-const FINALS = ['proxy', 'direct'];
 
 const listToText = (l?: string[]) => (l ?? []).join('\n');
 const textToList = (t: string) =>
@@ -458,55 +459,273 @@ function RetentionDialog({ open, onClose, defaults }: { open: boolean; onClose: 
   );
 }
 
-// ---- rows shared with other pages ------------------------------------------
+// ---- detection -------------------------------------------------------------
 
-/** Final egress. Also rendered at the top of the Rules routing view; both mount
- *  this, sharing the ['final'] query key, so neither can show a stale value. */
-function FinalRow() {
-  const { t } = useTranslation();
-  const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ['final'], queryFn: api.final });
-  const m = useMutation({
-    mutationFn: (outbound: string) => api.setFinal(outbound),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['final'] });
-      qc.invalidateQueries({ queryKey: ['effectiveRules'] });
-    },
-    onError: (e) => toast.error(String((e as Error).message)),
-  });
+/** A switch with a sentence under it. Same rhythm as NumField so a dialog can
+ *  mix the two without the layout going ragged. */
+function BoolField({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
   return (
-    <SettingRow label={t('pages.settings.final')} hint={t('pages.settings.finalHint')}>
-      <Select value={data?.outbound ?? 'proxy'} onValueChange={(v) => m.mutate(v)} disabled={m.isPending}>
-        <SelectTrigger className="h-8 w-32">
-          <SelectValue />
-        </SelectTrigger>
-        <SelectContent>
-          {FINALS.map((o) => (
-            <SelectItem key={o} value={o}>
-              {o}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    </SettingRow>
+    <label className="flex items-start justify-between gap-4">
+      <span>
+        <span className="text-sm">{label}</span>
+        {hint && <p className="text-[11px] leading-relaxed text-muted-foreground">{hint}</p>}
+      </span>
+      <Switch className="mt-0.5" checked={checked} onCheckedChange={onChange} />
+    </label>
   );
 }
 
-/** Open registration. Also on the Users page; same component, same query key. */
-function OpenRegistrationRow() {
+/** A titled block inside a detection dialog: the enable switch lives in the
+ *  heading, because a threshold you can still type into while the detector is
+ *  off reads as if it were doing something. */
+function DetSection({
+  title,
+  hint,
+  enabled,
+  onToggle,
+  children,
+}: {
+  title: string;
+  hint: string;
+  enabled?: boolean;
+  onToggle?: (v: boolean) => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-3 rounded-md border p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-sm font-medium">{title}</div>
+        {onToggle && <Switch checked={!!enabled} onCheckedChange={onToggle} />}
+      </div>
+      <p className="text-[11px] leading-relaxed text-muted-foreground">{hint}</p>
+      {children}
+    </div>
+  );
+}
+
+/** Both detection dialogs edit one document and PUT it whole, so they share a
+ *  draft: the wire type now names every field, which is what keeps the dialog
+ *  that does not show a knob from writing a zero over it. */
+function useDetectionDraft(open: boolean, onClose: () => void) {
   const { t } = useTranslation();
   const qc = useQueryClient();
-  const { data } = useQuery({ queryKey: ['authSettings'], queryFn: api.authSettings });
+  const { data } = useQuery({ queryKey: ['detection-config'], queryFn: api.detectionConfig });
+  const [draft, setDraft] = useState<DetectionConfig | null>(null);
+  useEffect(() => {
+    if (data && open) setDraft({ ...data });
+  }, [data, open]);
+
+  const save = useMutation({
+    mutationFn: (c: DetectionConfig) => api.setDetectionConfig(c),
+    onSuccess: () => {
+      toast.success(t('pages.settings.det.saved'));
+      qc.invalidateQueries({ queryKey: ['detection-config'] });
+      onClose();
+    },
+    onError: (e) => toast.error(String((e as Error).message)),
+  });
+
+  const patch = (p: Partial<DetectionConfig>) => setDraft((d) => (d ? { ...d, ...p } : d));
+  return { draft, setDraft, patch, save };
+}
+
+function DetThresholdsDialog({ open, onClose, defaults }: { open: boolean; onClose: () => void; defaults?: Defaults }) {
+  const { t } = useTranslation();
+  const { draft, setDraft, patch, save } = useDetectionDraft(open, onClose);
+  if (!draft) return null;
+  const d = defaults?.detection;
+  return (
+    <EditorDialog
+      open={open}
+      onClose={onClose}
+      title={t('pages.settings.detThresholds')}
+      description={t('pages.settings.det.thresholdsDesc')}
+      pending={save.isPending}
+      // Only this dialog's own fields go back to default; the other half of the
+      // document is left as the operator set it.
+      onRestore={
+        d
+          ? () =>
+              setDraft({
+                ...draft,
+                beacon_enabled: d.beacon_enabled,
+                beacon_min_sample: d.beacon_min_sample,
+                beacon_cv: d.beacon_cv,
+                beacon_min_interval_s: d.beacon_min_interval_s,
+                beacon_max_interval_s: d.beacon_max_interval_s,
+                beacon_realert_s: d.beacon_realert_s,
+                beacon_realert_factor: d.beacon_realert_factor,
+                dga_enabled: d.dga_enabled,
+                dga_min_label_len: d.dga_min_label_len,
+                dga_min_entropy: d.dga_min_entropy,
+                tunnel_min_label_len: d.tunnel_min_label_len,
+                tunnel_min_entropy: d.tunnel_min_entropy,
+                subdomain_alert_at: d.subdomain_alert_at,
+                exfil_upload_bytes: d.exfil_upload_bytes,
+                exfil_min_ratio: d.exfil_min_ratio,
+                exfil_new_dest_hours: d.exfil_new_dest_hours,
+              })
+          : undefined
+      }
+      onSave={() => save.mutate(draft)}
+    >
+      <DetSection
+        title={t('pages.settings.det.beaconTitle')}
+        hint={t('pages.settings.det.beaconHint')}
+        enabled={draft.beacon_enabled}
+        onToggle={(v) => patch({ beacon_enabled: v })}
+      >
+        <div className="grid grid-cols-2 gap-3">
+          <NumField label={t('pages.settings.det.beaconMinSample')} value={draft.beacon_min_sample ?? 0} def={d?.beacon_min_sample} onChange={(v) => patch({ beacon_min_sample: v })} />
+          <NumField label={t('pages.settings.det.beaconCV')} step="0.05" value={draft.beacon_cv ?? 0} def={d?.beacon_cv} onChange={(v) => patch({ beacon_cv: v })} />
+          <NumField label={t('pages.settings.det.beaconWindow')} value={draft.beacon_min_interval_s ?? 0} def={d?.beacon_min_interval_s} onChange={(v) => patch({ beacon_min_interval_s: v })} />
+          <NumField label={t('pages.settings.det.beaconWindowMax')} value={draft.beacon_max_interval_s ?? 0} def={d?.beacon_max_interval_s} onChange={(v) => patch({ beacon_max_interval_s: v })} />
+          <NumField label={t('pages.settings.det.beaconReAlert')} value={draft.beacon_realert_s ?? 0} def={d?.beacon_realert_s} onChange={(v) => patch({ beacon_realert_s: v })} />
+          <NumField label={t('pages.settings.det.beaconFactor')} value={draft.beacon_realert_factor ?? 0} def={d?.beacon_realert_factor} onChange={(v) => patch({ beacon_realert_factor: v })} />
+        </div>
+      </DetSection>
+
+      <DetSection
+        title={t('pages.settings.det.dgaTitle')}
+        hint={t('pages.settings.det.dgaHint')}
+        enabled={draft.dga_enabled}
+        onToggle={(v) => patch({ dga_enabled: v })}
+      >
+        <div className="grid grid-cols-2 gap-3">
+          <NumField label={t('pages.settings.det.dgaLabel')} value={draft.dga_min_label_len ?? 0} def={d?.dga_min_label_len} onChange={(v) => patch({ dga_min_label_len: v })} />
+          <NumField label={t('pages.settings.det.dgaEntropy')} step="0.1" value={draft.dga_min_entropy ?? 0} def={d?.dga_min_entropy} onChange={(v) => patch({ dga_min_entropy: v })} />
+          <NumField label={t('pages.settings.det.tunnelLabel')} value={draft.tunnel_min_label_len ?? 0} def={d?.tunnel_min_label_len} onChange={(v) => patch({ tunnel_min_label_len: v })} />
+          <NumField label={t('pages.settings.det.tunnelEntropy')} step="0.1" value={draft.tunnel_min_entropy ?? 0} def={d?.tunnel_min_entropy} onChange={(v) => patch({ tunnel_min_entropy: v })} />
+          <NumField label={t('pages.settings.det.subdomainAt')} value={draft.subdomain_alert_at ?? 0} def={d?.subdomain_alert_at} onChange={(v) => patch({ subdomain_alert_at: v })} />
+        </div>
+      </DetSection>
+
+      <DetSection title={t('pages.settings.det.exfilTitle')} hint={t('pages.settings.det.exfilHint')}>
+        <div className="grid grid-cols-2 gap-3">
+          <NumField label={t('pages.settings.det.exfilBytes')} value={draft.exfil_upload_bytes ?? 0} def={d?.exfil_upload_bytes} onChange={(v) => patch({ exfil_upload_bytes: v })} />
+          <NumField label={t('pages.settings.det.exfilRatio')} step="0.5" value={draft.exfil_min_ratio ?? 0} def={d?.exfil_min_ratio} onChange={(v) => patch({ exfil_min_ratio: v })} />
+          <NumField label={t('pages.settings.det.exfilNewDest')} value={draft.exfil_new_dest_hours ?? 0} def={d?.exfil_new_dest_hours} onChange={(v) => patch({ exfil_new_dest_hours: v })} />
+        </div>
+      </DetSection>
+    </EditorDialog>
+  );
+}
+
+/** The ten knobs that existed in Go and on the CLI but had never been drawn. */
+function DetObservationDialog({ open, onClose, defaults }: { open: boolean; onClose: () => void; defaults?: Defaults }) {
+  const { t } = useTranslation();
+  const { draft, setDraft, patch, save } = useDetectionDraft(open, onClose);
+  if (!draft) return null;
+  const d = defaults?.detection;
+  return (
+    <EditorDialog
+      open={open}
+      onClose={onClose}
+      title={t('pages.settings.detObservation')}
+      description={t('pages.settings.det.observationDesc')}
+      pending={save.isPending}
+      onRestore={
+        d
+          ? () =>
+              setDraft({
+                ...draft,
+                query_window_s: d.query_window_s,
+                query_nxdomain_burst: d.query_nxdomain_burst,
+                query_parent_rate: d.query_parent_rate,
+                query_odd_type_at: d.query_odd_type_at,
+                dns_bypass_detect: d.dns_bypass_detect,
+                dns_bypass_realert_s: d.dns_bypass_realert_s,
+                route_watch_s: d.route_watch_s,
+                route_watch_host_routes: d.route_watch_host_routes,
+                ja4_enabled: d.ja4_enabled,
+                ja4_learn_minutes: d.ja4_learn_minutes,
+              })
+          : undefined
+      }
+      onSave={() => save.mutate(draft)}
+    >
+      <DetSection title={t('pages.settings.det.queriesTitle')} hint={t('pages.settings.det.queriesHint')}>
+        <div className="grid grid-cols-2 gap-3">
+          <NumField label={t('pages.settings.det.queryWindow')} value={draft.query_window_s ?? 0} def={d?.query_window_s} onChange={(v) => patch({ query_window_s: v })} />
+          <NumField label={t('pages.settings.det.queryNX')} value={draft.query_nxdomain_burst ?? 0} def={d?.query_nxdomain_burst} onChange={(v) => patch({ query_nxdomain_burst: v })} />
+          <NumField label={t('pages.settings.det.queryParent')} value={draft.query_parent_rate ?? 0} def={d?.query_parent_rate} onChange={(v) => patch({ query_parent_rate: v })} />
+          <NumField label={t('pages.settings.det.queryOddType')} value={draft.query_odd_type_at ?? 0} def={d?.query_odd_type_at} onChange={(v) => patch({ query_odd_type_at: v })} />
+        </div>
+      </DetSection>
+
+      <DetSection title={t('pages.settings.det.bypassTitle')} hint={t('pages.settings.det.bypassHint')}>
+        <BoolField
+          label={t('pages.settings.det.bypassEnabled')}
+          checked={draft.dns_bypass_detect}
+          onChange={(v) => patch({ dns_bypass_detect: v })}
+        />
+        <NumField
+          label={t('pages.settings.det.bypassReAlert')}
+          value={draft.dns_bypass_realert_s ?? 0}
+          def={d?.dns_bypass_realert_s}
+          onChange={(v) => patch({ dns_bypass_realert_s: v })}
+        />
+      </DetSection>
+
+      <DetSection title={t('pages.settings.det.routeTitle')} hint={t('pages.settings.det.routeHint')}>
+        <NumField
+          label={t('pages.settings.det.routeWatch')}
+          value={draft.route_watch_s ?? 0}
+          def={d?.route_watch_s}
+          onChange={(v) => patch({ route_watch_s: v })}
+        />
+        <BoolField
+          label={t('pages.settings.det.routeHostRoutes')}
+          hint={t('pages.settings.det.routeHostRoutesHint')}
+          checked={!!draft.route_watch_host_routes}
+          onChange={(v) => patch({ route_watch_host_routes: v })}
+        />
+      </DetSection>
+
+      <DetSection title={t('pages.settings.det.ja4Title')} hint={t('pages.settings.det.ja4Hint')}>
+        <BoolField
+          label={t('pages.settings.det.ja4Enabled')}
+          checked={draft.ja4_enabled}
+          onChange={(v) => patch({ ja4_enabled: v })}
+        />
+        <NumField
+          label={t('pages.settings.det.ja4Learn')}
+          value={draft.ja4_learn_minutes ?? 0}
+          def={d?.ja4_learn_minutes}
+          onChange={(v) => patch({ ja4_learn_minutes: v })}
+        />
+      </DetSection>
+    </EditorDialog>
+  );
+}
+
+/** Disposal waits for the Permit index. Lives here rather than in a dialog
+ *  because it is one switch and it is the one that decides whether a finding
+ *  can ban something you approved. */
+function WarmPermitRow() {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const { data } = useQuery({ queryKey: ['detection-config'], queryFn: api.detectionConfig });
   const m = useMutation({
-    mutationFn: (v: boolean) => api.setAuthSettings(v),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['authSettings'] }),
+    mutationFn: (v: boolean) => api.setDetectionConfig({ ...(data as DetectionConfig), require_warm_permit: v }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['detection-config'] }),
     onError: (e) => toast.error(String((e as Error).message)),
   });
   return (
-    <SettingRow label={t('pages.settings.openReg')} hint={t('pages.settings.openRegHint')} tone="warn">
+    <SettingRow label={t('pages.settings.warmPermit')} hint={t('pages.settings.warmPermitHint')}>
       <Switch
-        checked={data?.allow_registration ?? false}
-        disabled={m.isPending}
+        checked={data?.require_warm_permit ?? true}
+        disabled={!data || m.isPending}
         onCheckedChange={(v) => m.mutate(v)}
       />
     </SettingRow>
@@ -536,9 +755,30 @@ function LanguageRow() {
   );
 }
 
+/** Theme. Three states, not two: "follow the system" is the one a console left
+ *  open all day wants, and it was the one the sidebar toggle could not express. */
+function ThemeRow() {
+  const { t } = useTranslation();
+  const { pref, setPref } = useTheme();
+  return (
+    <SettingRow label={t('pages.settings.theme')} hint={t('pages.settings.themeHint')}>
+      <Select value={pref} onValueChange={(v) => setPref(v as ThemePref)}>
+        <SelectTrigger className="h-8 w-32">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="system">{t('pages.settings.themeSystem')}</SelectItem>
+          <SelectItem value="dark">{t('pages.settings.themeDark')}</SelectItem>
+          <SelectItem value="light">{t('pages.settings.themeLight')}</SelectItem>
+        </SelectContent>
+      </Select>
+    </SettingRow>
+  );
+}
+
 // ---- page ------------------------------------------------------------------
 
-type DialogName = 'tun' | 'inbound' | 'retention' | null;
+type DialogName = 'tun' | 'inbound' | 'retention' | 'detThresholds' | 'detObservation' | null;
 
 export default function Settings() {
   const { t } = useTranslation();
@@ -599,7 +839,17 @@ export default function Settings() {
             <SettingRow label={t('pages.settings.autoBlock')} hint={t('pages.settings.autoBlockHint')} tone="warn">
               <AutoBlock compact />
             </SettingRow>
-            <SettingRow label={t('pages.settings.detThresholds')} hint={t('pages.settings.detThresholdsHint')} to="/detection" />
+            <WarmPermitRow />
+            <SettingRow
+              label={t('pages.settings.detThresholds')}
+              hint={t('pages.settings.detThresholdsHint')}
+              onClick={() => setDialog('detThresholds')}
+            />
+            <SettingRow
+              label={t('pages.settings.detObservation')}
+              hint={t('pages.settings.detObservationHint')}
+              onClick={() => setDialog('detObservation')}
+            />
           </SettingGroup>
 
           <SettingGroup title={t('pages.settings.grpSystem')} description={t('pages.settings.grpSystemDesc')}>
@@ -622,6 +872,7 @@ export default function Settings() {
 
           <SettingGroup title={t('pages.settings.grpUI')}>
             <LanguageRow />
+            <ThemeRow />
           </SettingGroup>
         </div>
       </div>
@@ -629,6 +880,8 @@ export default function Settings() {
       <TunDialog open={dialog === 'tun'} onClose={() => setDialog(null)} defaults={defaults} />
       <InboundDialog open={dialog === 'inbound'} onClose={() => setDialog(null)} defaults={defaults} />
       <RetentionDialog open={dialog === 'retention'} onClose={() => setDialog(null)} defaults={defaults} />
+      <DetThresholdsDialog open={dialog === 'detThresholds'} onClose={() => setDialog(null)} defaults={defaults} />
+      <DetObservationDialog open={dialog === 'detObservation'} onClose={() => setDialog(null)} defaults={defaults} />
     </div>
   );
 }

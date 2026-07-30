@@ -74,6 +74,23 @@ function mockApi(over: Partial<Record<keyof typeof api, unknown>> = {}) {
   vi.spyOn(api, 'final').mockResolvedValue({ outbound: 'proxy' });
   vi.spyOn(api, 'authSettings').mockResolvedValue({ allow_registration: false });
   vi.spyOn(api, 'tun').mockResolvedValue({ stack: 'system', mtu: 1400, strict_route: false, auto_redirect: false });
+  vi.spyOn(api, 'detectionConfig').mockResolvedValue({
+    beacon_enabled: true,
+    beacon_min_sample: 9,
+    beacon_realert_factor: 12,
+    dga_enabled: true,
+    exfil_upload_bytes: 20971520,
+    exfil_min_ratio: 7,
+    exfil_new_dest_hours: 48,
+    // Observation half: only the other dialog draws these, and the assertion
+    // below is that saving from one dialog does not flatten the other's fields.
+    query_nxdomain_burst: 30,
+    dns_bypass_detect: true,
+    ja4_enabled: true,
+    ja4_learn_minutes: 1440,
+    auto_block: true,
+    require_warm_permit: true,
+  });
 }
 
 function renderPage() {
@@ -128,6 +145,29 @@ describe('Settings', () => {
 
     await user.click(within(dialog).getByText('pages.settings.inboundKeep'));
     await waitFor(() => expect(confirm).toHaveBeenCalled());
+  });
+
+  it('edits detection thresholds the backend reports, and does not flatten the fields it never draws', async () => {
+    mockApi();
+    const put = vi.spyOn(api, 'setDetectionConfig').mockResolvedValue({} as never);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByText('pages.settings.detThresholds'));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByDisplayValue('9')).toBeTruthy();
+    expect(within(dialog).getByDisplayValue('48')).toBeTruthy();
+
+    await user.click(within(dialog).getByText('pages.settings.save'));
+    await waitFor(() => expect(put).toHaveBeenCalled());
+
+    // Both dialogs PUT one whole document. The thresholds editor never draws
+    // the query/JA4 half, so this is the assertion that it carries it through
+    // rather than sending a zero over a setting the operator can't even see.
+    const sent = put.mock.calls[0][0];
+    expect(sent.query_nxdomain_burst).toBe(30);
+    expect(sent.ja4_learn_minutes).toBe(1440);
+    expect(sent.dns_bypass_detect).toBe(true);
   });
 
   it('shows the build and data directory an admin gets from /api/status', async () => {

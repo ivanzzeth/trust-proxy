@@ -6,12 +6,12 @@ import { useTranslation } from 'react-i18next';
 
 import { api, PermitRequest, Role, User } from '@/lib/api';
 import { PageHeader } from '@/components/page-header';
+import { OpenRegistrationSwitch } from '@/components/policy-rows';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
 // User administration, admin-only (the API enforces that; this page just would not
@@ -34,7 +34,6 @@ export default function Users() {
   const err = (e: unknown) => toast.error(String((e as Error).message));
 
   const { data: users = [] } = useQuery({ queryKey: ['users'], queryFn: api.users });
-  const { data: settings } = useQuery({ queryKey: ['authSettings'], queryFn: api.authSettings });
   const { data: requests = [] } = useQuery({ queryKey: ['permitRequests'], queryFn: api.permitRequests });
   // Which of these rows is the person looking at the page: only that one is asked
   // for its current password.
@@ -48,11 +47,6 @@ export default function Users() {
       toast.success(t('pages.users.created'));
       invalidate();
     },
-    onError: err,
-  });
-  const setRegistration = useMutation({
-    mutationFn: api.setAuthSettings,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['authSettings'] }),
     onError: err,
   });
 
@@ -109,10 +103,7 @@ export default function Users() {
                 <div className="text-sm font-medium">{t('pages.users.registration')}</div>
                 <div className="text-xs text-muted-foreground">{t('pages.users.registrationHint')}</div>
               </div>
-              <Switch
-                checked={!!settings?.allow_registration}
-                onCheckedChange={(v) => setRegistration.mutate(v)}
-              />
+              <OpenRegistrationSwitch />
             </div>
           </CardContent>
         </Card>

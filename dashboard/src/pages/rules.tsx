@@ -1,20 +1,18 @@
 import { useMemo, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 
 import { api, RuleView } from '@/lib/api';
 import { matchesQuery, usePagedList } from '@/hooks/use-paged-list';
 import { PageHeader } from '@/components/page-header';
 import { ListSearch, PaginationBar } from '@/components/pagination-bar';
+import { FinalSelect } from '@/components/policy-rows';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import RuleSets from '@/pages/rulesets';
 import CustomRules from '@/pages/custom-rules';
-
-const FINAL_BUILTINS = ['proxy', 'direct', 'blocked'] as const;
 
 // Rules unifies the three policy views: Routing (the effective, layer-labeled
 // policy — "why is this allowed/blocked"), Rule Sets, and Custom routing rules.
@@ -63,25 +61,12 @@ const layerColor = (l: string): 'danger' | 'warning' | 'default' | 'muted' | 'su
 
 function Routing() {
   const { t } = useTranslation();
-  const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const { data: rules = [], isLoading } = useQuery({
     queryKey: ['effectiveRules'],
     queryFn: api.effectiveRules,
     refetchInterval: 5000,
   });
-  const { data: finalCfg } = useQuery({
-    queryKey: ['final'],
-    queryFn: api.final,
-  });
-  const setFinal = useMutation({
-    mutationFn: (outbound: string) => api.setFinal(outbound),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['final'] });
-      qc.invalidateQueries({ queryKey: ['effectiveRules'] });
-    },
-  });
-
   const filtered = useMemo(
     () =>
       rules.filter((r: RuleView) =>
@@ -96,22 +81,7 @@ function Routing() {
       <div className="mb-4 flex flex-wrap items-end gap-4">
         <div className="space-y-1.5">
           <Label className="text-xs text-muted-foreground">{t('pages.rules.finalLabel')}</Label>
-          <Select
-            value={finalCfg?.outbound ?? 'proxy'}
-            onValueChange={(v) => setFinal.mutate(v)}
-            disabled={setFinal.isPending}
-          >
-            <SelectTrigger className="w-40">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {FINAL_BUILTINS.map((o) => (
-                <SelectItem key={o} value={o}>
-                  {t(`pages.rules.final.${o}`)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <FinalSelect className="w-40" />
         </div>
         <p className="max-w-xl flex-1 text-sm text-muted-foreground">{t('pages.rules.finalHint')}</p>
         <ListSearch
