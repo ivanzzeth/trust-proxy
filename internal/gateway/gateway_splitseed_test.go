@@ -74,7 +74,7 @@ func TestSplitSeedStartsWithTheFullCatalog(t *testing.T) {
 	merged, err := buildMergedConfig([]byte(baseCfg), nodes,
 		whitelist.Rules{Domains: []string{"example.com"}}, blacklist.Rules{}, quarantine.List{},
 		directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeManual, sets,
-		dns, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil,
+		dns, apitypes.InboundAuth{}, apitypes.InboundListen{}, apitypes.TUNConfig{}, nil, nil,
 		"proxy", apitypes.PostureSplit, "sekret", "", t.TempDir())
 	if err != nil {
 		t.Fatalf("buildMergedConfig: %v", err)

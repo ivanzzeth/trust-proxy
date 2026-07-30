@@ -39,7 +39,10 @@ import (
 const (
 	DefaultMaxSizeMB  = 32
 	DefaultMaxBackups = 3
-	ringSlots         = 16 << 10
+	// noRotationMB is how "don't rotate" is spelled to lumberjack, which has no
+	// off switch: a size ceiling in petabytes is never reached.
+	noRotationMB = 1 << 30
+	ringSlots    = 16 << 10
 	// 0 => diode uses a waiter instead of a poller: the drain goroutine wakes on
 	// the write itself, so lines hit the file immediately and there are no idle
 	// timer wakeups.
@@ -63,7 +66,116 @@ var (
 	mu     sync.Mutex
 	logger = newConsoleLogger(os.Stderr)
 	sink   io.Writer // the ring, once Setup installed one
+	rot    *rotator  // the swappable lumberjack behind the ring, once Setup installed one
 )
+
+// rotator is the indirection that makes rotation settings changeable at
+// runtime. lumberjack exposes no setters and takes its own lock inside Write,
+// so the only safe way to change MaxSize/MaxBackups/MaxAge/Compress is to build
+// a new *lumberjack.Logger and swap the pointer.
+//
+// The swap has to happen HERE rather than by re-running Setup, because Setup
+// also builds the diode ring and re-points fd 1/2 into it. Tearing that down to
+// change a retention number would drop sing-box's own log lines for as long as
+// the stdio pipe was being rebuilt (and captureStdio's stop can block for two
+// seconds), all to change how many old files are kept.
+type rotator struct {
+	mu   sync.RWMutex
+	lj   *lumberjack.Logger
+	opts Options
+}
+
+func (r *rotator) Write(p []byte) (int, error) {
+	r.mu.RLock()
+	lj := r.lj
+	r.mu.RUnlock()
+	return lj.Write(p)
+}
+
+func (r *rotator) Close() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lj.Close()
+}
+
+// swap installs a logger built from o, keeping the same file, and closes the
+// old one. Only the ring's drain goroutine calls Write, and it does so under
+// RLock, so no writer can be inside the old logger when it is closed.
+func (r *rotator) swap(o Options) error {
+	next := newLumberjack(o)
+	r.mu.Lock()
+	prev := r.lj
+	r.lj = next
+	r.opts = o
+	r.mu.Unlock()
+	if prev != nil {
+		return prev.Close()
+	}
+	return nil
+}
+
+func newLumberjack(o Options) *lumberjack.Logger {
+	return &lumberjack.Logger{
+		Filename:   o.Path,
+		MaxSize:    o.MaxSizeMB,
+		MaxBackups: o.MaxBackups,
+		MaxAge:     o.MaxAgeDays,
+		Compress:   o.Compress,
+	}
+}
+
+// SetRotation changes the rotation policy of the running log file without
+// disturbing the ring or the stdio capture. Path and CaptureStdio are ignored:
+// they are properties of the installed stack, not of the policy.
+//
+// Returns an error only when Setup never installed a file logger (foreground
+// runs log to the terminal, which does not rotate).
+func SetRotation(o Options) error {
+	mu.Lock()
+	r := rot
+	mu.Unlock()
+	if r == nil {
+		return fmt.Errorf("logging: no rotating log file installed (running in the foreground?)")
+	}
+	r.mu.RLock()
+	cur := r.opts
+	r.mu.RUnlock()
+	// Path is fixed by Setup; only the policy fields move.
+	o.Path = cur.Path
+	o.CaptureStdio = cur.CaptureStdio
+	normalizeRotation(&o)
+	return r.swap(o)
+}
+
+// Rotation reports the policy currently in force, or false when logging to a
+// terminal.
+func Rotation() (Options, bool) {
+	mu.Lock()
+	r := rot
+	mu.Unlock()
+	if r == nil {
+		return Options{}, false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.opts, true
+}
+
+// normalizeRotation resolves the "unset" spellings. MaxSizeMB < 0 means the
+// operator asked for no rotation at all, which lumberjack spells as a size
+// ceiling so high it is never reached (it has no explicit off switch).
+func normalizeRotation(o *Options) {
+	if o.MaxSizeMB < 0 {
+		o.MaxSizeMB = noRotationMB
+		return
+	}
+	if o.MaxSizeMB == 0 {
+		o.MaxSizeMB = DefaultMaxSizeMB
+	}
+	if o.MaxBackups <= 0 {
+		o.MaxBackups = DefaultMaxBackups
+	}
+}
 
 // Sink returns the async ring writer, or nil when logging goes to a terminal.
 // Handed to sing-box as box.Options.DefaultLogWriter so its per-connection log
@@ -90,23 +202,16 @@ func Setup(o Options) (stop func(), err error) {
 		set(newConsoleLogger(os.Stderr))
 		return func() {}, nil
 	}
-	if o.MaxSizeMB <= 0 {
-		o.MaxSizeMB = DefaultMaxSizeMB
-	}
-	if o.MaxBackups <= 0 {
-		o.MaxBackups = DefaultMaxBackups
-	}
-	rotating := &lumberjack.Logger{
-		Filename:   o.Path,
-		MaxSize:    o.MaxSizeMB,
-		MaxBackups: o.MaxBackups,
-		MaxAge:     o.MaxAgeDays,
-		Compress:   o.Compress,
-	}
+	normalizeRotation(&o)
+	// The ring writes through the rotator, not straight to lumberjack, so the
+	// retention policy can be swapped later without rebuilding the ring or the
+	// stdio pipe. See rotator's comment.
+	rotating := &rotator{lj: newLumberjack(o), opts: o}
 	ring := newRing(rotating, nil)
 
 	set(zerolog.New(&ring).With().Timestamp().Logger())
 	setSink(&ring)
+	setRotator(rotating)
 
 	stopStdio := func() {}
 	if o.CaptureStdio {
@@ -114,6 +219,7 @@ func Setup(o Options) (stop func(), err error) {
 		if err != nil {
 			_ = ring.Close()
 			_ = rotating.Close()
+			setRotator(nil)
 			return func() {}, err
 		}
 		stopStdio = s
@@ -124,6 +230,7 @@ func Setup(o Options) (stop func(), err error) {
 		_ = rotating.Close()
 		set(newConsoleLogger(os.Stderr))
 		setSink(nil)
+		setRotator(nil)
 	}, nil
 }
 
@@ -152,6 +259,12 @@ func set(l zerolog.Logger) {
 func setSink(w io.Writer) {
 	mu.Lock()
 	sink = w
+	mu.Unlock()
+}
+
+func setRotator(r *rotator) {
+	mu.Lock()
+	rot = r
 	mu.Unlock()
 }
 

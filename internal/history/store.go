@@ -101,6 +101,7 @@ type Store struct {
 	path string
 	mu   sync.Mutex
 	w    *lumberjack.Logger // owns rotation/retention/compression
+	opts Options            // the policy w was built from, defaults resolved
 	now  func() time.Time
 
 	// readMu serializes RecentPage's disk reads with each other only — kept
@@ -158,21 +159,58 @@ func NewStoreWithOptions(path string, o Options) (*Store, error) {
 			}
 		}
 	}
+	s.opts = o.resolved()
+	s.w = newRotator(path, s.opts)
+	s.startAggregateSaver(30 * time.Second)
+	return s, nil
+}
+
+func (o Options) resolved() Options {
 	if o.MaxSizeMB <= 0 {
 		o.MaxSizeMB = defaultMaxSizeMB
 	}
 	if o.MaxBackups <= 0 {
 		o.MaxBackups = defaultMaxBackups
 	}
-	s.w = &lumberjack.Logger{
+	return o
+}
+
+func newRotator(path string, o Options) *lumberjack.Logger {
+	return &lumberjack.Logger{
 		Filename:   path,
 		MaxSize:    o.MaxSizeMB,
 		MaxBackups: o.MaxBackups,
 		MaxAge:     o.MaxAgeDays,
 		Compress:   o.Compress,
 	}
-	s.startAggregateSaver(30 * time.Second)
-	return s, nil
+}
+
+// Retention reports the policy in force, with defaults resolved.
+func (s *Store) Retention() Options {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.opts
+}
+
+// SetRetention changes rotation/retention on the running store.
+//
+// lumberjack has no setters and takes its own lock inside Write, so the only
+// safe change is to build a new logger over the same file and swap the pointer.
+// That happens under s.mu, which Record already holds across its Write — so no
+// writer is inside the logger being closed. The read path (readMu +
+// rotatedFiles' glob) is deliberately untouched: it finds generations by
+// filename, so files rotated under the old policy stay browsable.
+func (s *Store) SetRetention(o Options) error {
+	o = o.resolved()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev := s.w
+	s.w = newRotator(s.path, o)
+	s.opts = o
+	if prev != nil {
+		return prev.Close()
+	}
+	return nil
 }
 
 // Close flushes and closes the underlying file.

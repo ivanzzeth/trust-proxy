@@ -91,6 +91,12 @@ type Manager struct {
 	rulesets  ruleset.Sets
 	dns       apitypes.DNSConfig
 	inbound   apitypes.InboundAuth
+	// bind is where the mixed inbound listens. Deliberately separate from
+	// inbound: credentials are derived from the user registry and rewritten
+	// whenever an account changes, and folding the listen point into the same
+	// value would make every password change carry it — miss it once and the
+	// port silently resets under every client on the machine.
+	bind      apitypes.InboundListen
 	tun       apitypes.TUNConfig
 	endpoints []apitypes.Endpoint
 	// gwExits are registered gateways used as egress: from the data plane's point
@@ -120,6 +126,13 @@ type Manager struct {
 	lastGood []byte
 	revertTo string
 	revertAt time.Time
+	// inbound-listen dead-man's switch, guarded by guardMu like the mode one but
+	// kept separate: the two can be armed at once and confirming one must not
+	// settle the other.
+	bindTimer    *time.Timer
+	bindRevertTo apitypes.InboundListen
+	bindRevertAt time.Time
+	onBindRevert func(apitypes.InboundListen)
 }
 
 // SetLogWriter routes sing-box's own log lines to w (the async ring) instead of
@@ -675,6 +688,107 @@ func (m *Manager) SetInbound(a apitypes.InboundAuth) error {
 	})
 }
 
+// SetInitialInboundListen sets where the mixed inbound binds on the first
+// Start(). Zero fields keep whatever the base config declares.
+func (m *Manager) SetInitialInboundListen(l apitypes.InboundListen) {
+	m.mu.Lock()
+	m.bind = l
+	m.mu.Unlock()
+}
+
+// InboundListen reports the configured listen point (zero fields = base config).
+func (m *Manager) InboundListen() apitypes.InboundListen {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.bind
+}
+
+// SetInboundListen moves the mixed inbound and hot-reloads (reverts on failure).
+func (m *Manager) SetInboundListen(l apitypes.InboundListen) error {
+	return m.setAndRebuild("inbound listen", func() func() {
+		prev := m.bind
+		m.bind = l
+		return func() { m.bind = prev }
+	})
+}
+
+// SetInboundListenGuarded moves the inbound and arms a dead-man's switch:
+// unless ConfirmInboundListen is called within revertAfter, the previous listen
+// point is restored.
+//
+// This needs a guard for the same reason a mode switch does, and needs its OWN
+// guard rather than sharing the mode one: a bad new port does not fail — the
+// rebuild succeeds and the gateway happily serves an address nobody is pointed
+// at. Every client on the machine is configured for the old one, so the failure
+// is total and silent, and the operator's remaining channel for fixing it may
+// well have been the proxy itself.
+func (m *Manager) SetInboundListenGuarded(l apitypes.InboundListen, revertAfter time.Duration) (apitypes.InboundListen, error) {
+	m.mu.Lock()
+	prev := m.bind
+	m.mu.Unlock()
+	if err := m.SetInboundListen(l); err != nil {
+		return prev, err
+	}
+	if prev == l || revertAfter <= 0 {
+		return prev, nil // no-op move, or the caller waived the guard
+	}
+	m.guardMu.Lock()
+	if m.bindTimer != nil {
+		m.bindTimer.Stop()
+	}
+	m.bindRevertTo = prev
+	m.bindRevertAt = time.Now().Add(revertAfter)
+	m.bindTimer = time.AfterFunc(revertAfter, func() {
+		m.guardMu.Lock()
+		to, armed := m.bindRevertTo, m.bindTimer != nil
+		m.bindTimer, m.bindRevertTo, m.bindRevertAt = nil, apitypes.InboundListen{}, time.Time{}
+		m.guardMu.Unlock()
+		if armed {
+			m.logger.Warn("inbound listen guard: not confirmed, reverting")
+			_ = m.SetInboundListen(to)
+			if m.onBindRevert != nil {
+				m.onBindRevert(to)
+			}
+		}
+	})
+	m.guardMu.Unlock()
+	return prev, nil
+}
+
+// ConfirmInboundListen cancels a pending guarded revert of the listen point.
+func (m *Manager) ConfirmInboundListen() {
+	m.guardMu.Lock()
+	if m.bindTimer != nil {
+		m.bindTimer.Stop()
+	}
+	m.bindTimer, m.bindRevertTo, m.bindRevertAt = nil, apitypes.InboundListen{}, time.Time{}
+	m.guardMu.Unlock()
+}
+
+// PendingInboundRevert reports a pending guarded revert of the listen point.
+func (m *Manager) PendingInboundRevert() (to apitypes.InboundListen, secondsLeft int, ok bool) {
+	m.guardMu.Lock()
+	defer m.guardMu.Unlock()
+	if m.bindTimer == nil {
+		return apitypes.InboundListen{}, 0, false
+	}
+	left := int(time.Until(m.bindRevertAt).Seconds())
+	if left < 0 {
+		left = 0
+	}
+	return m.bindRevertTo, left, true
+}
+
+// SetInboundRevertHook registers a callback run after a guard reverts the
+// listen point, so the store can be rolled back too — otherwise the file would
+// keep claiming a port the data plane no longer serves, and the next restart
+// would apply the very setting the guard just rejected.
+func (m *Manager) SetInboundRevertHook(f func(apitypes.InboundListen)) {
+	m.guardMu.Lock()
+	m.onBindRevert = f
+	m.guardMu.Unlock()
+}
+
 // SetInitialTUN sets the tun-inbound options used by the first Start().
 func (m *Manager) SetInitialTUN(t apitypes.TUNConfig) {
 	m.mu.Lock()
@@ -748,8 +862,8 @@ func (m *Manager) rebuild() error {
 	defer m.rebuildMu.Unlock()
 
 	m.mu.Lock()
-	nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture :=
-		m.nodes, m.wl, m.bl, m.quar, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.tun, m.endpoints, m.mgmtPorts, m.final, m.posture
+	nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, bind, tun, eps, mgmt, final, posture :=
+		m.nodes, m.wl, m.bl, m.quar, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.bind, m.tun, m.endpoints, m.mgmtPorts, m.final, m.posture
 	if m.clientMode {
 		// Enforcement lives at the gateway in client mode.
 		posture = apitypes.PostureSplit
@@ -768,7 +882,7 @@ func (m *Manager) rebuild() error {
 	if err != nil {
 		return err
 	}
-	merged, err := buildMergedConfig(base, nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, tun, eps, mgmt, final, posture, m.clashSecret, m.clashAddr, m.dataDir)
+	merged, err := buildMergedConfig(base, nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, bind, tun, eps, mgmt, final, posture, m.clashSecret, m.clashAddr, m.dataDir)
 	if err != nil {
 		return fmt.Errorf("build config: %w", err)
 	}
@@ -900,7 +1014,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 // The split keeps two orthogonal concerns apart: the whitelist decides only
 // allow/deny (L3), the no-proxy list + rule-sets decide only egress (L4). All
 // injection is at the JSON level so sing-box's own parser validates the result.
-func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, quar quarantine.List, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, final, posture, clashSecret, clashAddr, dataDir string) ([]byte, error) {
+func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, bl blacklist.Rules, quar quarantine.List, dl directlist.Rules, cr customrules.Rules, pg proxygroups.Config, mode string, sets ruleset.Sets, dns apitypes.DNSConfig, inbound apitypes.InboundAuth, bind apitypes.InboundListen, tun apitypes.TUNConfig, endpoints []apitypes.Endpoint, mgmtPorts []int, final, posture, clashSecret, clashAddr, dataDir string) ([]byte, error) {
 	var cfg map[string]json.RawMessage
 	if err := json.Unmarshal(base, &cfg); err != nil {
 		return nil, err
@@ -929,7 +1043,7 @@ func buildMergedConfig(base []byte, nodes []apitypes.Node, wl whitelist.Rules, b
 	if err := injectDNS(cfg, dns, dataDir, willDeclareRuleSetTags(cfg, sets)); err != nil {
 		return nil, err
 	}
-	if err := applyMode(cfg, mode, inbound, tun); err != nil {
+	if err := applyMode(cfg, mode, inbound, tun, bind); err != nil {
 		return nil, err
 	}
 	// L1 security floor (hard deny). Blacklist rejects go right after the prelude.

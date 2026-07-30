@@ -731,6 +731,82 @@ type TUNConfig struct {
 // a compose network.
 var DefaultTUNAddresses = []string{"198.18.0.1/30", "fdfe:dcba:9876::1/126"}
 
+// The proxy inbound's built-in listen point, used when InboundListen leaves a
+// field at its zero value. Both are what the seeded configs/config.json declares.
+const (
+	DefaultInboundListen = "127.0.0.1"
+	DefaultInboundPort   = 21584
+)
+
+// InboundListen is where the mixed (socks/http) proxy inbound listens.
+//
+// Zero values mean "whatever the base config says", which is how every existing
+// machine keeps behaving exactly as before: this store did not exist until the
+// settings sweep, and the port was reachable only by hand-editing the config
+// file the docs say not to hand-edit.
+//
+// Deliberately NOT part of InboundAuth: credentials are derived from the user
+// registry and rewritten on every password change, so a combined struct would
+// make "change a password" a chance to silently reset the listen point — the
+// shape of the POST-drops-fields bug in CLAUDE.md. Deliberately NOT part of a
+// profile/posture snapshot either: this is machine plumbing, not policy, and
+// activating last week's profile must not move the port out from under the
+// clients pointed at it.
+type InboundListen struct {
+	Listen string `json:"listen,omitempty"` // "" = DefaultInboundListen
+	Port   int    `json:"port,omitempty"`   // 0  = DefaultInboundPort
+}
+
+// Resolved fills the zero values with the defaults.
+func (l InboundListen) Resolved() InboundListen {
+	if l.Listen == "" {
+		l.Listen = DefaultInboundListen
+	}
+	if l.Port == 0 {
+		l.Port = DefaultInboundPort
+	}
+	return l
+}
+
+// RetentionRule is one lumberjack-backed file's rotation policy.
+type RetentionRule struct {
+	// MaxSizeMB rotates past this size. 0 = the built-in default; -1 disables
+	// rotation entirely (the `--log-max-size 0` spelling, which cannot be 0 here
+	// because 0 already means "unset").
+	MaxSizeMB int `json:"max_size_mb,omitempty"`
+	// MaxBackups is how many rotated generations to keep. 0 = built-in default.
+	MaxBackups int `json:"max_backups,omitempty"`
+	// MaxAgeDays deletes rotated files older than this. 0 = keep by count only.
+	MaxAgeDays int  `json:"max_age_days,omitempty"`
+	Compress   bool `json:"compress"` // gzip rotated generations
+}
+
+// Retention is how much of the gateway's own output is kept on disk.
+//
+// Both halves used to exist only as `serve` flags, which meant that once the
+// gateway was installed as a system service they were frozen into the launchd
+// plist / systemd unit: changing them required an edit-and-reinstall, and a
+// plain re-install (the documented upgrade path) silently reverted them. Same
+// failure that produced internal/modecfg — so, same answer: a store.
+type Retention struct {
+	Log     RetentionRule `json:"log"`     // the daemon log (<data>/serve.log)
+	History RetentionRule `json:"history"` // per-connection history (<data>/history.jsonl)
+}
+
+// Defaults is every domain's built-in configuration, served read-only so a
+// client can offer "restore defaults" and annotate blank fields without
+// hard-coding a second copy of the numbers. A UI that computes its own defaults
+// is a second source of truth that drifts the moment one side changes.
+type Defaults struct {
+	TUN       TUNConfig       `json:"tun"`
+	DNS       DNSConfig       `json:"dns"`
+	Detection DetectionConfig `json:"detection"`
+	Retention Retention       `json:"retention"`
+	Inbound   InboundListen   `json:"inbound"`
+	Failover  ProxyFailover   `json:"failover"`
+	Scoring   ProxyScoring    `json:"scoring"`
+}
+
 // Endpoint is a WireGuard or Tailscale exit (sing-box `endpoints[]`). Enabled
 // endpoints join the `proxy` group so whitelisted traffic can egress through
 // them. Secret fields (private_key/pre_shared_key/auth_key) are never returned

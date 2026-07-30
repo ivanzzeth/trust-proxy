@@ -20,7 +20,7 @@ func buildWithBase(t *testing.T, base string, wl whitelist.Rules, posture string
 	t.Helper()
 	merged, err := buildMergedConfig([]byte(base), nil, wl, blacklist.Rules{}, quarantine.List{},
 		directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeManual, ruleset.Sets{},
-		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil,
+		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.InboundListen{}, apitypes.TUNConfig{}, nil, nil,
 		"proxy", posture, "sekret", "", t.TempDir())
 	if err != nil {
 		t.Fatalf("buildMergedConfig: %v", err)

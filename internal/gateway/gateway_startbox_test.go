@@ -142,7 +142,7 @@ func TestRuleSetFetchesWithAnExitNode(t *testing.T) {
 			`{"type":"socks","tag":"exit","server":"127.0.0.1","server_port":1}`)}},
 		whitelist.Rules{Domains: []string{"example.com"}}, blacklist.Rules{}, quarantine.List{},
 		directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeManual, sets,
-		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.TUNConfig{}, nil, nil,
+		apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.InboundListen{}, apitypes.TUNConfig{}, nil, nil,
 		"proxy", "", "sekret", "", t.TempDir())
 	if err != nil {
 		t.Fatalf("buildMergedConfig: %v", err)

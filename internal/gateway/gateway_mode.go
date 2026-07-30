@@ -114,7 +114,7 @@ func TunPrefixes() []netip.Prefix {
 	return out
 }
 
-func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.InboundAuth, tun apitypes.TUNConfig) error {
+func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.InboundAuth, tun apitypes.TUNConfig, bind apitypes.InboundListen) error {
 	if mode == "" {
 		mode = ModeManual
 	}
@@ -134,6 +134,15 @@ func applyMode(cfg map[string]json.RawMessage, mode string, auth apitypes.Inboun
 				}
 			}
 		}
+	}
+	// The store wins over the base config when it has an opinion. Zero fields
+	// mean "no opinion", so a machine that never touched this setting binds
+	// exactly where its config.json says, as before.
+	if bind.Listen != "" {
+		listen = bind.Listen
+	}
+	if bind.Port != 0 {
+		port = bind.Port
 	}
 	mixed := map[string]any{"type": "mixed", "tag": "mixed-in", "listen": listen, "listen_port": port}
 	// Optional auth on the mixed inbound: no credentials leaves it open (no "users"
