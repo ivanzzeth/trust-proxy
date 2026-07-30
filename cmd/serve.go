@@ -568,6 +568,16 @@ func runServe() error {
 	// merging them would mean every password change had to carry listen/port along,
 	// and forgetting to would silently move the proxy back to its default address.
 	mgr.SetInitialInboundListen(inbListenStore.Get())
+	// And the store has to follow the guard, or the dead-man's switch only half
+	// works: the data plane moves back to the port that was known to work, while
+	// the file still names the one nobody could confirm — so the next restart
+	// applies exactly the setting the guard just rejected, with no guard the
+	// second time. Same shape as SetModePersister: a revert is a settled outcome.
+	mgr.SetInboundRevertHook(func(l apitypes.InboundListen) {
+		if _, err := inbListenStore.Set(l); err != nil {
+			logging.L().Error().Err(err).Msg("could not record the reverted inbound listen point (the next restart will use the unconfirmed one)")
+		}
+	})
 	mgr.SetInitialTUN(tunStore.Get())
 	mgr.SetInitialEndpoints(epStore.All())
 	// Gateways registered as exits are outbound nodes to the data plane; feeding

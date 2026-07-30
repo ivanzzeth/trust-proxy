@@ -650,6 +650,25 @@ func TestLinuxPolicyRebuilds(t *testing.T) {
 	}
 	c.assertBoxAlive("inbound set --port")
 
+	// And the guarded move, which is the default and the one with a second half
+	// nothing else checks: after the revert fires, the STORE has to name the old
+	// port too. The gateway package proves the revert hook fires when it is
+	// registered; only a real daemon proves `serve` registered it. It did not —
+	// the data plane came back while the file kept the unconfirmed port, so the
+	// next restart would apply exactly what the guard had just rejected, and
+	// that restart gets no guard.
+	if out := c.exec("trust-proxy inbound set --port 21594 --guard 3"); strings.Contains(out, "error:") {
+		t.Fatalf("guarded inbound move failed:\n%s", out)
+	}
+	time.Sleep(6 * time.Second)
+	if got := c.exec("trust-proxy inbound get"); !strings.Contains(got, "21584") {
+		t.Fatalf("the guard reverted the data plane but the stored value did not follow:\n%s", got)
+	}
+	if got := c.exec("cat /var/lib/trust-proxy/inbound.json"); strings.Contains(got, "21594") {
+		t.Fatalf("the unconfirmed port survived on disk and will be applied at the next restart: %s", got)
+	}
+	c.assertBoxAlive("inbound guard revert")
+
 	// Activating a saved profile is a single atomic rebuild of everything at once
 	// — the widest config change there is, and the one most likely to produce
 	// something the box rejects.

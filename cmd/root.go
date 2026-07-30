@@ -34,6 +34,7 @@ func init() {
 		dnsCmd, tunCmd, groupsCmd, endpointsCmd, proxiesCmd, autoBlockCmd,
 		profileCmd, detectionsCmd, historyCmd, nodeCmd, detectCmd, quarantineCmd, netcheckCmd,
 		authCmd, apikeyCmd, userCmd, requestCmd, envCmd,
+		inboundCmd, retentionCmd, defaultsCmd,
 	}
 	addClientFlags(clients...)
 	// install/uninstall are local, privileged and machine-shaped: they deliberately

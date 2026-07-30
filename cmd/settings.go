@@ -280,6 +280,11 @@ func init() {
 	inboundSetCmd.Flags().StringVar(&inboundListen, "listen", "", "listen address (e.g. 127.0.0.1, 0.0.0.0)")
 	inboundSetCmd.Flags().IntVar(&inboundPort, "port", 0, "listen port (0 = the built-in default)")
 	inboundSetCmd.Flags().IntVar(&inboundGuard, "guard", 60, "auto-revert after N seconds unless confirmed (0 = no guard)")
+	// This command prompts (off-loopback), so it needs the escape hatch every
+	// other prompting command has. Without it the prompt is unanswerable from a
+	// script and `-y` fails as an unknown flag — which reads as "this command
+	// does not support that", not "the flag was never registered".
+	inboundSetCmd.Flags().BoolVarP(&yesToAll, "yes", "y", false, "skip the confirmation prompt")
 	inboundCmd.AddCommand(inboundGetCmd, inboundSetCmd, inboundConfirmCmd)
 
 	retentionSetCmd.Flags().IntVar(&retLogMaxSize, "log-max-size", 0, "rotate the daemon log past N MB (-1 = never rotate)")
@@ -292,5 +297,14 @@ func init() {
 	retentionSetCmd.Flags().BoolVar(&retHistComp, "history-compress", true, "gzip rotated history")
 	retentionCmd.AddCommand(retentionGetCmd, retentionSetCmd)
 
-	rootCmd.AddCommand(inboundCmd, retentionCmd, defaultsCmd)
+	// Registered in root.go's client list, not here: these talk to a running
+	// backend, so they need --api-addr/--api-token/--json like every other client
+	// command. Adding them straight to rootCmd got them mounted without those
+	// flags, and `inbound get --api-addr …` answered "unknown flag" — which reads
+	// as "the command does not exist" rather than "it is wired to the wrong place".
+	// backend, so they need --api-addr/--api-token/--json like every other
+	// client command. Adding them straight to rootCmd got them mounted without
+	// those flags, and `inbound get --api-addr …` answered "unknown flag" —
+	// which reads as "the command does not exist" rather than "it is wired to
+	// the wrong place".
 }

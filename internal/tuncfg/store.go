@@ -19,8 +19,10 @@ import (
 var validStacks = map[string]bool{"system": true, "gvisor": true, "mixed": true}
 
 // Default = gvisor stack, auto MTU, strict route on, auto_redirect on (Linux
-// Docker/containerd bridge capture). Address empty → gateway fills
-// apitypes.DefaultTUNAddresses at inject time.
+// Docker/containerd bridge capture). Address is left empty on purpose: the
+// gateway fills apitypes.DefaultTUNAddresses at inject time, and seeding the
+// literal here would freeze today's /30 into every store — a later change to
+// the constant would then apply to new machines only.
 func Defaults() apitypes.TUNConfig {
 	return apitypes.TUNConfig{
 		Stack:        "gvisor",
@@ -28,6 +30,22 @@ func Defaults() apitypes.TUNConfig {
 		StrictRoute:  true,
 		AutoRedirect: true,
 	}
+}
+
+// Resolved is Defaults with the blanks filled in the way the data plane fills
+// them — what a client needs to answer "what happens if I set nothing".
+//
+// It is separate from Defaults because they answer different questions and the
+// difference is load-bearing: Defaults seeds the file (address must stay empty)
+// while Resolved describes behaviour (address is 198.18.0.1/30). Reporting the
+// stored blank to a console makes its "default" annotation read as "none", and
+// a TUN address of none is the one value that cannot work.
+func Resolved() apitypes.TUNConfig {
+	d := Defaults()
+	if len(d.Address) == 0 {
+		d.Address = append([]string(nil), apitypes.DefaultTUNAddresses...)
+	}
+	return d
 }
 
 // Store is a file-backed TUN config, safe for concurrent use.

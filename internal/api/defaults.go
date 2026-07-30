@@ -28,7 +28,7 @@ import (
 // endpoint exists to prevent.
 func (s *Server) handleDefaults(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, apitypes.Defaults{
-		TUN:       tuncfg.Defaults(),
+		TUN:       tuncfg.Resolved(),
 		DNS:       dnscfg.Defaults(),
 		Detection: detectcfg.Defaults(),
 		Inbound:   apitypes.InboundListen{}.Resolved(),
