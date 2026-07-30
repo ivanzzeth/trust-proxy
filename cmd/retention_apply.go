@@ -2,6 +2,9 @@ package cmd
 
 import (
 	"errors"
+	"path/filepath"
+
+	"github.com/spf13/cobra"
 
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
@@ -46,28 +49,106 @@ func (a retentionApplier) SetRetention(r apitypes.Retention) error {
 	return errors.Join(errs...)
 }
 
-// applyStoredRetention puts the persisted policy into force at startup.
+// serveRetention is the store opened by loadServeRetention, kept so runServe
+// hands the API the same object the flags were reconciled against rather than a
+// second one reading the same file.
+var serveRetention *retentioncfg.Store
+
+// loadServeRetention opens the retention store and folds the eight `serve`
+// flags into it, then rewrites the flag variables so everything downstream
+// builds from one resolved policy.
 //
-// Startup needs this because the store is read after logging.Setup has already
-// built the stack from flags: without this call the file on disk would be the
-// setting the console shows and the flags would be the setting in force, which
-// is the two-writers-one-of-them-forgetful shape this whole round exists to
-// remove. A failure is logged, not fatal — retention is not worth refusing to
-// boot over.
-func applyStoredRetention(store *retentioncfg.Store, hist *history.Store) {
-	if store == nil {
-		return
+// The direction matters and is the same one resolveAutoBlock established: the
+// store wins, and a flag only overrides it when somebody actually typed it
+// (Flags().Changed). Letting the flag win unconditionally would reintroduce the
+// bug with the sign flipped — the console's change would apply, then be undone
+// at the next boot by a default nobody chose. The flags' own defaults are not
+// evidence of intent: --log-compress defaults to true, so its value alone can
+// never distinguish "the operator asked for compression" from "the operator
+// said nothing".
+func loadServeRetention(cmd *cobra.Command, dataDir string) error {
+	store, err := retentioncfg.NewStore(filepath.Join(dataDir, "retention.json"))
+	if err != nil {
+		return err
 	}
-	cfg := store.Get()
-	// An untouched store has no opinion, and no opinion must not overwrite one.
-	// Until the eight serve flags fold into this store, they are still the only
-	// way some machines set retention; applying an all-zero policy over them
-	// would reset those machines to the defaults at the next boot — a setting
-	// nobody touched changing itself, which is the whole bug this round removes.
-	if cfg == (apitypes.Retention{}) {
-		return
+	cfg, err := resolveRetention(store, flagsChanged(cmd,
+		"log-max-size", "log-keep", "log-max-age", "log-compress",
+		"history-max-size", "history-keep", "history-max-age", "history-compress"),
+		apitypes.Retention{
+			Log: apitypes.RetentionRule{
+				MaxSizeMB: serveLogMaxMB, MaxBackups: serveLogKeep,
+				MaxAgeDays: serveLogMaxAge, Compress: &serveLogCompress,
+			},
+			History: apitypes.RetentionRule{
+				MaxSizeMB: serveHistoryMaxMB, MaxBackups: serveHistoryKeep,
+				MaxAgeDays: serveHistoryMaxAge, Compress: &serveHistoryCompress,
+			},
+		})
+	if err != nil {
+		return err
 	}
-	if err := (retentionApplier{hist: hist}).SetRetention(cfg); err != nil {
-		logging.L().Warn().Err(err).Msg("could not apply the stored retention policy")
-	}
+	serveRetention = store
+
+	log := cfg.Log
+	logDef := logging.DefaultOptions()
+	serveLogMaxMB, serveLogKeep = unsetOrDefault(log.MaxSizeMB, logDef.MaxSizeMB), unsetOrDefault(log.MaxBackups, logDef.MaxBackups)
+	serveLogMaxAge, serveLogCompress = log.MaxAgeDays, log.CompressOr(logDef.Compress)
+
+	hist := cfg.History
+	histDef := history.DefaultOptions()
+	serveHistoryMaxMB, serveHistoryKeep = unsetOrDefault(hist.MaxSizeMB, histDef.MaxSizeMB), unsetOrDefault(hist.MaxBackups, histDef.MaxBackups)
+	serveHistoryMaxAge, serveHistoryCompress = hist.MaxAgeDays, hist.CompressOr(histDef.Compress)
+	return nil
 }
+
+// resolveRetention merges typed flags into the stored policy, persisting the
+// result so the file and the running process never disagree.
+func resolveRetention(store *retentioncfg.Store, changed map[string]bool, flags apitypes.Retention) (apitypes.Retention, error) {
+	cfg := store.Get()
+	dirty := false
+	set := func(name string, apply func()) {
+		if changed[name] {
+			apply()
+			dirty = true
+		}
+	}
+	set("log-max-size", func() { cfg.Log.MaxSizeMB = flags.Log.MaxSizeMB })
+	set("log-keep", func() { cfg.Log.MaxBackups = flags.Log.MaxBackups })
+	set("log-max-age", func() { cfg.Log.MaxAgeDays = flags.Log.MaxAgeDays })
+	set("log-compress", func() { cfg.Log.Compress = flags.Log.Compress })
+	set("history-max-size", func() { cfg.History.MaxSizeMB = flags.History.MaxSizeMB })
+	set("history-keep", func() { cfg.History.MaxBackups = flags.History.MaxBackups })
+	set("history-max-age", func() { cfg.History.MaxAgeDays = flags.History.MaxAgeDays })
+	set("history-compress", func() { cfg.History.Compress = flags.History.Compress })
+	if !dirty {
+		return cfg, nil
+	}
+	return store.Set(cfg)
+}
+
+// flagsChanged reports which of names the operator actually typed. A flag that
+// is not registered reports false rather than panicking: `serve` is not the only
+// caller of this package and a missing flag must not take the gateway down.
+func flagsChanged(cmd *cobra.Command, names ...string) map[string]bool {
+	out := make(map[string]bool, len(names))
+	for _, n := range names {
+		out[n] = cmd.Flags().Changed(n)
+	}
+	return out
+}
+
+// unsetOrDefault resolves the "unset" spelling. Deliberately not runtime.go's
+// orDefault, which folds negatives into the default as well: here -1 is the
+// operator asking for no rotation at all and has to survive.
+func unsetOrDefault(got, def int) int {
+	if got == 0 {
+		return def
+	}
+	return got
+}
+
+// There is deliberately no applyStoredRetention: loadServeRetention runs before
+// either lumberjack is constructed, so both are *built* from the resolved
+// policy. An after-the-fact correction would leave the first seconds of every
+// boot running under a policy nobody chose, and would be a second place where
+// the file and the process can disagree.

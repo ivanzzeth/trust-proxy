@@ -84,10 +84,7 @@ func TestInboundHandlers(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET status %d", rr.Code)
 	}
-	var got struct {
-		Listen   apitypes.InboundListen `json:"listen"`
-		Resolved apitypes.InboundListen `json:"resolved"`
-	}
+	var got apitypes.InboundListenState
 	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
@@ -142,18 +139,18 @@ func TestInboundGuardedPutReportsThePendingRevert(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("guarded PUT: %d %s", rr.Code, rr.Body.String())
 	}
-	var resp map[string]any
+	var resp apitypes.InboundListenState
 	_ = json.Unmarshal(rr.Body.Bytes(), &resp)
-	if _, ok := resp["revert"]; !ok {
+	if resp.Revert == nil {
 		t.Fatalf("guarded PUT must report the countdown: %s", rr.Body.String())
 	}
 
 	// A browser that reloaded mid-countdown learns about it only from the GET.
 	rr = httptest.NewRecorder()
 	s.handleGetInbound(rr, httptest.NewRequest(http.MethodGet, "/api/inbound", nil))
-	var g map[string]any
+	var g apitypes.InboundListenState
 	_ = json.Unmarshal(rr.Body.Bytes(), &g)
-	if _, ok := g["revert"]; !ok {
+	if g.Revert == nil {
 		t.Fatalf("GET must surface a pending revert: %s", rr.Body.String())
 	}
 

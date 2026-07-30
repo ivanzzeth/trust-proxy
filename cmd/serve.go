@@ -129,6 +129,15 @@ var serveCmd = &cobra.Command{
 			return err
 		}
 		serveDataDir = dir // normalize (~/.trust-proxy by default) for the rest of serve
+		// Retention is resolved here, before the daemon re-exec, because the log
+		// half is consumed by logging.Setup a few lines down — earlier than any
+		// other store is opened. Both lumberjacks are then *built* from the
+		// resolved policy rather than built from flags and corrected afterwards:
+		// correcting afterwards means the first few seconds of every boot run
+		// under a policy nobody chose, and the correction is a place to forget.
+		if err := loadServeRetention(cmd, dir); err != nil {
+			return err
+		}
 		// Config belongs with the data, not with the checkout: resolve (and on
 		// first run seed) <data>/config.json unless -c said otherwise. Done before
 		// the daemon re-exec so the child inherits a concrete path.
@@ -503,14 +512,15 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
-	retStore, err := retentioncfg.NewStore(serveDataDir + "/retention.json")
-	if err != nil {
-		return err
+	// Opened back in loadServeRetention (both lumberjacks were built from it).
+	// Reopening here would be a second object over the same file, which is how
+	// two views of one setting start to drift.
+	retStore := serveRetention
+	if retStore == nil {
+		if retStore, err = retentioncfg.NewStore(serveDataDir + "/retention.json"); err != nil {
+			return err
+		}
 	}
-	// Both lumberjacks were built from flags well above this line; the stored
-	// policy is only readable now. Without this call the file on disk would be
-	// the setting the console shows and the flags the setting in force.
-	applyStoredRetention(retStore, histStore)
 
 	store, err := subscription.NewStore(serveDataDir + "/subscriptions.json")
 	if err != nil {

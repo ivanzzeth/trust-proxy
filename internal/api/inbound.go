@@ -16,14 +16,14 @@ func (s *Server) handleGetInbound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cur := s.inbListen.Get()
-	resp := map[string]any{"listen": cur, "resolved": cur.Resolved()}
+	resp := apitypes.InboundListenState{Listen: cur, Resolved: cur.Resolved()}
 	// The pending revert belongs in the GET, not only in the PUT's response: a
 	// browser that reloaded during the guard window has no other way to learn a
 	// countdown is running, and the whole point of the countdown is that
 	// somebody has to press confirm.
 	if s.inbListenApplier != nil {
 		if to, secs, ok := s.inbListenApplier.PendingInboundRevert(); ok {
-			resp["revert"] = map[string]any{"to": to, "in_seconds": secs}
+			resp.Revert = &apitypes.InboundRevert{To: to, InSeconds: secs}
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -62,7 +62,7 @@ func (s *Server) handleSetInbound(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	resp := map[string]any{}
+	resp := apitypes.InboundListenState{Listen: cfg, Resolved: cfg.Resolved()}
 	if s.inbListenApplier != nil {
 		if req.GuardSeconds > 0 {
 			to, err := s.inbListenApplier.SetInboundListenGuarded(cfg, time.Duration(req.GuardSeconds)*time.Second)
@@ -72,7 +72,7 @@ func (s *Server) handleSetInbound(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if to != cfg {
-				resp["revert"] = map[string]any{"to": to, "in_seconds": req.GuardSeconds}
+				resp.Revert = &apitypes.InboundRevert{To: to, InSeconds: req.GuardSeconds}
 			}
 		} else if err := s.inbListenApplier.SetInboundListen(cfg); err != nil {
 			_, _ = s.inbListen.Set(prev)
@@ -80,8 +80,6 @@ func (s *Server) handleSetInbound(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	resp["listen"] = cfg
-	resp["resolved"] = cfg.Resolved()
 	writeJSON(w, http.StatusOK, resp)
 }
 

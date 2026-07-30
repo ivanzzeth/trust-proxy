@@ -388,6 +388,63 @@ func (c *Client) SetTUN(t apitypes.TUNConfig) (apitypes.TUNConfig, error) {
 	return out, err
 }
 
+// InboundListen returns where the proxy inbound listens, both as stored (zero
+// fields = no opinion) and resolved, plus a pending guarded revert if one is
+// running.
+func (c *Client) InboundListen() (apitypes.InboundListenState, error) {
+	var out apitypes.InboundListenState
+	err := c.do(http.MethodGet, "/api/inbound", nil, &out)
+	return out, err
+}
+
+// SetInboundListen moves the proxy inbound. guardSeconds > 0 arms a dead-man's
+// switch: unless ConfirmInboundListen lands first, the gateway reverts. That is
+// not optional politeness — a bad address does not fail, it succeeds and serves
+// a port nobody is pointed at, so the client that made the change is the only
+// witness that anything is wrong.
+func (c *Client) SetInboundListen(l apitypes.InboundListen, guardSeconds int) (apitypes.InboundListenState, error) {
+	var out apitypes.InboundListenState
+	body := map[string]any{"listen": l.Listen, "port": l.Port}
+	if guardSeconds > 0 {
+		body["guard_seconds"] = guardSeconds
+	}
+	err := c.do(http.MethodPut, "/api/inbound", body, &out)
+	return out, err
+}
+
+// ConfirmInboundListen cancels a pending guarded revert of the listen point.
+func (c *Client) ConfirmInboundListen() error {
+	return c.do(http.MethodPost, "/api/inbound/confirm", nil, nil)
+}
+
+// Retention returns how much of the daemon log and connection history stays on
+// disk. Zero fields mean "no opinion" — see Defaults for what those resolve to.
+func (c *Client) Retention() (apitypes.Retention, error) {
+	var out apitypes.Retention
+	err := c.do(http.MethodGet, "/api/retention", nil, &out)
+	return out, err
+}
+
+// SetRetention replaces the retention policy, taking effect immediately (both
+// halves swap a lumberjack; no rebuild).
+func (c *Client) SetRetention(r apitypes.Retention) (apitypes.Retention, error) {
+	var out apitypes.Retention
+	err := c.do(http.MethodPut, "/api/retention", r, &out)
+	return out, err
+}
+
+// Defaults returns every domain's built-in configuration.
+//
+// Callers render "(default 32 MB)" and "restore defaults" from this rather than
+// carrying their own copy of the numbers: a second copy does not fail loudly
+// when the gateway changes, it just starts describing a gateway that no longer
+// exists.
+func (c *Client) Defaults() (apitypes.Defaults, error) {
+	var out apitypes.Defaults
+	err := c.do(http.MethodGet, "/api/defaults", nil, &out)
+	return out, err
+}
+
 // ProxyGroups returns the group topology config (Auto/Overseas/country/user).
 func (c *Client) ProxyGroups() (map[string]any, error) {
 	var out map[string]any

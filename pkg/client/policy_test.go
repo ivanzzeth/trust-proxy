@@ -401,6 +401,110 @@ func TestTUNSDK(t *testing.T) {
 	}
 }
 
+func TestInboundListenSDK(t *testing.T) {
+	c, seen := fakeAPI(t, `{"listen":{"port":31584},"resolved":{"listen":"127.0.0.1","port":31584},`+
+		`"revert":{"to":{"listen":"127.0.0.1","port":21584},"in_seconds":60}}`)
+	got, err := c.InboundListen()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last(t, seen).path != "/api/inbound" {
+		t.Fatalf("path %s", last(t, seen).path)
+	}
+	// The stored value keeps its blanks and the resolved one fills them: a client
+	// that could only see the resolved value would write today's defaults back
+	// into the store on the next save, freezing them forever.
+	if got.Listen.Listen != "" || got.Resolved.Listen != "127.0.0.1" {
+		t.Fatalf("stored vs resolved collapsed: %+v", got)
+	}
+	if got.Revert == nil || got.Revert.InSeconds != 60 || got.Revert.To.Port != 21584 {
+		t.Fatalf("pending revert did not decode: %+v", got.Revert)
+	}
+
+	if _, err := c.SetInboundListen(apitypes.InboundListen{Listen: "0.0.0.0", Port: 31584}, 60); err != nil {
+		t.Fatal(err)
+	}
+	r := last(t, seen)
+	if r.method != http.MethodPut || r.path != "/api/inbound" {
+		t.Fatalf("%s %s", r.method, r.path)
+	}
+	if !strings.Contains(r.body, `"listen":"0.0.0.0"`) || !strings.Contains(r.body, `"port":31584`) ||
+		!strings.Contains(r.body, `"guard_seconds":60`) {
+		t.Fatalf("SetInboundListen body = %s", r.body)
+	}
+
+	// Without a guard the field must be absent, not zero: a guard_seconds:0 that
+	// the backend read as "armed for 0s" would revert the change instantly.
+	if _, err := c.SetInboundListen(apitypes.InboundListen{Port: 31584}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(last(t, seen).body, "guard_seconds") {
+		t.Fatalf("unguarded PUT must omit guard_seconds: %s", last(t, seen).body)
+	}
+
+	if err := c.ConfirmInboundListen(); err != nil {
+		t.Fatal(err)
+	}
+	if r := last(t, seen); r.method != http.MethodPost || r.path != "/api/inbound/confirm" {
+		t.Fatalf("%s %s", r.method, r.path)
+	}
+}
+
+func TestRetentionSDK(t *testing.T) {
+	c, seen := fakeAPI(t, `{"log":{"max_size_mb":8,"compress":false},"history":{"max_size_mb":64}}`)
+	got, err := c.Retention()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last(t, seen).path != "/api/retention" {
+		t.Fatalf("path %s", last(t, seen).path)
+	}
+	// Explicit false and absent must stay distinguishable all the way to the
+	// caller — that is the entire reason Compress is a pointer.
+	if got.Log.Compress == nil || *got.Log.Compress {
+		t.Fatalf("explicit compress:false lost: %+v", got.Log.Compress)
+	}
+	if got.History.Compress != nil {
+		t.Fatalf("absent compress must decode as unset: %v", *got.History.Compress)
+	}
+
+	on := true
+	if _, err := c.SetRetention(apitypes.Retention{
+		Log:     apitypes.RetentionRule{MaxSizeMB: 16, Compress: &on},
+		History: apitypes.RetentionRule{MaxSizeMB: 64},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := last(t, seen)
+	if r.method != http.MethodPut || r.path != "/api/retention" {
+		t.Fatalf("%s %s", r.method, r.path)
+	}
+	if !strings.Contains(r.body, `"max_size_mb":16`) || !strings.Contains(r.body, `"compress":true`) {
+		t.Fatalf("SetRetention body = %s", r.body)
+	}
+	// The untouched half must go out blank rather than carrying a false the
+	// operator never chose.
+	if strings.Contains(r.body, `"history":{"max_size_mb":64,"compress"`) {
+		t.Fatalf("an unset compress must not be serialized: %s", r.body)
+	}
+}
+
+func TestDefaultsSDK(t *testing.T) {
+	c, seen := fakeAPI(t, `{"inbound":{"listen":"127.0.0.1","port":21584},`+
+		`"retention":{"log":{"max_size_mb":32},"history":{"max_size_mb":128}},"tun":{"stack":"gvisor"}}`)
+	got, err := c.Defaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := last(t, seen)
+	if r.method != http.MethodGet || r.path != "/api/defaults" {
+		t.Fatalf("%s %s", r.method, r.path)
+	}
+	if got.Inbound.Port != 21584 || got.Retention.Log.MaxSizeMB != 32 || got.TUN.Stack != "gvisor" {
+		t.Fatalf("Defaults() = %+v", got)
+	}
+}
+
 func TestAPIKeySDK(t *testing.T) {
 	c, seen := fakeAPI(t, `{"id":"k1","label":"cli","prefix":"tp_abc","created_at":"now","key":"tp_theactualkey"}`)
 	created, err := c.CreateAPIKey("u1", "cli", 30)

@@ -768,6 +768,25 @@ func (l InboundListen) Resolved() InboundListen {
 	return l
 }
 
+// InboundListenState is what GET/PUT /api/inbound answer with.
+//
+// Listen and Resolved are both present on purpose: a client editing the setting
+// needs to know which fields the operator actually chose (so it can leave the
+// others blank rather than freezing today's defaults into the store), while a
+// client merely displaying the address needs the resolved one.
+type InboundListenState struct {
+	Listen   InboundListen  `json:"listen"`
+	Resolved InboundListen  `json:"resolved"`
+	Revert   *InboundRevert `json:"revert,omitempty"`
+}
+
+// InboundRevert is the pending dead-man's switch: unless it is confirmed, the
+// gateway goes back to To in InSeconds.
+type InboundRevert struct {
+	To        InboundListen `json:"to"`
+	InSeconds int           `json:"in_seconds"`
+}
+
 // RetentionRule is one lumberjack-backed file's rotation policy.
 type RetentionRule struct {
 	// MaxSizeMB rotates past this size. 0 = the built-in default; -1 disables
