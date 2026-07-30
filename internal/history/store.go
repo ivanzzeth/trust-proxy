@@ -96,6 +96,13 @@ type Options struct {
 	Compress   bool
 }
 
+// DefaultOptions is the policy in force when nothing has been configured. It is
+// exported so /api/defaults can report it instead of a client restating these
+// numbers — a second copy is a second thing to keep in sync.
+func DefaultOptions() Options {
+	return Options{MaxSizeMB: defaultMaxSizeMB, MaxBackups: defaultMaxBackups, Compress: true}
+}
+
 // Store is a file-backed connection history, safe for concurrent use.
 type Store struct {
 	path string

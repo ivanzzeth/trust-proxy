@@ -21,7 +21,7 @@ var validStacks = map[string]bool{"system": true, "gvisor": true, "mixed": true}
 // Default = gvisor stack, auto MTU, strict route on, auto_redirect on (Linux
 // Docker/containerd bridge capture). Address empty → gateway fills
 // apitypes.DefaultTUNAddresses at inject time.
-func defaultConfig() apitypes.TUNConfig {
+func Defaults() apitypes.TUNConfig {
 	return apitypes.TUNConfig{
 		Stack:        "gvisor",
 		MTU:          0,
@@ -44,7 +44,7 @@ func NewStore(path string) (*Store, error) {
 	s := &Store{path: path}
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		s.data = defaultConfig()
+		s.data = Defaults()
 		return s, s.save()
 	}
 	if err != nil {

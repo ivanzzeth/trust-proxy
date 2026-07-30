@@ -777,8 +777,20 @@ type RetentionRule struct {
 	// MaxBackups is how many rotated generations to keep. 0 = built-in default.
 	MaxBackups int `json:"max_backups,omitempty"`
 	// MaxAgeDays deletes rotated files older than this. 0 = keep by count only.
-	MaxAgeDays int  `json:"max_age_days,omitempty"`
-	Compress   bool `json:"compress"` // gzip rotated generations
+	MaxAgeDays int `json:"max_age_days,omitempty"`
+	// Compress gzips rotated generations. A pointer because the default is *on*,
+	// and a plain bool's zero value is off: a store that has never been written,
+	// or a client that sends only max_size_mb, would silently turn compression
+	// off — a setting nobody touched changing itself. nil = the default.
+	Compress *bool `json:"compress,omitempty"`
+}
+
+// CompressOr resolves the tri-state against the caller's default.
+func (r RetentionRule) CompressOr(def bool) bool {
+	if r.Compress == nil {
+		return def
+	}
+	return *r.Compress
 }
 
 // Retention is how much of the gateway's own output is kept on disk.

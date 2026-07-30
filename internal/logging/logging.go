@@ -22,6 +22,7 @@ package logging
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -124,18 +125,23 @@ func newLumberjack(o Options) *lumberjack.Logger {
 	}
 }
 
+// ErrNoRotatingLog is returned by SetRotation when the process logs to a
+// terminal, which has no rotation to configure. A sentinel because it is the
+// normal state of a foreground run: callers applying a stored policy need to
+// distinguish "nothing to do here" from "the policy did not take".
+var ErrNoRotatingLog = errors.New("logging: no rotating log file installed (running in the foreground?)")
+
 // SetRotation changes the rotation policy of the running log file without
 // disturbing the ring or the stdio capture. Path and CaptureStdio are ignored:
 // they are properties of the installed stack, not of the policy.
 //
-// Returns an error only when Setup never installed a file logger (foreground
-// runs log to the terminal, which does not rotate).
+// Returns ErrNoRotatingLog when Setup never installed a file logger.
 func SetRotation(o Options) error {
 	mu.Lock()
 	r := rot
 	mu.Unlock()
 	if r == nil {
-		return fmt.Errorf("logging: no rotating log file installed (running in the foreground?)")
+		return ErrNoRotatingLog
 	}
 	r.mu.RLock()
 	cur := r.opts
@@ -159,6 +165,14 @@ func Rotation() (Options, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.opts, true
+}
+
+// DefaultOptions is the rotation policy in force when nothing has been
+// configured. Exported so /api/defaults can report it rather than have a client
+// restate these numbers — a second copy does not fail loudly when this one
+// changes, it just starts describing a gateway that no longer exists.
+func DefaultOptions() Options {
+	return Options{MaxSizeMB: DefaultMaxSizeMB, MaxBackups: DefaultMaxBackups, Compress: true}
 }
 
 // normalizeRotation resolves the "unset" spellings. MaxSizeMB < 0 means the

@@ -50,7 +50,7 @@ var validStrategy = map[string]bool{"": true, "prefer_ipv4": true, "prefer_ipv6"
 // Bootstrapping is fine with no nodes yet: `detour: proxy` resolves to the proxy
 // group, which is a selector over direct until an exit exists, and the server is
 // an IP so there is no name to look up first.
-func defaultConfig() apitypes.DNSConfig {
+func Defaults() apitypes.DNSConfig {
 	return apitypes.DNSConfig{
 		Servers: []apitypes.DNSServer{
 			{Tag: "local", Type: "local"},
@@ -72,7 +72,7 @@ func NewStore(path string) (*Store, error) {
 	s := &Store{path: path}
 	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		s.data = defaultConfig()
+		s.data = Defaults()
 		return s, s.save()
 	}
 	if err != nil {
@@ -83,7 +83,7 @@ func NewStore(path string) (*Store, error) {
 	}
 	// Heal an install that is still carrying the abandoned default.
 	//
-	// Changing defaultConfig() only helps a machine that has no dns.json yet, and
+	// Changing Defaults() only helps a machine that has no dns.json yet, and
 	// the machines that need it most are the ones already running: they have the
 	// file, it says "resolve everything with the system resolver", and upgrading
 	// would leave them querying every proxied domain in the clear forever.
@@ -93,7 +93,7 @@ func NewStore(path string) (*Store, error) {
 	// the system resolver", and the second is a decision to respect: plenty of
 	// LAN-only and air-gapped deployments want exactly it.
 	if isAbandonedDefault(s.data) {
-		s.data = defaultConfig()
+		s.data = Defaults()
 		if err := s.save(); err != nil {
 			return nil, err
 		}
@@ -101,7 +101,7 @@ func NewStore(path string) (*Store, error) {
 	return s, nil
 }
 
-// abandonedDefault is what defaultConfig() used to return: the system resolver
+// abandonedDefault is what Defaults() used to return: the system resolver
 // and nothing else. Kept as a literal because the point is to recognise it long
 // after it stopped being produced.
 func abandonedDefault() apitypes.DNSConfig {

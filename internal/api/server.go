@@ -28,6 +28,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
+	"github.com/ivanzzeth/trust-proxy/internal/inboundcfg"
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/paths"
@@ -35,6 +36,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
+	"github.com/ivanzzeth/trust-proxy/internal/retentioncfg"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/tuncfg"
@@ -133,6 +135,29 @@ type InboundApplier interface {
 	SetInbound(apitypes.InboundAuth) error
 }
 
+// InboundListenApplier moves the proxy inbound's listen point (gateway.Manager).
+//
+// Separate from InboundApplier because the two have opposite risk profiles: a
+// credential change cannot make the gateway unreachable, and moving the port
+// disconnects every client at once. Hence the guard, which is its own rather
+// than ModeController's — the mode and the listen point can be mid-change
+// independently, and one shared timer would let confirming either cancel the
+// other's rollback.
+type InboundListenApplier interface {
+	InboundListen() apitypes.InboundListen
+	SetInboundListen(apitypes.InboundListen) error
+	SetInboundListenGuarded(l apitypes.InboundListen, revertAfter time.Duration) (apitypes.InboundListen, error)
+	ConfirmInboundListen()
+	PendingInboundRevert() (to apitypes.InboundListen, secondsLeft int, ok bool)
+}
+
+// RetentionApplier swaps the live log/history rotation policy. Unlike the other
+// appliers here it does not rebuild the box: both halves just replace a
+// lumberjack behind a mutex.
+type RetentionApplier interface {
+	SetRetention(apitypes.Retention) error
+}
+
 // TUNApplier hot-reloads the tun-inbound options (gateway.Manager).
 type TUNApplier interface {
 	SetTUN(apitypes.TUNConfig) error
@@ -192,6 +217,10 @@ type Options struct {
 	Authn        *authn.Authn // session tokens (JWT); nil disables sessions
 	DataDir      string       // where the bootstrap code and other secrets live
 	InbApplier   InboundApplier
+	InbListen    *inboundcfg.Store
+	InbListenApp InboundListenApplier
+	Retention    *retentioncfg.Store
+	RetApplier   RetentionApplier
 	TUN          *tuncfg.Store
 	TUNApplier   TUNApplier
 	Endpoints    *endpoints.Store
@@ -247,19 +276,25 @@ type Server struct {
 	authn        *authn.Authn
 	dataDir      string
 	inbApplier   InboundApplier
-	tun          *tuncfg.Store
-	tunApplier   TUNApplier
-	eps          *endpoints.Store
-	epApplier    EndpointsApplier
-	history      *history.Store
-	detections   *detect.Store
-	nodes        *nodes.Store
-	gwApplier    GatewayExitApplier
-	cmApplier    ClientModeApplier
-	token        string
-	clash        *clash.Client
-	consoleDir   string
-	consoleFS    fs.FS
+	// inbListen is where the proxy listens; inbListenApplier moves it. Kept apart
+	// from inbApplier: see InboundListenApplier.
+	inbListen        *inboundcfg.Store
+	inbListenApplier InboundListenApplier
+	retention        *retentioncfg.Store
+	retApplier       RetentionApplier
+	tun              *tuncfg.Store
+	tunApplier       TUNApplier
+	eps              *endpoints.Store
+	epApplier        EndpointsApplier
+	history          *history.Store
+	detections       *detect.Store
+	nodes            *nodes.Store
+	gwApplier        GatewayExitApplier
+	cmApplier        ClientModeApplier
+	token            string
+	clash            *clash.Client
+	consoleDir       string
+	consoleFS        fs.FS
 	// version and managedBinary describe *this build*, so /api/health can tell a
 	// caller which gateway it actually reached (see handleHealth).
 	version       string
@@ -277,7 +312,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, scorer: o.Scorer, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, cmApplier: o.CMApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS,
+	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, scorer: o.Scorer, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, inbListen: o.InbListen, inbListenApplier: o.InbListenApp, retention: o.Retention, retApplier: o.RetApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, cmApplier: o.CMApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS,
 		version: o.Version, managedBinary: runningTheManagedCopy(),
 		throttle: newThrottle(defaultLoginConcurrency, defaultLoginAttempts, defaultLoginWindow)}
 	mux := http.NewServeMux()
@@ -385,6 +420,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.route(mux, "PATCH /api/endpoints/{tag}", s.handlePatchEndpoint)
 	s.route(mux, "DELETE /api/endpoints/{tag}", s.handleDeleteEndpoint)
 	s.route(mux, "PUT /api/tun", s.handleSetTUN)
+	s.route(mux, "GET /api/inbound", s.handleGetInbound)
+	s.route(mux, "PUT /api/inbound", s.handleSetInbound)
+	s.route(mux, "POST /api/inbound/confirm", s.handleConfirmInbound)
+	s.route(mux, "GET /api/retention", s.handleGetRetention)
+	s.route(mux, "PUT /api/retention", s.handleSetRetention)
+	s.route(mux, "GET /api/defaults", s.handleDefaults)
 	s.route(mux, "GET /api/profiles", s.handleListProfiles)
 	s.route(mux, "POST /api/profiles", s.handleAddProfile)
 	s.route(mux, "POST /api/profiles/{id}/activate", s.handleActivateProfile)

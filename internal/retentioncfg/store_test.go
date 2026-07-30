@@ -3,6 +3,7 @@ package retentioncfg
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -14,8 +15,12 @@ func TestSetPersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	off := false
 	want := apitypes.Retention{
-		Log:     apitypes.RetentionRule{MaxSizeMB: 8, MaxBackups: 10, MaxAgeDays: 7, Compress: true},
+		// Compress is explicitly off here, not merely absent: the tri-state is the
+		// whole reason the field is a pointer, so the round trip has to carry a
+		// deliberate false rather than let it read as "unset".
+		Log:     apitypes.RetentionRule{MaxSizeMB: 8, MaxBackups: 10, MaxAgeDays: 7, Compress: &off},
 		History: apitypes.RetentionRule{MaxSizeMB: 64, MaxBackups: 4},
 	}
 	if _, err := s.Set(want); err != nil {
@@ -25,8 +30,15 @@ func TestSetPersistsAndReloads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := again.Get(); got != want {
+	got := again.Get()
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("reloaded %+v, want %+v", got, want)
+	}
+	if got.Log.Compress == nil || *got.Log.Compress {
+		t.Fatalf("an explicit compress:false must survive the round trip, got %v", got.Log.Compress)
+	}
+	if got.History.Compress != nil {
+		t.Fatalf("an untouched compress must stay unset, got %v", *got.History.Compress)
 	}
 }
 

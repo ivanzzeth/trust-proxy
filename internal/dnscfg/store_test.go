@@ -18,7 +18,7 @@ import (
 // activates, because it only splits away from a resolver that sits behind the
 // proxy. Every fresh install ran that way and nothing said so.
 func TestDefaultResolvesThroughTheExit(t *testing.T) {
-	d := defaultConfig()
+	d := Defaults()
 
 	byTag := map[string]string{}
 	for _, s := range d.Servers {
@@ -46,7 +46,7 @@ func TestDefaultResolvesThroughTheExit(t *testing.T) {
 
 // An install already running the abandoned default has to heal on upgrade.
 //
-// Changing defaultConfig() only helps a machine with no dns.json yet, and the
+// Changing Defaults() only helps a machine with no dns.json yet, and the
 // machines that need it most already have one saying "resolve everything with
 // the system resolver". Without this they would query every proxied domain in the
 // clear forever, and nothing would ever tell them.

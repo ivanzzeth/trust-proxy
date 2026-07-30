@@ -32,6 +32,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/history"
+	"github.com/ivanzzeth/trust-proxy/internal/inboundcfg"
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/modecfg"
 	"github.com/ivanzzeth/trust-proxy/internal/netwatch"
@@ -42,6 +43,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/profile"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
+	"github.com/ivanzzeth/trust-proxy/internal/retentioncfg"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/threatfeed"
@@ -497,6 +499,18 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	inbListenStore, err := inboundcfg.NewStore(serveDataDir + "/inbound.json")
+	if err != nil {
+		return err
+	}
+	retStore, err := retentioncfg.NewStore(serveDataDir + "/retention.json")
+	if err != nil {
+		return err
+	}
+	// Both lumberjacks were built from flags well above this line; the stored
+	// policy is only readable now. Without this call the file on disk would be
+	// the setting the console shows and the flags the setting in force.
+	applyStoredRetention(retStore, histStore)
 
 	store, err := subscription.NewStore(serveDataDir + "/subscriptions.json")
 	if err != nil {
@@ -540,6 +554,10 @@ func runServe() error {
 	// Proxy-inbound credentials are derived from the user registry: each account
 	// may carry a proxy password, and an empty result leaves the inbound open.
 	mgr.SetInitialInbound(apitypes.InboundAuth{Users: userStore.ProxyCredentials()})
+	// The listen point is deliberately a separate call from the credentials above:
+	// merging them would mean every password change had to carry listen/port along,
+	// and forgetting to would silently move the proxy back to its default address.
+	mgr.SetInitialInboundListen(inbListenStore.Get())
 	mgr.SetInitialTUN(tunStore.Get())
 	mgr.SetInitialEndpoints(epStore.All())
 	// Gateways registered as exits are outbound nodes to the data plane; feeding
@@ -696,6 +714,10 @@ func runServe() error {
 		Authn:        auth,
 		DataDir:      serveDataDir,
 		InbApplier:   mgr,
+		InbListen:    inbListenStore,
+		InbListenApp: mgr,
+		Retention:    retStore,
+		RetApplier:   retentionApplier{hist: histStore},
 		TUN:          tunStore,
 		TUNApplier:   mgr,
 		Endpoints:    epStore,

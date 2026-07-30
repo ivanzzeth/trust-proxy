@@ -166,6 +166,19 @@ func routeLevels() map[string]access {
 		"GET /api/tun":   accessAdmin,
 		"PUT /api/tun":   accessAdmin,
 
+		// Where the proxy listens, and how much of the gateway's own output stays
+		// on disk. Admin on both halves including the reads: the listen point
+		// tells a caller which interface to reach the proxy on, and the retention
+		// policy is machine plumbing no client has a use for.
+		"GET /api/inbound":          accessAdmin,
+		"PUT /api/inbound":          accessAdmin,
+		"POST /api/inbound/confirm": accessAdmin,
+		"GET /api/retention":        accessAdmin,
+		"PUT /api/retention":        accessAdmin,
+		// Built-in values only — no machine state, but it enumerates every knob
+		// the gateway has, which is a policy shape clients are not shown.
+		"GET /api/defaults": accessAdmin,
+
 		"GET /api/endpoints":               accessAdmin,
 		"POST /api/endpoints":              accessAdmin,
 		"PATCH /api/endpoints/{tag}":       accessAdmin,

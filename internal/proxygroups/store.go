@@ -109,6 +109,19 @@ func (f Failover) IdleTimeout() int {
 	return f.IdleTimeoutSeconds
 }
 
+// Resolved returns a copy with every unset field filled in, so the API, CLI and
+// console can show what is actually in force rather than a row of blanks. Same
+// shape as proxyscore.Config.Resolved, and the reason /api/defaults can report
+// these numbers without restating them.
+func (f Failover) Resolved() Failover {
+	return Failover{
+		ProbeIntervalSeconds:         f.Interval(),
+		ToleranceMS:                  f.Tolerance(),
+		IdleTimeoutSeconds:           f.IdleTimeout(),
+		InterruptExistingConnections: f.InterruptExistingConnections,
+	}
+}
+
 // validateFailover rejects values sing-box would refuse or that would make
 // failover useless, so a bad setting can never reach the data plane.
 func validateFailover(f *Failover) error {
