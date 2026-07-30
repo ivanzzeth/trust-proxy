@@ -399,11 +399,22 @@ type ProxyGroup struct {
 	Nodes  []string `json:"nodes,omitempty"`
 }
 
+// ProxyFailover mirrors internal/proxygroups.Failover: how eagerly urltest
+// groups re-elect a member, and whether a re-election kills live connections.
+// Zero values mean "use the gateway default".
+type ProxyFailover struct {
+	ProbeIntervalSeconds         int  `json:"probe_interval_seconds,omitempty"`
+	ToleranceMS                  int  `json:"tolerance_ms,omitempty"`
+	IdleTimeoutSeconds           int  `json:"idle_timeout_seconds,omitempty"`
+	InterruptExistingConnections bool `json:"interrupt_existing_connections"`
+}
+
 // ProxyGroupsConfig mirrors internal/proxygroups.Config for wire/profile use.
 type ProxyGroupsConfig struct {
-	AutoCountry      bool         `json:"auto_country"`
-	ExcludeCountries []string     `json:"exclude_countries"`
-	Groups           []ProxyGroup `json:"groups"`
+	AutoCountry      bool          `json:"auto_country"`
+	ExcludeCountries []string      `json:"exclude_countries"`
+	Groups           []ProxyGroup  `json:"groups"`
+	Failover         ProxyFailover `json:"failover"`
 }
 
 // Blacklist is the egress deny-list snapshot: destinations that are REJECTED

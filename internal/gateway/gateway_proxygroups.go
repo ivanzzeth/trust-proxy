@@ -265,10 +265,16 @@ func buildProxyGroups(tags []string, loopback map[string]bool, pg proxygroups.Co
 			// that captive/info outbounds can fake. urltest still only measures
 			// "can dial + get an HTTP answer"; membership rules below decide who
 			// is even eligible for Overseas.
+			//
+			// The rest is user-tunable (pg.Failover) because the right answer is
+			// a trade-off, not a constant: interrupting on re-election recovers a
+			// dead node instantly and destroys a live login. Defaults are sticky
+			// (wide tolerance, no interruption) — see proxygroups.Failover.
 			g["url"] = urltestProbeURL(tag)
-			g["interval"] = "30s"
-			g["idle_timeout"] = "30m"
-			g["interrupt_exist_connections"] = true
+			g["interval"] = fmt.Sprintf("%ds", pg.Failover.Interval())
+			g["idle_timeout"] = fmt.Sprintf("%ds", pg.Failover.IdleTimeout())
+			g["tolerance"] = pg.Failover.Tolerance()
+			g["interrupt_exist_connections"] = pg.Failover.InterruptExistingConnections
 		}
 		b, _ := json.Marshal(g)
 		outs = append(outs, b)

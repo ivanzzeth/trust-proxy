@@ -184,6 +184,7 @@ func (s *Server) applySlot(slot apitypes.PolicySlot, postureName string) ([]stri
 	if slot.ProxyGroups != nil {
 		in.pg.AutoCountry = slot.ProxyGroups.AutoCountry
 		in.pg.ExcludeCountries = append([]string(nil), slot.ProxyGroups.ExcludeCountries...)
+		in.pg.Failover = wireFailover(slot.ProxyGroups.Failover)
 		for _, g := range slot.ProxyGroups.Groups {
 			in.pg.Groups = append(in.pg.Groups, proxygroups.Group{
 				Name: g.Name, Type: g.Type, Filter: g.Filter, Value: g.Value,

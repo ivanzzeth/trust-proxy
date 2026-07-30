@@ -4,7 +4,16 @@ import { toast } from 'sonner';
 import { Check, Gauge, Loader2, Plus, Trash2, Zap } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { api, PGFilter, PGType, ProxyGroup, ProxyGroupsConfig, ProxyNode } from '@/lib/api';
+import {
+  api,
+  PGFilter,
+  PGType,
+  PROXY_FAILOVER_DEFAULTS,
+  ProxyFailover,
+  ProxyGroup,
+  ProxyGroupsConfig,
+  ProxyNode,
+} from '@/lib/api';
 import { cn } from '@/lib/utils';
 import { matchesQuery, usePagedList } from '@/hooks/use-paged-list';
 import { PageHeader } from '@/components/page-header';
@@ -199,6 +208,72 @@ function ProxyGroupCard({
 const PG_TYPES: PGType[] = ['urltest', 'select'];
 const PG_FILTERS: PGFilter[] = ['country', 'regex', 'manual'];
 
+// FailoverSettings surfaces the URLTest knobs that used to be hard-coded. They
+// are here rather than buried in a JSON blob because the one that matters —
+// interrupting live connections — is the difference between a working login and
+// a page that dies halfway through, and there was no way to see or change it.
+function FailoverSettings({
+  value,
+  onChange,
+}: {
+  value: ProxyFailover;
+  onChange: (v: ProxyFailover) => void;
+}) {
+  const { t } = useTranslation();
+  const k = (s: string) => t(`pages.proxies.groups.failover.${s}`);
+  // An empty field means "unset" => the gateway default. Show the default as the
+  // placeholder so the box is never a mystery blank.
+  const num = (
+    label: string,
+    hint: string,
+    field: 'probe_interval_seconds' | 'tolerance_ms' | 'idle_timeout_seconds',
+  ) => (
+    <div>
+      <label className="text-xs text-muted-foreground">{label}</label>
+      <Input
+        className="mt-1 font-mono"
+        type="number"
+        min={0}
+        placeholder={`${PROXY_FAILOVER_DEFAULTS[field]} (${k('defaultSuffix')})`}
+        value={value[field] ?? ''}
+        onChange={(e) => {
+          const n = e.target.value.trim() === '' ? undefined : Number(e.target.value);
+          onChange({ ...value, [field]: Number.isFinite(n as number) ? n : undefined });
+        }}
+      />
+      <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{hint}</p>
+    </div>
+  );
+
+  return (
+    <div className="rounded-md border px-3 py-2.5">
+      <div className="text-sm font-medium">{k('title')}</div>
+      <p className="mt-0.5 mb-3 text-xs leading-relaxed text-muted-foreground">{k('hint')}</p>
+      <div className="grid gap-3 sm:grid-cols-3">
+        {num(k('intervalLabel'), k('intervalHint'), 'probe_interval_seconds')}
+        {num(k('toleranceLabel'), k('toleranceHint'), 'tolerance_ms')}
+        {num(k('idleLabel'), k('idleHint'), 'idle_timeout_seconds')}
+      </div>
+      <label className="mt-3 flex items-start gap-2 text-sm">
+        <Switch
+          className="mt-0.5"
+          checked={value.interrupt_existing_connections}
+          onCheckedChange={(v) => onChange({ ...value, interrupt_existing_connections: v })}
+        />
+        <span>
+          {k('interruptLabel')}
+          <p className="text-[11px] leading-relaxed font-normal text-muted-foreground">{k('interruptHint')}</p>
+        </span>
+      </label>
+      {value.interrupt_existing_connections && (
+        <p className="mt-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+          {k('interruptWarn')}
+        </p>
+      )}
+    </div>
+  );
+}
+
 // GroupSettings edits the proxy-group config (auto-country + custom groups) as a
 // local draft, saved explicitly (each save rebuilds the data plane). The group
 // list/selection itself is rendered by the Proxies list below, from the Clash API.
@@ -261,6 +336,11 @@ function GroupSettings() {
             }
           />
         </div>
+
+        <FailoverSettings
+          value={draft.failover}
+          onChange={(failover) => setDraft({ ...draft, failover })}
+        />
 
         <div className="space-y-2">
           {draft.groups.map((g, i) => (

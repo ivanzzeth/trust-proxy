@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
@@ -513,6 +514,81 @@ var groupsSetCmd = &cobra.Command{
 	},
 }
 
+var (
+	foInterval  int
+	foTolerance int
+	foIdle      int
+	foInterrupt bool
+)
+
+var groupsFailoverCmd = &cobra.Command{
+	Use:   "failover",
+	Short: "Show or tune how urltest groups switch node (affects Auto/Overseas/country/user groups)",
+	Long: `Show or tune group failover.
+
+An urltest group re-ranks its members on a timer and elects the fastest. The
+knobs decide how twitchy that is:
+
+  --probe-interval   how often members are re-probed (seconds)
+  --tolerance        how much faster a challenger must be to win (ms). Bigger =
+                     fewer switches. Cross-border latency jitters by tens of ms,
+                     so a small value makes the group flap between equal nodes.
+  --idle-timeout     stop probing after this long with no traffic (seconds)
+  --interrupt        kill ALREADY-ESTABLISHED connections when the elected node
+                     changes. Off by default: it is what makes a login or an
+                     upload die halfway through. Real node failures do not need
+                     it — a dead dial fails over immediately regardless.
+
+With no flags this prints the current values.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		c := sdk()
+		cfg, err := c.ProxyGroupsConfig()
+		if err != nil {
+			return err
+		}
+		touched := false
+		for _, f := range []string{"probe-interval", "tolerance", "idle-timeout", "interrupt"} {
+			if cmd.Flags().Changed(f) {
+				touched = true
+			}
+		}
+		if !touched {
+			return out(cfg.Failover, func() {
+				fmt.Printf("probe interval : %ds\n", orDefault(cfg.Failover.ProbeIntervalSeconds, proxygroups.DefaultProbeInterval))
+				fmt.Printf("tolerance      : %dms\n", orDefault(cfg.Failover.ToleranceMS, proxygroups.DefaultProbeTolerance))
+				fmt.Printf("idle timeout   : %ds\n", orDefault(cfg.Failover.IdleTimeoutSeconds, proxygroups.DefaultIdleTimeout))
+				fmt.Printf("interrupt live : %v\n", cfg.Failover.InterruptExistingConnections)
+			})
+		}
+		if cmd.Flags().Changed("probe-interval") {
+			cfg.Failover.ProbeIntervalSeconds = foInterval
+		}
+		if cmd.Flags().Changed("tolerance") {
+			cfg.Failover.ToleranceMS = foTolerance
+		}
+		if cmd.Flags().Changed("idle-timeout") {
+			cfg.Failover.IdleTimeoutSeconds = foIdle
+		}
+		if cmd.Flags().Changed("interrupt") {
+			cfg.Failover.InterruptExistingConnections = foInterrupt
+		}
+		res, err := c.SetProxyGroupsConfig(cfg)
+		if err != nil {
+			return err
+		}
+		return out(res.Failover, func() { fmt.Println("failover updated") })
+	},
+}
+
+// orDefault renders "unset" as the value the gateway will actually use, so the
+// printed numbers match the running config instead of showing a bare 0.
+func orDefault(v, def int) int {
+	if v <= 0 {
+		return def
+	}
+	return v
+}
+
 var endpointsCmd = &cobra.Command{
 	Use:   "endpoints",
 	Short: "WireGuard / Tailscale exit endpoints",
@@ -684,6 +760,10 @@ func init() {
 	tunSetCmd.Flags().BoolVar(&tunAutoRedirect, "auto-redirect", true, "Linux: nftables redirect so Docker/containerd bridge egress hits the same Permit/detect path (no-op on macOS/Windows)")
 	tunSetCmd.Flags().StringSliceVar(&tunAddress, "address", nil, "TUN interface CIDRs (empty = default 198.18.0.1/30 + ULA; avoids Docker 172.16/12)")
 	groupsSetCmd.Flags().StringVarP(&groupsFile, "file", "f", "", "JSON document (- for stdin)")
+	groupsFailoverCmd.Flags().IntVar(&foInterval, "probe-interval", proxygroups.DefaultProbeInterval, "seconds between urltest probes (min 10)")
+	groupsFailoverCmd.Flags().IntVar(&foTolerance, "tolerance", proxygroups.DefaultProbeTolerance, "ms a challenger must beat the current node by; bigger = fewer switches")
+	groupsFailoverCmd.Flags().IntVar(&foIdle, "idle-timeout", proxygroups.DefaultIdleTimeout, "seconds without traffic before probing stops")
+	groupsFailoverCmd.Flags().BoolVar(&foInterrupt, "interrupt", false, "kill live connections when the elected node changes (breaks logins/uploads mid-flight)")
 	endpointsAddCmd.Flags().StringVarP(&endpointsFile, "file", "f", "", "JSON endpoint document (- for stdin)")
 	endpointsToggleCmd.Flags().BoolVar(&customEnable, "enabled", true, "target state")
 
@@ -694,7 +774,7 @@ func init() {
 	dnsQueriesCmd.Flags().IntVar(&dnsQueriesTop, "top", 10, "how many parent domains to show")
 	dnsCmd.AddCommand(dnsGetCmd, dnsSetCmd, dnsQueriesCmd)
 	tunCmd.AddCommand(tunGetCmd, tunSetCmd)
-	groupsCmd.AddCommand(groupsGetCmd, groupsSetCmd)
+	groupsCmd.AddCommand(groupsGetCmd, groupsSetCmd, groupsFailoverCmd)
 	endpointsCmd.AddCommand(endpointsLsCmd, endpointsAddCmd, endpointsToggleCmd, endpointsRmCmd)
 	proxiesCmd.AddCommand(proxiesLsCmd, proxiesSelectCmd, proxiesDelayCmd)
 }

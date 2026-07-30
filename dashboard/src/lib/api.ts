@@ -158,10 +158,25 @@ export interface ProxyGroup {
   value?: string;
   nodes?: string[];
 }
+// How eagerly urltest groups re-elect a member. 0 on any number means "use the
+// gateway default" (30s / 150ms / 1800s).
+export interface ProxyFailover {
+  probe_interval_seconds?: number;
+  tolerance_ms?: number;
+  idle_timeout_seconds?: number;
+  // Kills already-established connections when the elected node changes.
+  interrupt_existing_connections: boolean;
+}
+export const PROXY_FAILOVER_DEFAULTS = {
+  probe_interval_seconds: 30,
+  tolerance_ms: 150,
+  idle_timeout_seconds: 1800,
+} as const;
 export interface ProxyGroupsConfig {
   auto_country: boolean;
   exclude_countries: string[]; // ISO2 regions kept out of the shared Overseas group
   groups: ProxyGroup[];
+  failover: ProxyFailover;
 }
 export interface TPNode {
   tag: string;
@@ -692,6 +707,10 @@ export const api = {
       auto_country: !!c.auto_country,
       exclude_countries: c.exclude_countries ?? [],
       groups: c.groups ?? [],
+      failover: {
+        ...(c.failover ?? {}),
+        interrupt_existing_connections: !!c.failover?.interrupt_existing_connections,
+      },
     })),
   setProxyGroups: (cfg: ProxyGroupsConfig) => put<ProxyGroupsConfig>('/proxygroups', cfg),
 

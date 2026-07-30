@@ -5,7 +5,20 @@ import (
 	"net/http"
 
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
+
+// wireFailover converts the wire/profile shape into the store shape. Profiles
+// and posture slots must carry it: activating a snapshot that dropped the field
+// would silently re-enable connection interruption on someone who turned it off.
+func wireFailover(f apitypes.ProxyFailover) proxygroups.Failover {
+	return proxygroups.Failover{
+		ProbeIntervalSeconds:         f.ProbeIntervalSeconds,
+		ToleranceMS:                  f.ToleranceMS,
+		IdleTimeoutSeconds:           f.IdleTimeoutSeconds,
+		InterruptExistingConnections: f.InterruptExistingConnections,
+	}
+}
 
 func (s *Server) handleGetProxyGroups(w http.ResponseWriter, r *http.Request) {
 	if s.pgroups == nil {

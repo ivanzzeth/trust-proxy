@@ -653,8 +653,14 @@ func TestProxyGroups_AutoCountry(t *testing.T) {
 	if auto == nil || auto["type"] != "urltest" {
 		t.Fatalf("Auto group missing/wrong: %v", auto)
 	}
-	if auto["interval"] != "30s" || auto["interrupt_exist_connections"] != true {
-		t.Fatalf("Auto urltest should use 30s interval + interrupt_exist_connections, got interval=%v interrupt=%v", auto["interval"], auto["interrupt_exist_connections"])
+	// Defaults are sticky on purpose: a re-election must not kill live
+	// connections (that is what made logins die mid-flow), and a challenger
+	// needs a real margin before it wins.
+	if auto["interval"] != "30s" || auto["interrupt_exist_connections"] != false {
+		t.Fatalf("Auto urltest should use 30s interval + no interruption, got interval=%v interrupt=%v", auto["interval"], auto["interrupt_exist_connections"])
+	}
+	if tol, _ := auto["tolerance"].(float64); int(tol) != proxygroups.DefaultProbeTolerance {
+		t.Fatalf("Auto urltest tolerance = %v, want %d", auto["tolerance"], proxygroups.DefaultProbeTolerance)
 	}
 	if m, _ := auto["outbounds"].([]any); len(m) != 4 {
 		t.Fatalf("Auto should have all 4 nodes, got %v", auto["outbounds"])
@@ -670,6 +676,46 @@ func TestProxyGroups_AutoCountry(t *testing.T) {
 	// mystery (no country) => Other group present since real countries exist.
 	if findOut(outs, "Other") == nil {
 		t.Fatal("expected an Other group for the uncategorized node")
+	}
+}
+
+// Failover tuning must reach EVERY urltest group, not just Auto — a per-country
+// or user group that still interrupts would kill the same login, just less often
+// (which is worse: it looks random).
+func TestProxyGroups_FailoverTuningReachesEveryURLTest(t *testing.T) {
+	nodes := []apitypes.Node{node("🇭🇰 HK-01"), node("🇺🇸 US-01")}
+	cfg := proxygroups.Config{
+		AutoCountry: true,
+		Failover: proxygroups.Failover{
+			ProbeIntervalSeconds:         45,
+			ToleranceMS:                  400,
+			IdleTimeoutSeconds:           600,
+			InterruptExistingConnections: true,
+		},
+		Groups: []proxygroups.Group{{Name: "mine", Type: "urltest", Filter: "regex", Value: "."}},
+	}
+	merged := buildGrouped(t, nodes, cfg)
+	parseValidate(t, merged)
+
+	seen := 0
+	for _, o := range outbounds(t, merged) {
+		if o["type"] != "urltest" {
+			continue
+		}
+		seen++
+		tag := o["tag"]
+		if o["interval"] != "45s" || o["idle_timeout"] != "600s" {
+			t.Fatalf("%v: interval=%v idle_timeout=%v, want 45s/600s", tag, o["interval"], o["idle_timeout"])
+		}
+		if tol, _ := o["tolerance"].(float64); int(tol) != 400 {
+			t.Fatalf("%v: tolerance=%v, want 400", tag, o["tolerance"])
+		}
+		if o["interrupt_exist_connections"] != true {
+			t.Fatalf("%v: interrupt_exist_connections=%v, want true", tag, o["interrupt_exist_connections"])
+		}
+	}
+	if seen < 3 { // Auto + HK + US + mine
+		t.Fatalf("expected several urltest groups, saw %d", seen)
 	}
 }
 

@@ -47,6 +47,84 @@ const OverseasGroupTag = "🌏 Overseas"
 // as a one-time migration to pre-existing stores; fully user-overridable.
 var DefaultExcludeCountries = []string{"HK", "MO", "CN"}
 
+// Failover tuning defaults. urltest re-ranks its members on a timer and, when
+// the winner changes, sing-box *kills every established connection* through the
+// group (interrupt_exist_connections). That is right for a dead node and wrong
+// for a merely slower one: a login flow or an upload dies mid-request because
+// another exit was 30ms quicker on a HEAD probe.
+//
+// So the defaults are deliberately sticky: a wide tolerance (only a materially
+// better node wins) and interruption OFF (a re-election steers *new* connections
+// only; existing ones keep their exit until they finish). Real dial/IO failures
+// are a separate path — wrapFailoverConn/markFailed react immediately and do not
+// wait for the probe — so keeping the probe conservative costs no failover speed.
+const (
+	DefaultProbeInterval  = 30   // seconds between urltest probes
+	DefaultProbeTolerance = 150  // ms a challenger must beat the incumbent by
+	DefaultIdleTimeout    = 1800 // seconds of no traffic before probing stops
+)
+
+// Failover is the group-failover tuning, shared by every urltest group the
+// gateway builds (Auto / Overseas / per-country / user urltest groups).
+// Zero values mean "unset" and fall back to the defaults above, so an older
+// store or an omitted field keeps working.
+type Failover struct {
+	// ProbeIntervalSeconds is how often members are re-ranked. Must be <=
+	// IdleTimeoutSeconds (sing-box rejects the config otherwise).
+	ProbeIntervalSeconds int `json:"probe_interval_seconds,omitempty"`
+	// ToleranceMS is the margin a challenger must beat the current node by
+	// before it is elected. Bigger = fewer switches. 0 => default.
+	ToleranceMS int `json:"tolerance_ms,omitempty"`
+	// IdleTimeoutSeconds stops probing after this long without traffic.
+	IdleTimeoutSeconds int `json:"idle_timeout_seconds,omitempty"`
+	// InterruptExistingConnections kills live connections when the elected
+	// member changes. Off by default: it is the direct cause of "the page
+	// died halfway through logging in".
+	InterruptExistingConnections bool `json:"interrupt_existing_connections"`
+}
+
+// Interval returns the effective probe interval in seconds.
+func (f Failover) Interval() int {
+	if f.ProbeIntervalSeconds <= 0 {
+		return DefaultProbeInterval
+	}
+	return f.ProbeIntervalSeconds
+}
+
+// Tolerance returns the effective switch margin in milliseconds.
+func (f Failover) Tolerance() int {
+	if f.ToleranceMS <= 0 {
+		return DefaultProbeTolerance
+	}
+	return f.ToleranceMS
+}
+
+// IdleTimeout returns the effective idle timeout in seconds.
+func (f Failover) IdleTimeout() int {
+	if f.IdleTimeoutSeconds <= 0 {
+		return DefaultIdleTimeout
+	}
+	return f.IdleTimeoutSeconds
+}
+
+// validateFailover rejects values sing-box would refuse or that would make
+// failover useless, so a bad setting can never reach the data plane.
+func validateFailover(f *Failover) error {
+	if f.ProbeIntervalSeconds < 0 || f.ToleranceMS < 0 || f.IdleTimeoutSeconds < 0 {
+		return fmt.Errorf("failover: values must not be negative")
+	}
+	if f.ProbeIntervalSeconds > 0 && f.ProbeIntervalSeconds < 10 {
+		return fmt.Errorf("failover: probe_interval_seconds must be at least 10 (probing harder than that only adds churn)")
+	}
+	if f.ToleranceMS > 60000 {
+		return fmt.Errorf("failover: tolerance_ms must be at most 60000")
+	}
+	if f.Interval() > f.IdleTimeout() {
+		return fmt.Errorf("failover: probe_interval_seconds (%d) must be <= idle_timeout_seconds (%d)", f.Interval(), f.IdleTimeout())
+	}
+	return nil
+}
+
 // Config is the persisted proxy-group configuration.
 type Config struct {
 	AutoCountry bool `json:"auto_country"`
@@ -55,6 +133,8 @@ type Config struct {
 	// store fills the default on load).
 	ExcludeCountries []string `json:"exclude_countries"`
 	Groups           []Group  `json:"groups"`
+	// Failover tunes every urltest group the gateway builds.
+	Failover Failover `json:"failover"`
 }
 
 // normalizeCodes upper-cases, validates (2 ASCII letters) and dedups ISO codes,
@@ -170,6 +250,12 @@ func (s *Store) sanitize() int {
 	if len(s.data.ExcludeCountries) != before {
 		removed++ // a cleaned exclude list still warrants a persist
 	}
+	// A hand-edited or downgraded file must never brick the gateway: fall back to
+	// the (safe, sticky) defaults rather than refusing to load.
+	if err := validateFailover(&s.data.Failover); err != nil {
+		s.data.Failover = Failover{}
+		removed++
+	}
 	return removed
 }
 
@@ -196,6 +282,7 @@ func snapshot(c Config) Config {
 		AutoCountry:      c.AutoCountry,
 		ExcludeCountries: append(make([]string, 0, len(c.ExcludeCountries)), c.ExcludeCountries...),
 		Groups:           append(make([]Group, 0, len(c.Groups)), c.Groups...),
+		Failover:         c.Failover,
 	}
 }
 
@@ -214,6 +301,10 @@ func (s *Store) Set(c Config) (Config, error) {
 		seen[strings.ToLower(g.Name)] = true
 		groups = append(groups, g)
 	}
+	fo := c.Failover
+	if err := validateFailover(&fo); err != nil {
+		return s.Get(), err
+	}
 	s.mu.Lock()
 	// A nil ExcludeCountries means the caller omitted the field — keep the current
 	// value rather than wiping it. A non-nil (even empty) slice replaces it.
@@ -221,7 +312,7 @@ func (s *Store) Set(c Config) (Config, error) {
 	if ex == nil {
 		ex = s.data.ExcludeCountries
 	}
-	s.data = Config{AutoCountry: c.AutoCountry, ExcludeCountries: normalizeCodes(ex), Groups: groups}
+	s.data = Config{AutoCountry: c.AutoCountry, ExcludeCountries: normalizeCodes(ex), Groups: groups, Failover: fo}
 	snap := snapshot(s.data)
 	err := s.save()
 	s.mu.Unlock()

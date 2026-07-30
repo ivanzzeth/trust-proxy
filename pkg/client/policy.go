@@ -402,6 +402,22 @@ func (c *Client) SetProxyGroups(cfg any) (map[string]any, error) {
 	return out, err
 }
 
+// ProxyGroupsConfig returns the group topology as a typed value, for callers
+// that want to patch a single field (see SetProxyGroupsConfig) rather than
+// hand-assemble the whole document.
+func (c *Client) ProxyGroupsConfig() (apitypes.ProxyGroupsConfig, error) {
+	var out apitypes.ProxyGroupsConfig
+	err := c.do(http.MethodGet, "/api/proxygroups", nil, &out)
+	return out, err
+}
+
+// SetProxyGroupsConfig replaces the group topology config (typed).
+func (c *Client) SetProxyGroupsConfig(cfg apitypes.ProxyGroupsConfig) (apitypes.ProxyGroupsConfig, error) {
+	var out apitypes.ProxyGroupsConfig
+	err := c.do(http.MethodPut, "/api/proxygroups", cfg, &out)
+	return out, err
+}
+
 // Endpoints lists WireGuard/Tailscale exits.
 func (c *Client) Endpoints() ([]apitypes.Endpoint, error) {
 	var out []apitypes.Endpoint

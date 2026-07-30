@@ -22,7 +22,7 @@ function mockPolicy() {
   vi.spyOn(api, 'rulesets').mockResolvedValue([
     { tag: 'geosite-cn' }, { tag: 'geoip-cn' },
   ] as unknown as Awaited<ReturnType<typeof api.rulesets>>);
-  vi.spyOn(api, 'proxyGroups').mockResolvedValue({ auto_country: true, exclude_countries: [], groups: [] });
+  vi.spyOn(api, 'proxyGroups').mockResolvedValue({ auto_country: true, exclude_countries: [], groups: [], failover: { interrupt_existing_connections: false } });
   vi.spyOn(api, 'dns').mockResolvedValue({ servers: [{ tag: 'doh' }, { tag: 'local' }] } as unknown as Awaited<ReturnType<typeof api.dns>>);
   vi.spyOn(api, 'status').mockResolvedValue({ mode: 'tun' } as unknown as Awaited<ReturnType<typeof api.status>>);
   vi.spyOn(api, 'posture').mockResolvedValue({ active: 'strict', seeded_split: false });
