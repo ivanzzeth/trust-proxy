@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/proxyscore"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
@@ -17,6 +18,52 @@ func wireFailover(f apitypes.ProxyFailover) proxygroups.Failover {
 		ToleranceMS:                  f.ToleranceMS,
 		IdleTimeoutSeconds:           f.IdleTimeoutSeconds,
 		InterruptExistingConnections: f.InterruptExistingConnections,
+	}
+}
+
+// wireScoring / scoringWire convert the scoring policy between the wire shape
+// and the store shape. Same reason wireFailover exists: the policy travels
+// inside profile and posture snapshots, and a snapshot that dropped the field
+// would silently restore stock weights over a tuning the user chose.
+func wireScoring(c apitypes.ProxyScoring) proxyscore.Config {
+	return proxyscore.Config{
+		Disabled:            c.Disabled,
+		MinSamples:          c.MinSamples,
+		WeightReliability:   c.WeightReliability,
+		WeightLatency:       c.WeightLatency,
+		WeightThroughput:    c.WeightThroughput,
+		RewardPerSuccess:    c.RewardPerSuccess,
+		PenaltyPerFailure:   c.PenaltyPerFailure,
+		MaxStreak:           c.MaxStreak,
+		LatencyGoodMS:       c.LatencyGoodMS,
+		LatencyBadMS:        c.LatencyBadMS,
+		ThroughputGoodKBps:  c.ThroughputGoodKBps,
+		TieMarginPoints:     c.TieMarginPoints,
+		BreakerFailures:     c.BreakerFailures,
+		BreakerDelaySeconds: c.BreakerDelaySeconds,
+		BreakerSuccesses:    c.BreakerSuccesses,
+		StaleHours:          c.StaleHours,
+	}
+}
+
+func scoringWire(c proxyscore.Config) apitypes.ProxyScoring {
+	return apitypes.ProxyScoring{
+		Disabled:            c.Disabled,
+		MinSamples:          c.MinSamples,
+		WeightReliability:   c.WeightReliability,
+		WeightLatency:       c.WeightLatency,
+		WeightThroughput:    c.WeightThroughput,
+		RewardPerSuccess:    c.RewardPerSuccess,
+		PenaltyPerFailure:   c.PenaltyPerFailure,
+		MaxStreak:           c.MaxStreak,
+		LatencyGoodMS:       c.LatencyGoodMS,
+		LatencyBadMS:        c.LatencyBadMS,
+		ThroughputGoodKBps:  c.ThroughputGoodKBps,
+		TieMarginPoints:     c.TieMarginPoints,
+		BreakerFailures:     c.BreakerFailures,
+		BreakerDelaySeconds: c.BreakerDelaySeconds,
+		BreakerSuccesses:    c.BreakerSuccesses,
+		StaleHours:          c.StaleHours,
 	}
 }
 

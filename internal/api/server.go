@@ -176,6 +176,7 @@ type Options struct {
 	RulesView    RulesViewer
 	ProxyGroups  *proxygroups.Store
 	PGApplier    ProxyGroupsApplier
+	Scorer       ProxyScorer
 	Detect       *detect.Engine
 	Mode         ModeController
 	RuleSets     *ruleset.Store
@@ -230,6 +231,7 @@ type Server struct {
 	rulesView    RulesViewer
 	pgroups      *proxygroups.Store
 	pgApplier    ProxyGroupsApplier
+	scorer       ProxyScorer
 	detect       *detect.Engine
 	mode         ModeController
 	rs           *ruleset.Store
@@ -275,7 +277,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, cmApplier: o.CMApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS,
+	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, scorer: o.Scorer, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, cmApplier: o.CMApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS,
 		version: o.Version, managedBinary: runningTheManagedCopy(),
 		throttle: newThrottle(defaultLoginConcurrency, defaultLoginAttempts, defaultLoginWindow)}
 	mux := http.NewServeMux()
@@ -358,6 +360,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.route(mux, "GET /api/effective-rules", s.handleEffectiveRules)
 	s.route(mux, "GET /api/proxygroups", s.handleGetProxyGroups)
 	s.route(mux, "PUT /api/proxygroups", s.handleSetProxyGroups)
+	s.route(mux, "GET /api/proxy-scores", s.handleGetProxyScores)
+	s.route(mux, "POST /api/proxy-scores/reset", s.handleResetProxyScores)
 	s.route(mux, "GET /api/rulesets", s.handleListRuleSets)
 	s.route(mux, "GET /api/rulesets/catalog", s.handleRuleSetCatalog)
 	s.route(mux, "GET /api/rulesets/{tag}/rules", s.handleRuleSetRules)

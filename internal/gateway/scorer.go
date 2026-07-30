@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/proxyscore"
+	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
 // boxScorer adapts our proxyscore.Store to the fork's adapter.OutboundScorer.
@@ -36,14 +37,35 @@ func (m *Manager) RecordTransfer(tag string, bytes int64, d time.Duration) {
 	}
 }
 
-// Scores returns the current scoring view for the given tags (unseen tags come
-// back as warming-with-100, so the UI lists every member rather than only the
-// ones that happen to have carried traffic).
+// Scores returns the current scoring view. A nil tags argument means "every
+// live member", derived from the same memberTags used to name the outbounds —
+// unseen tags come back warming-at-100, so the list is the node list and not
+// merely the subset that happened to carry traffic since the last restart.
 func (m *Manager) Scores(tags []string) []proxyscore.View {
 	if m.scores == nil {
 		return []proxyscore.View{}
 	}
+	if tags == nil {
+		tags = m.MemberTags()
+	}
 	return m.scores.Snapshot(tags)
+}
+
+// MemberTags lists the outbound tags currently in the proxy group: nodes,
+// gateway exits and enabled endpoints, named exactly as the data plane names
+// them.
+func (m *Manager) MemberTags() []string {
+	m.mu.Lock()
+	nodes := append(append([]apitypes.Node(nil), m.nodes...), m.gwExits...)
+	eps := append([]apitypes.Endpoint(nil), m.endpoints...)
+	m.mu.Unlock()
+	var epTags []string
+	for _, e := range eps {
+		if e.Enabled && e.Tag != "" {
+			epTags = append(epTags, e.Tag)
+		}
+	}
+	return memberTags(nodes, epTags)
 }
 
 // ScoringConfig returns the scoring policy currently in force.

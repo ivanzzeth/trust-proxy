@@ -51,15 +51,20 @@ func routeLevels() map[string]access {
 		// Observability about the caller's own traffic, and the one write a client
 		// has: asking for a destination to be permitted. That request creates a
 		// disabled rule and grants nothing until an admin approves it.
-		"GET /api/status":           accessUser,
-		"GET /api/auth/me":          accessUser,
-		"POST /api/auth/ticket":     accessUser,
-		"GET /api/connections":      accessUser, // scoped in the handler
-		"GET /api/traffic":          accessUser,
-		"GET /api/events":           accessUser, // scoped
-		"GET /api/detections":       accessUser, // scoped
-		"GET /api/history":          accessUser, // scoped
-		"GET /api/proxies":          accessUser,
+		"GET /api/status":       accessUser,
+		"GET /api/auth/me":      accessUser,
+		"POST /api/auth/ticket": accessUser,
+		"GET /api/connections":  accessUser, // scoped in the handler
+		"GET /api/traffic":      accessUser,
+		"GET /api/events":       accessUser, // scoped
+		"GET /api/detections":   accessUser, // scoped
+		"GET /api/history":      accessUser, // scoped
+		"GET /api/proxies":      accessUser,
+		// The score badge sits beside the delay badge on the same page, and
+		// describes the same nodes /api/proxies already names. No policy and no
+		// per-caller data is in it; resetting the observations is a write, so
+		// that half is admin.
+		"GET /api/proxy-scores":     accessUser,
 		"POST /api/permit-requests": accessUser,
 		"GET /api/permit-requests":  accessUser, // scoped to the caller's own
 
@@ -107,11 +112,11 @@ func routeLevels() map[string]access {
 		"DELETE /api/connections/{id}": accessAdmin,
 		"DELETE /api/connections":      accessAdmin,
 
-		"GET /api/detection-config": accessAdmin,
-		"PUT /api/detection-config": accessAdmin,
-		"GET /api/quarantine":          accessAdmin,
-		"DELETE /api/quarantine":       accessAdmin,
-		"POST /api/quarantine/permit":  accessAdmin,
+		"GET /api/detection-config":   accessAdmin,
+		"PUT /api/detection-config":   accessAdmin,
+		"GET /api/quarantine":         accessAdmin,
+		"DELETE /api/quarantine":      accessAdmin,
+		"POST /api/quarantine/permit": accessAdmin,
 
 		"GET /api/whitelist":     accessAdmin,
 		"POST /api/whitelist":    accessAdmin,
@@ -137,6 +142,7 @@ func routeLevels() map[string]access {
 
 		"GET /api/proxygroups":          accessAdmin,
 		"PUT /api/proxygroups":          accessAdmin,
+		"POST /api/proxy-scores/reset":  accessAdmin,
 		"GET /api/rulesets":             accessAdmin,
 		"GET /api/rulesets/catalog":     accessAdmin,
 		"GET /api/rulesets/{tag}/rules": accessAdmin,

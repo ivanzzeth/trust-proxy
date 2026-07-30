@@ -409,12 +409,95 @@ type ProxyFailover struct {
 	InterruptExistingConnections bool `json:"interrupt_existing_connections"`
 }
 
+// ProxyScoring mirrors internal/proxyscore.Config: how urltest ranks members by
+// observed real-traffic quality rather than probe latency alone. Zero values
+// mean "use the gateway default", and the flag is Disabled rather than Enabled
+// so an omitted block means scoring on with stock settings.
+type ProxyScoring struct {
+	Disabled bool `json:"disabled,omitempty"`
+
+	// MinSamples is how many real outcomes a node needs before its score stops
+	// being the neutral 100.
+	MinSamples int `json:"min_samples,omitempty"`
+
+	// Weights are relative, not percentages: the score divides by their sum.
+	WeightReliability int `json:"weight_reliability,omitempty"`
+	WeightLatency     int `json:"weight_latency,omitempty"`
+	WeightThroughput  int `json:"weight_throughput,omitempty"`
+
+	// Streak amplification: the Nth consecutive outcome counts N× the first,
+	// capped at MaxStreak.
+	RewardPerSuccess  int `json:"reward_per_success,omitempty"`
+	PenaltyPerFailure int `json:"penalty_per_failure,omitempty"`
+	MaxStreak         int `json:"max_streak,omitempty"`
+
+	LatencyGoodMS int `json:"latency_good_ms,omitempty"`
+	LatencyBadMS  int `json:"latency_bad_ms,omitempty"`
+
+	ThroughputGoodKBps int `json:"throughput_good_kbps,omitempty"`
+
+	// TieMarginPoints: score gaps smaller than this count as equal, and latency
+	// breaks the tie.
+	TieMarginPoints int `json:"tie_margin_points,omitempty"`
+
+	BreakerFailures     int `json:"breaker_failures,omitempty"`
+	BreakerDelaySeconds int `json:"breaker_delay_seconds,omitempty"`
+	BreakerSuccesses    int `json:"breaker_successes,omitempty"`
+
+	StaleHours int `json:"stale_hours,omitempty"`
+}
+
 // ProxyGroupsConfig mirrors internal/proxygroups.Config for wire/profile use.
 type ProxyGroupsConfig struct {
 	AutoCountry      bool          `json:"auto_country"`
 	ExcludeCountries []string      `json:"exclude_countries"`
 	Groups           []ProxyGroup  `json:"groups"`
 	Failover         ProxyFailover `json:"failover"`
+	Scoring          ProxyScoring  `json:"scoring"`
+}
+
+// ProxyScore is one member's live scoring view: the number, the three terms it
+// came from, and the raw evidence behind each. The breakdown is the point — a
+// bare score cannot answer "why is this node at 62", and the whole feature is
+// supposed to be legible rather than another opaque auto-switch.
+type ProxyScore struct {
+	Tag   string  `json:"tag"`
+	Score float64 `json:"score"`
+
+	Reliability float64 `json:"reliability"`
+	Latency     float64 `json:"latency_score"`
+	Throughput  float64 `json:"throughput_score"`
+
+	Samples    int  `json:"samples"`
+	MinSamples int  `json:"min_samples"`
+	Warming    bool `json:"warming"`
+
+	OKStreak   int `json:"ok_streak"`
+	FailStreak int `json:"fail_streak"`
+
+	LatencyMS      int     `json:"latency_ms,omitempty"`
+	ThroughputKBps float64 `json:"throughput_kbps,omitempty"`
+
+	// Breaker is closed|open|half-open. Open means "demoted to last resort",
+	// never "excluded" — a group that drops its unhealthy members can end up
+	// with none at all.
+	Breaker          string `json:"breaker"`
+	BreakerRemaining int    `json:"breaker_remaining_seconds,omitempty"`
+	Preferred        bool   `json:"preferred"`
+
+	LastOK    bool   `json:"last_ok"`
+	LastErr   string `json:"last_err,omitempty"`
+	UpdatedAt string `json:"updated_at,omitempty"`
+}
+
+// ProxyScores is the /api/proxy-scores response: the per-member views plus the
+// policy in force and the formula rendered with the live weights, so a client
+// can explain a score without hard-coding the arithmetic.
+type ProxyScores struct {
+	Scores  []ProxyScore `json:"scores"`
+	Config  ProxyScoring `json:"config"`
+	Formula string       `json:"formula"`
+	Enabled bool         `json:"enabled"`
 }
 
 // Blacklist is the egress deny-list snapshot: destinations that are REJECTED

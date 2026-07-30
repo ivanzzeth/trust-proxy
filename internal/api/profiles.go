@@ -206,6 +206,7 @@ func (s *Server) resolveProfileProxyGroups(p apitypes.Profile) proxygroups.Confi
 		AutoCountry:      p.ProxyGroups.AutoCountry,
 		ExcludeCountries: append([]string(nil), p.ProxyGroups.ExcludeCountries...),
 		Failover:         wireFailover(p.ProxyGroups.Failover),
+		Scoring:          wireScoring(p.ProxyGroups.Scoring),
 	}
 	for _, g := range p.ProxyGroups.Groups {
 		cfg.Groups = append(cfg.Groups, proxygroups.Group{

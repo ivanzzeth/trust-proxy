@@ -47,6 +47,7 @@ func (s *Server) snapshotLivePolicy() apitypes.PolicySlot {
 				IdleTimeoutSeconds:           pg.Failover.IdleTimeoutSeconds,
 				InterruptExistingConnections: pg.Failover.InterruptExistingConnections,
 			},
+			Scoring: scoringWire(pg.Scoring),
 		}
 		for _, g := range pg.Groups {
 			out.Groups = append(out.Groups, apitypes.ProxyGroup{

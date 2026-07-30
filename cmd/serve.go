@@ -669,6 +669,7 @@ func runServe() error {
 		RulesView:    mgr,
 		ProxyGroups:  pgStore,
 		PGApplier:    mgr,
+		Scorer:       mgr,
 		Detect:       engine,
 		Mode:         mgr,
 		RuleSets:     rsStore,

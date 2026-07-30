@@ -9,6 +9,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/dnscfg"
 	"github.com/ivanzzeth/trust-proxy/internal/finalroute"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/proxyscore"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -76,7 +77,12 @@ func newLivePolicyServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pg.Set(proxygroups.Config{AutoCountry: true, ExcludeCountries: []string{"CN"}}); err != nil {
+	if _, err := pg.Set(proxygroups.Config{
+		AutoCountry: true, ExcludeCountries: []string{"CN"},
+		// Non-default scoring, so a snapshot that drops the field is visible as a
+		// changed value rather than hiding inside the zero value.
+		Scoring: proxyscore.Config{MinSamples: 25, WeightLatency: 70, TieMarginPoints: 12},
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,6 +135,16 @@ func TestSnapshotLiveSlotAndSnapshotProfileAgree(t *testing.T) {
 	if slot.ProxyGroups == nil || p.ProxyGroups == nil || slot.ProxyGroups.AutoCountry != p.ProxyGroups.AutoCountry ||
 		len(slot.ProxyGroups.ExcludeCountries) != 1 || slot.ProxyGroups.ExcludeCountries[0] != p.ProxyGroups.ExcludeCountries[0] {
 		t.Fatalf("proxy groups mismatch: slot=%v profile=%v", slot.ProxyGroups, p.ProxyGroups)
+	}
+	// Scoring rides the same snapshot as Failover and for the same reason: a slot
+	// that silently drops it would re-enable settings the user turned off the
+	// moment they activate an older profile.
+	if slot.ProxyGroups.Scoring.MinSamples != 25 || slot.ProxyGroups.Scoring.WeightLatency != 70 ||
+		slot.ProxyGroups.Scoring.TieMarginPoints != 12 {
+		t.Fatalf("slot dropped scoring: %+v", slot.ProxyGroups.Scoring)
+	}
+	if p.ProxyGroups.Scoring != slot.ProxyGroups.Scoring {
+		t.Fatalf("scoring mismatch: slot=%+v profile=%+v", slot.ProxyGroups.Scoring, p.ProxyGroups.Scoring)
 	}
 	if slot.DNS == nil || p.DNS == nil || slot.DNS.Strategy != "ipv4_only" || p.DNS.Strategy != "ipv4_only" {
 		t.Fatalf("dns mismatch: slot=%v profile=%v", slot.DNS, p.DNS)
@@ -186,6 +202,35 @@ func TestApplySlotAlignsLiveStoresOnSuccess(t *testing.T) {
 	}
 	if got := s.wl.Get(); len(got.Domains) != 1 || got.Domains[0] != "other.example" {
 		t.Fatalf("whitelist store not aligned after applySlot: %+v", got)
+	}
+}
+
+// TestApplySlotCarriesScoringToTheDataPlane closes the loop the snapshot test
+// opens: capturing the scoring policy into a slot is only half of it, the slot
+// has to reach the gateway on activation too.
+func TestApplySlotCarriesScoringToTheDataPlane(t *testing.T) {
+	s := newLivePolicyServer(t)
+	fa := &fakeProfileApplier{}
+	s.profApplier = fa
+
+	slot := s.snapshotLiveSlot()
+	if _, err := s.applySlot(slot, apitypes.PostureSplit); err != nil {
+		t.Fatal(err)
+	}
+	if fa.lastPG.Scoring.MinSamples != 25 || fa.lastPG.Scoring.WeightLatency != 70 ||
+		fa.lastPG.Scoring.TieMarginPoints != 12 {
+		t.Fatalf("scoring did not reach ApplyProfile: %+v", fa.lastPG.Scoring)
+	}
+}
+
+// And the same for profile activation, which resolves the stored profile
+// through its own path rather than through applySlot.
+func TestActivatingAProfileCarriesItsScoring(t *testing.T) {
+	s := newLivePolicyServer(t)
+	p := s.snapshotProfile("saved")
+	got := s.resolveProfileProxyGroups(p)
+	if got.Scoring.MinSamples != 25 || got.Scoring.WeightLatency != 70 || got.Scoring.TieMarginPoints != 12 {
+		t.Fatalf("profile activation dropped scoring: %+v", got.Scoring)
 	}
 }
 
