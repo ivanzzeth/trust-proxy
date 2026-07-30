@@ -21,6 +21,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
 	"github.com/ivanzzeth/trust-proxy/internal/whitelist"
@@ -542,6 +543,70 @@ func runSelftest() error {
 	check("Global: unlisted -> node", "node", get("deny2.tp"))
 	check("Global: blacklist still blocked", "", get("evilg.tp"))
 	setClashMode(clashPort, "Rule")
+
+	fmt.Println("== quarantine (the gateway's own ban) ==")
+	reset()
+	// A defensive ban must be recorded, enforced, and releasable. The recording
+	// half is what broke: the detector handed the destination over as an "ip", but
+	// in proxy/socks mode sing-box dials by NAME, so the store rejected the whole
+	// entry — the connection died while the list stayed empty, leaving nothing to
+	// see or release. Drive the real ban sink to assert all three.
+	{
+		quarPath := filepath.Join(dataDir, "selftest-quarantine.json")
+		_ = os.Remove(quarPath)
+		qs, qerr := quarantine.NewStore(quarPath)
+		if qerr != nil {
+			fail++
+			fmt.Printf("  FAIL  quarantine store: %v\n", qerr)
+		} else {
+			engine.SetOnBan(func(domain, ip, reason string) {
+				list, err := qs.Add(domain, ip, reason)
+				if err != nil && len(list.Entries) == 0 {
+					return
+				}
+				_ = mgr.SetQuarantine(list)
+			})
+			// The shape the bug lived in: name-dialed, so Destination has no address.
+			engine.BanFromEvent(&detect.Event{
+				Host:        "banned.tp",
+				Destination: "banned.tp:443",
+			}, "selftest exfil")
+
+			entries := qs.Get().Entries
+			listed := len(entries) == 1 && entries[0].Value == "banned.tp" && !entries[0].IsIP
+			if listed {
+				pass++
+				fmt.Println("  PASS  name-dialed ban is recorded (visible + releasable)")
+			} else {
+				fail++
+				fmt.Printf("  FAIL  name-dialed ban not recorded: %+v\n", entries)
+			}
+			// Recorded is not enough — it must actually reject.
+			_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"banned.tp"}})
+			check("quarantine rejects even when permitted", "", get("banned.tp"))
+			// And releasing it must restore egress, or "release" is a lie.
+			relList, _ := qs.Release("banned.tp")
+			_ = mgr.SetQuarantine(relList)
+			check("release restores egress", "node", get("banned.tp"))
+
+			// A bare IP still lands on the ip axis, not as a bogus domain.
+			_ = os.Remove(quarPath)
+			qs2, _ := quarantine.NewStore(quarPath)
+			engine.SetOnBan(func(domain, ip, reason string) { _, _ = qs2.Add(domain, ip, reason) })
+			engine.BanFromEvent(&detect.Event{Host: "203.0.113.9", Destination: "203.0.113.9:443"}, "selftest ip")
+			e2 := qs2.Get().Entries
+			if len(e2) == 1 && e2[0].IsIP && e2[0].Value == "203.0.113.9/32" {
+				pass++
+				fmt.Println("  PASS  bare-IP ban lands on the ip axis as a CIDR")
+			} else {
+				fail++
+				fmt.Printf("  FAIL  bare-IP ban wrong: %+v\n", e2)
+			}
+			engine.SetOnBan(nil)
+			_ = mgr.SetQuarantine(quarantine.List{})
+		}
+	}
+	reset()
 
 	fmt.Println("== proxy grouping (auto-country) ==")
 	// Re-apply a country-named node so an auto-country group forms, and route via it.

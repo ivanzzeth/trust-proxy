@@ -501,7 +501,17 @@ func (e *Engine) banEvent(ev *Event, reason string) {
 	if net.ParseIP(domain) != nil {
 		domain = "" // host was bare IP
 	}
+	// Destination is only an address when sing-box resolved one. In proxy/socks
+	// mode it dials by name, so this field is routinely "example.com:443" — and a
+	// hostname handed over as the ip argument is rejected by the quarantine store,
+	// which used to drop the whole ban (connection killed, nothing on the list).
 	ip := hostOnly(ev.Destination)
+	if net.ParseIP(ip) == nil {
+		if domain == "" {
+			domain = strings.ToLower(strings.TrimSpace(ip))
+		}
+		ip = ""
+	}
 	if ip == "" && domain == "" {
 		return
 	}

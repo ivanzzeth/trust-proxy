@@ -94,12 +94,21 @@ func (s *Store) Add(domain, ip, reason string) (List, error) {
 	if domain == "" && ip == "" {
 		return s.Get(), fmt.Errorf("nothing to quarantine")
 	}
+	// A bad ip must not discard a good domain. This is a defensive block whose
+	// connection has *already* been killed, so refusing the whole entry leaves the
+	// destination unreachable and absent from the list — invisible and impossible
+	// to release. Record what is valid and report the rest.
+	var bad error
 	if ip != "" {
 		norm, err := normalizeIP(ip)
 		if err != nil {
-			return s.Get(), err
+			if domain == "" {
+				return s.Get(), err
+			}
+			bad, ip = err, ""
+		} else {
+			ip = norm
 		}
-		ip = norm
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -114,6 +123,9 @@ func (s *Store) Add(domain, ip, reason string) (List, error) {
 		s.data.Entries = append(s.data.Entries, Entry{Value: v.val, IsIP: v.isIP, Reason: reason, Time: now})
 	}
 	err := s.save()
+	if err == nil {
+		err = bad
+	}
 	return List{Entries: append([]Entry(nil), s.data.Entries...)}, err
 }
 

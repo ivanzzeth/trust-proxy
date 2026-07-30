@@ -587,8 +587,14 @@ func runServe() error {
 	engine.SetOnBan(func(domain, ip, reason string) {
 		list, err := quarStore.Add(domain, ip, reason)
 		if err != nil {
+			// Partial success is still success: Add reports a rejected value while
+			// keeping the valid one, and the connection is already dead. Log and
+			// carry on to apply, or the surviving entry never reaches the data
+			// plane and never shows up in the console.
 			logging.L().Error().Err(err).Str("domain", domain).Str("ip", ip).Msg("quarantine add")
-			return
+			if len(list.Entries) == 0 {
+				return
+			}
 		}
 		logging.L().Warn().Str("domain", domain).Str("ip", ip).Str("reason", reason).Msg("quarantined")
 		if err := mgr.SetQuarantine(list); err != nil {
