@@ -21,6 +21,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/gateway"
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
+	"github.com/ivanzzeth/trust-proxy/internal/proxyscore"
 	"github.com/ivanzzeth/trust-proxy/internal/quarantine"
 	"github.com/ivanzzeth/trust-proxy/internal/ruleset"
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
@@ -50,6 +51,11 @@ var selftestCmd = &cobra.Command{
 	RunE:   func(cmd *cobra.Command, args []string) error { return runSelftest() },
 }
 
+// slowDrips is how many 100ms chunks the origins' /slow endpoint writes before
+// finishing. Long enough that the scoring section can kill a node's listener
+// mid-response and still have a live connection to observe.
+const slowDrips = 10
+
 // freePort grabs an OS-assigned free TCP port.
 func freePort() int {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
@@ -75,6 +81,19 @@ func runSelftest() error {
 	// nodeOriginPort. Each just returns its own tag as the body.
 	tagServer := func(port int, tag string) *http.Server {
 		s := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", port), Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// /slow keeps a request in flight for ~1s. The scoring section uses
+			// it to assert that re-scoring steers the NEXT connection and never
+			// disturbs one that is already flowing.
+			if r.URL.Path == "/slow" {
+				fl, _ := w.(http.Flusher)
+				for i := 0; i < slowDrips; i++ {
+					_, _ = io.WriteString(w, ".")
+					if fl != nil {
+						fl.Flush()
+					}
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
 			_, _ = io.WriteString(w, tag)
 		})}
 		go s.ListenAndServe()
@@ -668,6 +687,172 @@ func runSelftest() error {
 	// restore for TUN / later sections
 	_ = mgr.SetProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{{Name: "g", Type: "select", Filter: "manual", Nodes: []string{"NODE"}}}})
 	_ = mgr.Apply([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: nodeOB}})
+
+	fmt.Println("== proxy scoring ==")
+	// Scoring's claim is that real traffic — not the generate_204 probe — decides
+	// which member the NEXT connection is dialed on, and that it decides nothing
+	// else. Five things are asserted here, end to end, through the real box:
+	//
+	//  ① a new connection migrates to the healthy member once the other one dies;
+	//  ② a connection already in flight ON the dying member is not killed;
+	//  ③ during warm-up (< MinSamples) a node carries no real score, even after
+	//     an observation that would otherwise have lowered it;
+	//  ④ the breaker demotes that node while it stays listed in the group;
+	//  ⑤ past MinSamples a node carries a measured score instead of the
+	//     placeholder.
+	//
+	// ③④⑤ are the teeth for the wiring: with the scorer left out of the box
+	// context every node sits at zero samples and all three fail (verified).
+	// ①② also hold without scoring — the fork's dial-failure cooldown already
+	// does that much — so they are guarding against scoring *regressing* the
+	// behaviour of the last two rounds, not proving scoring by themselves. The
+	// score-beats-latency ordering itself is pinned deterministically in the
+	// fork's protocol/group/urltest_score_test.go.
+	//
+	// A urltest group is required — a selector never consults the scorer.
+	{
+		reset()
+		mgr.ResetScores() // earlier sections drove traffic through Auto too
+		// A third origin, so "which member served this" is observable rather
+		// than inferred from a request merely not failing.
+		flakyOriginPort := freePort()
+		flakyOrigin := tagServer(flakyOriginPort, "flaky")
+		defer flakyOrigin.Close()
+		label["flaky"] = "flaky"
+		flakyOriginAddr := fmt.Sprintf("127.0.0.1:%d", flakyOriginPort)
+
+		// FLAKY is a second, independent node upstream that we can stop
+		// *accepting* on without disturbing the tunnels it already spliced:
+		// http.Server.Close() does not touch hijacked connections, which is
+		// exactly the shape of "the node died while you were logged in".
+		flakyPort := freePort()
+		flakyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			dst, err := net.Dial("tcp", flakyOriginAddr)
+			if err != nil {
+				http.Error(w, err.Error(), 502)
+				return
+			}
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				dst.Close()
+				return
+			}
+			src, _, err := hj.Hijack()
+			if err != nil {
+				dst.Close()
+				return
+			}
+			_, _ = src.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n"))
+			go func() { _, _ = io.Copy(dst, src); dst.Close() }()
+			_, _ = io.Copy(src, dst)
+			src.Close()
+		})
+		flaky := &http.Server{Addr: fmt.Sprintf("127.0.0.1:%d", flakyPort), Handler: flakyHandler}
+		go flaky.ListenAndServe()
+		defer flaky.Close()
+
+		flakyOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "SC-FLAKY", "server": "node-exit.tp", "server_port": flakyPort})
+		goodOB, _ := json.Marshal(map[string]any{"type": "http", "tag": "SC-GOOD", "server": "node-exit.tp", "server_port": nodePort})
+		// MinSamples above 1 so warm-up is observable; a 1-failure breaker so a
+		// single dead dial is enough to demote (the stock 5 would need traffic
+		// this offline harness has no way to generate).
+		_ = mgr.SetProxyGroups(proxygroups.Config{Scoring: proxyscore.Config{MinSamples: 4, BreakerFailures: 1}})
+		// Order matters: with no probe history the group dials the first member,
+		// so FLAKY is the one that carries the in-flight connection.
+		_ = mgr.Apply([]apitypes.Node{
+			{Tag: "SC-FLAKY", Protocol: "http", Server: "node-exit.tp", Port: flakyPort, Outbound: flakyOB},
+			{Tag: "SC-GOOD", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: goodOB},
+		})
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}})
+		selectProxyGroup(clashPort, "Auto")
+		time.Sleep(250 * time.Millisecond)
+
+		// Baseline: FLAKY is the member being used. Without this the migration
+		// assertion below would be satisfied by traffic that was on SC-GOOD all
+		// along — "it still works" is not "it moved".
+		check("traffic starts on the node about to die", "flaky", get("allow.tp"))
+
+		// ② A slow response held open on FLAKY. It is dialed before FLAKY stops
+		// listening, so it is a live connection on the member that is about to
+		// be demoted.
+		slowBody := make(chan string, 1)
+		go func() {
+			resp, err := client.Get(fmt.Sprintf("http://allow.tp:%d/slow", directPort))
+			if err != nil {
+				slowBody <- ""
+				return
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			slowBody <- string(b)
+		}()
+		time.Sleep(400 * time.Millisecond) // let the tunnel establish and start dripping
+		flaky.Close()                      // new dials are refused; the spliced tunnel lives on
+		time.Sleep(100 * time.Millisecond)
+
+		// ① The next connection must find its way to the healthy member. If it
+		// did not fail over it would come back empty, not merely slower.
+		check("new connection migrates off the dead node", "node", get("allow.tp"))
+
+		want := strings.Repeat(".", slowDrips) + "flaky"
+		if got := <-slowBody; got == want {
+			pass++
+			fmt.Println("  PASS  in-flight connection on the dead node survives")
+		} else {
+			fail++
+			fmt.Printf("  FAIL  in-flight connection truncated: got %d/%d bytes\n", len(got), len(want))
+		}
+
+		// Give SC-GOOD enough real outcomes to leave warm-up.
+		for i := 0; i < 4; i++ {
+			get("allow.tp")
+		}
+		byTag := map[string]proxyscore.View{}
+		for _, v := range mgr.Scores(nil) {
+			byTag[v.Tag] = v
+		}
+		fk, good := byTag["SC-FLAKY"], byTag["SC-GOOD"]
+
+		// ③ FLAKY was observed (one good dial, then a dead one: reliability took
+		// the hit and the breaker tripped) and yet, still inside warm-up, it
+		// reports no real score. A bare 100 here means "not judged yet", which is
+		// the whole point of the warm-up — a node must not be condemned on its
+		// first bad minute.
+		if fk.Warming && fk.Score == 100 && fk.Reliability < 100 && fk.Samples > 0 {
+			pass++
+			fmt.Printf("  PASS  warming node keeps the neutral 100 (samples=%d rel=%.0f)\n", fk.Samples, fk.Reliability)
+		} else {
+			fail++
+			fmt.Printf("  FAIL  warm-up broken: %+v\n", fk)
+		}
+		// The breaker is orthogonal to the score and works from sample #1 — that
+		// is what stops a dead node from riding its warm-up 100 into selection.
+		// It demotes; it must never remove the member from the group.
+		if !fk.Preferred && fk.Breaker == "open" {
+			pass++
+			fmt.Println("  PASS  dead node demoted by the breaker while still listed")
+		} else {
+			fail++
+			fmt.Printf("  FAIL  dead node not demoted: breaker=%q preferred=%v\n", fk.Breaker, fk.Preferred)
+		}
+		// …and once past MinSamples a node carries a measured score. Not 100:
+		// throughput has no samples in this harness and scores a neutral 50, so
+		// a flawless node still lands below the warm-up placeholder. If the
+		// scorer were not wired into the box at all, this node would have zero
+		// samples and still be warming.
+		if !good.Warming && good.Samples >= 4 && good.Score > 0 && good.Score < 100 && good.Reliability == 100 && good.Preferred {
+			pass++
+			fmt.Printf("  PASS  healthy node leaves warm-up with a measured score (%.0f over %d samples)\n", good.Score, good.Samples)
+		} else {
+			fail++
+			fmt.Printf("  FAIL  no real score after warm-up: %+v\n", good)
+		}
+
+		// restore for the sections below
+		_ = mgr.SetProxyGroups(proxygroups.Config{Groups: []proxygroups.Group{{Name: "g", Type: "select", Filter: "manual", Nodes: []string{"NODE"}}}})
+		_ = mgr.Apply([]apitypes.Node{{Tag: "NODE", Protocol: "http", Server: "node-exit.tp", Port: nodePort, Outbound: nodeOB}})
+		mgr.ResetScores()
+	}
 
 	fmt.Println("== dns follows route ==")
 	// Regression: "everything domestic crawls while the gateway runs". With the
