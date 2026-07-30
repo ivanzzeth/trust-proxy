@@ -172,11 +172,64 @@ export const PROXY_FAILOVER_DEFAULTS = {
   tolerance_ms: 150,
   idle_timeout_seconds: 1800,
 } as const;
+// How members are ranked on observed real traffic. Every number is 0 =
+// "unset, use the gateway's default" — never render these raw; the resolved
+// values come back on ProxyScores.config.
+export interface ProxyScoring {
+  disabled?: boolean;
+  min_samples?: number;
+  weight_reliability?: number;
+  weight_latency?: number;
+  weight_throughput?: number;
+  reward_per_success?: number;
+  penalty_per_failure?: number;
+  max_streak?: number;
+  latency_good_ms?: number;
+  latency_bad_ms?: number;
+  throughput_good_kbps?: number;
+  tie_margin_points?: number;
+  breaker_failures?: number;
+  breaker_delay_seconds?: number;
+  breaker_successes?: number;
+  stale_hours?: number;
+}
+// One member's score with every input that produced it, so the UI can explain
+// a ranking instead of asserting one.
+export interface ProxyScore {
+  tag: string;
+  score: number;
+  reliability: number;
+  latency_score: number;
+  throughput_score: number;
+  samples: number;
+  min_samples: number;
+  warming: boolean;
+  ok_streak: number;
+  fail_streak: number;
+  latency_ms?: number;
+  throughput_kbps?: number;
+  // "closed" | "half-open" | "open". preferred=false means the node is demoted
+  // to last choice — never removed, or a group whose members all tripped at
+  // once would leave the machine with no egress.
+  breaker: string;
+  breaker_remaining_seconds?: number;
+  preferred: boolean;
+  last_ok: boolean;
+  last_err?: string;
+  updated_at?: string;
+}
+export interface ProxyScores {
+  scores: ProxyScore[];
+  config: ProxyScoring; // fully resolved by the backend
+  formula: string; // rendered with the weights in force
+  enabled: boolean;
+}
 export interface ProxyGroupsConfig {
   auto_country: boolean;
   exclude_countries: string[]; // ISO2 regions kept out of the shared Overseas group
   groups: ProxyGroup[];
   failover: ProxyFailover;
+  scoring: ProxyScoring;
 }
 export interface TPNode {
   tag: string;
@@ -711,8 +764,12 @@ export const api = {
         ...(c.failover ?? {}),
         interrupt_existing_connections: !!c.failover?.interrupt_existing_connections,
       },
+      scoring: c.scoring ?? {},
     })),
   setProxyGroups: (cfg: ProxyGroupsConfig) => put<ProxyGroupsConfig>('/proxygroups', cfg),
+
+  proxyScores: () => get<ProxyScores>('/proxy-scores'),
+  resetProxyScores: () => post<{ ok: boolean }>('/proxy-scores/reset'),
 
   proxies: () => get<{ proxies: Record<string, ProxyNode> }>('/proxies'),
   selectProxy: (group: string, name: string) => put<void>('/proxies/select', { group, name }),
