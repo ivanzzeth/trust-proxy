@@ -1116,6 +1116,76 @@ func runSelftest() error {
 	_ = mgr.SetDNS(dns) // restore the hosts resolver for the sections below
 	reset()
 
+	fmt.Println("== inbound listen ==")
+	{
+		// Moving the proxy listener is the one setting that can lock everyone
+		// out, so it gets the same dead-man's switch as a mode switch. Three
+		// things have to be true and only the second one is hard:
+		//   1. the new port proxies traffic
+		//   2. the OLD port is no longer listening — an implementation that
+		//      merely *added* a listener passes (1) while leaving the previous
+		//      one open, which is the security hole this whole setting exists
+		//      to close
+		//   3. an unconfirmed change reverts itself
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}})
+		time.Sleep(150 * time.Millisecond)
+
+		newPort := freePort()
+		listening := func(port int) bool {
+			c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 400*time.Millisecond)
+			if err != nil {
+				return false
+			}
+			_ = c.Close()
+			return true
+		}
+		// via dials allow.tp through whichever port is given; "" means the
+		// connection never completed.
+		via := func(port int) string {
+			u, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
+			c := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(u)}, Timeout: 4 * time.Second}
+			resp, err := c.Get(fmt.Sprintf("http://allow.tp:%d/", directPort))
+			if err != nil {
+				return ""
+			}
+			defer resp.Body.Close()
+			b, _ := io.ReadAll(resp.Body)
+			return strings.TrimSpace(string(b))
+		}
+
+		if _, err := mgr.SetInboundListenGuarded(apitypes.InboundListen{Listen: "127.0.0.1", Port: newPort}, 3*time.Second); err != nil {
+			fail++
+			fmt.Printf("  FAIL  move inbound to :%d: %v\n", newPort, err)
+		} else {
+			time.Sleep(400 * time.Millisecond)
+			check(fmt.Sprintf("moved inbound :%d proxies traffic", newPort), "node", via(newPort))
+			if listening(mixedPort) {
+				fail++
+				fmt.Printf("  FAIL  old inbound :%d still listening after the move\n", mixedPort)
+			} else {
+				pass++
+				fmt.Printf("  PASS  old inbound :%d stopped listening\n", mixedPort)
+			}
+
+			// Never confirmed: the guard must put it back by itself. This is the
+			// only reason it is safe to expose the setting in a web console that
+			// you reach *through* the box.
+			time.Sleep(4 * time.Second)
+			if mgr.InboundListen().Port == newPort {
+				fail++
+				fmt.Println("  FAIL  unconfirmed listen change did not revert")
+			} else {
+				pass++
+				fmt.Println("  PASS  unconfirmed listen change reverted itself")
+			}
+			time.Sleep(400 * time.Millisecond)
+			check("original inbound proxies again after revert", "node", via(mixedPort))
+		}
+		_ = mgr.SetInboundListen(apitypes.InboundListen{})
+		time.Sleep(300 * time.Millisecond)
+		reset()
+	}
+
 	fmt.Println("== tun mode ==")
 	if os.Geteuid() != 0 {
 		fmt.Println("  SKIP  tun mode (needs root)")

@@ -627,6 +627,29 @@ func TestLinuxPolicyRebuilds(t *testing.T) {
 		c.assertBoxAlive(step.what)
 	}
 
+	// Moving the proxy inbound is its own block because it is the one policy
+	// change that invalidates assertBoxAlive's own premise: the port it looks
+	// for is the thing being changed. It is also the only one where "the API
+	// said yes" is worth nothing — a rebuild that added a listener instead of
+	// moving one succeeds, answers, and quietly leaves the old port open.
+	if out := c.exec("trust-proxy inbound set --port 21594 --guard 0"); strings.Contains(out, "error:") {
+		t.Fatalf("moving the inbound failed:\n%s", out)
+	}
+	if got := c.exec("trust-proxy inbound get"); !strings.Contains(got, "21594") {
+		t.Fatalf("`inbound get` did not report the new port:\n%s", got)
+	}
+	sockets := c.exec("ss -ltn || true")
+	if !strings.Contains(sockets, ":21594") {
+		t.Fatalf("the inbound did not come up on its new port:\n%s", sockets)
+	}
+	if strings.Contains(sockets, ":21584") {
+		t.Fatalf("the old inbound port is still listening after the move:\n%s", sockets)
+	}
+	if out := c.exec("trust-proxy inbound set --port 21584 --guard 0"); strings.Contains(out, "error:") {
+		t.Fatalf("moving the inbound back failed:\n%s", out)
+	}
+	c.assertBoxAlive("inbound set --port")
+
 	// Activating a saved profile is a single atomic rebuild of everything at once
 	// — the widest config change there is, and the one most likely to produce
 	// something the box rejects.
