@@ -122,6 +122,30 @@ jobs:
           chmod +x trust-proxy-e2e
           TP_TEST_BINARY="$PWD/trust-proxy-e2e" make e2e-linux
 
+  # TUN capture of forwarded traffic (the nftables auto_redirect path). The job
+  # above curls from the gateway host, which is nftables' output chain; a
+  # container's veth arrives on prerouting/forward, and auto_redirect is the only
+  # reason those packets enter the tunnel. "Linux TUN captures Docker/containerd
+  # bridge egress" had no test until this one, and the K8s DaemonSet shape rests
+  # entirely on it being true.
+  linux-tun:
+    needs: testbin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: trust-proxy-e2e
+      - name: e2e-tun
+        run: |
+          chmod +x trust-proxy-e2e
+          TP_TEST_BINARY="$PWD/trust-proxy-e2e" make e2e-tun
+
   # Every command that rewrites policy rebuilds the sing-box config, and a config
   # the box refuses is a gateway that stops enforcing anything. About twenty such
   # commands had no e2e coverage at all until one of them shipped broken.

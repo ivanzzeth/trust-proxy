@@ -540,10 +540,15 @@ func buildSystemdImage(t *testing.T) string {
 	t.Helper()
 	const tag = "trust-proxy-systemd-test"
 	dir := t.TempDir()
+	// nftables is here for reading, not for running: sing-tun talks netlink
+	// directly, so auto_redirect works without the `nft` binary. The binary is what
+	// lets a test (and `trust-proxy doctor`) see what the kernel actually got,
+	// which is the only way to tell "the redirect chain is installed" from "the
+	// config asked for it".
 	dockerfile := `FROM debian:12
 RUN apt-get update -qq && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-        systemd systemd-sysv dbus curl iproute2 procps python3 && \
+        systemd systemd-sysv dbus curl iproute2 procps python3 nftables && \
     rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
 CMD ["/lib/systemd/systemd"]

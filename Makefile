@@ -15,7 +15,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
 .PHONY: help run app build build-ui build-go build-embed build-app cross check-build-owner tidy \
-	e2e-fleet e2e-linux e2e-policy e2e-dataplane e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
+	e2e-fleet e2e-linux e2e-tun e2e-policy e2e-dataplane e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
 	deps clean e2e redeploy desktop desktop-dev desktop-sidecar app-service-hint \
 	release version-check
 
@@ -272,6 +272,15 @@ e2e-dataplane:
 ## nothing. Asserts the change took *and* that the data plane survived it.
 e2e-policy:
 	go test -count=1 -tags docker_e2e -run TestLinuxPolicyRebuilds -v -timeout 15m ./test/
+
+## TUN capture of *forwarded* traffic — the nftables (auto_redirect) path. The
+## other TUN assertions curl from the gateway host itself, which is the output
+## chain; a container's veth arrives on prerouting/forward instead, and that is
+## what auto_redirect exists for. A bridge + netns inside the container is the
+## same kernel path docker0 and a CNI bridge use, so this is what says whether
+## the K8s DaemonSet shape can work at all.
+e2e-tun:
+	go test -count=1 -tags docker_e2e -run TestLinuxTUNCapturesForwardedBridgeTraffic -v -timeout 15m ./test/
 
 ## Linux service lifecycle under a real systemd (privileged container, pid 1 =
 ## systemd): install, restart after kill -9, TUN, and a clean uninstall.
