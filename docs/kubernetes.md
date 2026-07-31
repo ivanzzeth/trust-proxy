@@ -41,7 +41,7 @@ Pod 出网的内核路径是 `veth → CNI bridge → forward 链`。
 
 | 项 | 要求 |
 |---|---|
-| 节点内核 | Linux，有 `/dev/net/tun`，nftables 可用（initContainer 会替你确认） |
+| 节点内核 | Linux，有 `/dev/net/tun`，**内核** nftables 可用（initContainer 会替你确认；**不需要**节点上装 `nft` 命令行包，见下） |
 | CNI | bridge 类（Flannel / Calico / Cilium 均可）。Pod 出网必须经过节点的 forward 链 |
 | 权限 | `hostNetwork`、`hostPID`、`NET_ADMIN`、`NET_RAW`。Pod Security Admission 下这就是 `privileged` |
 | 镜像 | `ghcr.io/ivanzzeth/trust-proxy:<tag>`，amd64 + arm64 |
@@ -159,6 +159,13 @@ initContainer 已经查过 nftables 了——它查不过 Pod 就起不来，这
 **缺 nftables 时网关照样启动、照样报健康，而每个 Pod 的流量都从它旁边流走**，
 那是最坏的中间状态，因为它看起来正是最好的那个。
 
+`usable` 问的是**内核**能不能被编程，探测方式与 sing-tun 自己启动 `auto_redirect` 前跑的
+那一次逐字相同（`nftables.New()` + `ListTablesOfFamily()`，走 netlink）。它**不要求节点或
+镜像里有 `nft` 命令行**——sing-tun 从不 exec 它，镜像里带着它只是为了出事时你能 `nft list
+ruleset` 看一眼。这条区分是 e2e 逼出来的：早先的探测查的是 `nft` 在不在 PATH、
+`/proc/net/netfilter/nf_tables` 能不能 stat，结果在一个**转发流量确实被捕获**的容器里
+两条都不成立，于是 preflight 会拒绝一台好节点——正是它想防的那件事的反面。
+
 ### 3. 默认拒绝对 Pod 真的生效
 
 ```bash
@@ -251,9 +258,11 @@ Service 因此是 headless 的——一个 ClusterIP 会在不同节点的策略
 ## 常见问题
 
 **Pod 起不来，卡在 initContainer**
-→ 节点缺 nftables。`kubectl -n trust-proxy logs <pod> -c preflight` 会打出建议的安装命令。
-装完删 Pod 让它重建。真的不想要捕获转发流量就用 `mode=manual`（只开代理入站，应用显式设
-`HTTPS_PROXY`），此时 `preflight.enabled=false` 才被允许。
+→ 节点**内核**的 nftables 不可用（不是「没装 `nft` 包」——那个不影响捕获）。
+`kubectl -n trust-proxy logs <pod> -c preflight` 会打出 netlink 探测的原始错误：
+`operation not permitted` 一般是 securityContext 少了 `NET_ADMIN`，
+其余多半是内核缺 `nf_tables` 模块。真的不想要捕获转发流量就用 `mode=manual`
+（只开代理入站，应用显式设 `HTTPS_PROXY`），此时 `preflight.enabled=false` 才被允许。
 
 **节点变 NotReady**
 → 管理端口没豁免。见上面第 1 条的回滚，然后补 `managementPorts`。

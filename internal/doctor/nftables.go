@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -13,6 +12,14 @@ import (
 
 // NftablesReport summarizes whether nftables is present and usable for
 // auto_redirect (TUN capture) needs.
+//
+// Supported and Usable both answer the same question — can sing-tun program
+// nftables on this machine — and both are decided by the netlink probe that
+// sing-tun itself runs. HasNftBinary is a *separate* fact about debuggability
+// and gates nothing: sing-tun drives nftables over netlink and never shells out
+// to `nft`, so a node with no userspace package captures forwarded traffic
+// perfectly well. Anything that refuses to start on HasNftBinary=false is
+// refusing nodes that work.
 type NftablesReport struct {
 	Supported            bool     `json:"supported"`
 	HasNftBinary         bool     `json:"has_nft_binary"`
@@ -27,29 +34,14 @@ type NftablesReport struct {
 }
 
 var (
-	statPath  = os.Stat
 	lookPath  = exec.LookPath
 	execCmdFn = exec.CommandContext
 )
 
-func detectNftablesInterfaceSupported() bool {
-	// Presence of the procfs interface indicates kernel nftables support.
-	// We intentionally do not use lsmod; containers may not expose it.
-	_, err := statPath("/proc/net/netfilter/nf_tables")
-	return err == nil
-}
-
-func detectNftUsable(ctx context.Context) (bool, string) {
-	// "nft list ruleset" is a safe read-only probe; it fails when nftables
-	// kernel tables are missing, or when the nft binary is missing.
-	cctx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	out, err := execCmdFn(cctx, "nft", "list", "ruleset").CombinedOutput()
-	if err != nil {
-		return false, strings.TrimSpace(string(out))
-	}
-	return true, ""
-}
+// nftablesUsable reports whether sing-tun's auto_redirect can program nftables
+// here, by running sing-tun's own probe. probeNftablesNetlink is swappable for
+// tests.
+var nftablesUsable = probeNftablesNetlink
 
 type pkgMgr struct {
 	Name              string
@@ -98,30 +90,33 @@ func detectPkgMgr() (pkgMgr, bool) {
 	return pkgMgr{}, false
 }
 
-// DetectNftables builds a report for the UI/doctor.
-func DetectNftables(ctx context.Context, canAutoInstall bool) NftablesReport {
-	rep := NftablesReport{
-		Supported:            runtime.GOOS == "linux" && detectNftablesInterfaceSupported(),
-		HasNftBinary:         false,
-		Usable:               false,
-		AutoInstallSupported: false,
-	}
+// DetectNftables builds a report for the UI/doctor. ctx is retained for the
+// callers' sake (this used to run a subprocess and may again); the netlink
+// probe is a couple of syscalls and does not block.
+func DetectNftables(_ context.Context, canAutoInstall bool) NftablesReport {
+	rep := NftablesReport{}
 	if runtime.GOOS != "linux" {
 		return rep
 	}
 
+	// The netlink probe decides both fields, because it is the thing that
+	// decides whether auto_redirect starts. Previously Usable was computed only
+	// when the nft binary was present *and* /proc/net/netfilter/nf_tables
+	// existed; in the e2e container neither held while capture provably worked,
+	// so the report said "will not capture" about a node that captures.
+	ok, diag := nftablesUsable()
+	rep.Supported = ok
+	rep.Usable = ok
+	if !ok && diag != "" {
+		rep.Errors = append(rep.Errors, diag)
+	}
+
+	// Reported, never gated on. Installing it changes nothing about capture; it
+	// changes whether you can read the ruleset when a node misbehaves.
 	if _, err := lookPath("nft"); err == nil {
 		rep.HasNftBinary = true
 	} else {
-		rep.Errors = append(rep.Errors, "nft binary not found in PATH")
-	}
-
-	if rep.HasNftBinary && rep.Supported {
-		ok, diag := detectNftUsable(ctx)
-		rep.Usable = ok
-		if !ok && diag != "" {
-			rep.Errors = append(rep.Errors, diag)
-		}
+		rep.Errors = append(rep.Errors, "nft binary not found in PATH (capture does not need it; `nft list ruleset` does)")
 	}
 
 	if canAutoInstall {

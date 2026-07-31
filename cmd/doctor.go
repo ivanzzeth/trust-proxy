@@ -23,8 +23,8 @@ var doctorCmd = &cobra.Command{
 		return out(rep, func() {
 			fmt.Printf("nftables:\n")
 			fmt.Printf("  supported:              %s\n", yesNo(rep.Supported))
-			fmt.Printf("  nft binary:             %s\n", yesNo(rep.HasNftBinary))
-			fmt.Printf("  usable (nft list):     %s\n", yesNo(rep.Usable))
+			fmt.Printf("  usable (netlink probe): %s\n", yesNo(rep.Usable))
+			fmt.Printf("  nft binary (debug only): %s\n", yesNo(rep.HasNftBinary))
 			fmt.Printf("  auto-install supported: %s\n", yesNo(rep.AutoInstallSupported))
 			if len(rep.SuggestedPackages) > 0 {
 				fmt.Printf("  suggested packages:    %v\n", rep.SuggestedPackages)
@@ -68,8 +68,8 @@ var doctorNftablesCmd = &cobra.Command{
 		return out(rep, func() {
 			fmt.Printf("nftables:\n")
 			fmt.Printf("  supported:               %s\n", yesNo(rep.Supported))
-			fmt.Printf("  nft binary:              %s\n", yesNo(rep.HasNftBinary))
-			fmt.Printf("  usable (nft list):      %s\n", yesNo(rep.Usable))
+			fmt.Printf("  usable (netlink probe):  %s\n", yesNo(rep.Usable))
+			fmt.Printf("  nft binary (debug only): %s\n", yesNo(rep.HasNftBinary))
 			fmt.Printf("  auto-install supported: %s\n", yesNo(rep.AutoInstallSupported))
 			if rep.SuggestedInstallCmd != "" {
 				fmt.Printf("  suggested install cmd:  %s\n", rep.SuggestedInstallCmd)

@@ -8,10 +8,12 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.2.2
 	github.com/miekg/dns v1.1.72
 	github.com/rs/zerolog v1.35.1
+	github.com/sagernet/nftables v0.3.0-mod.4
 	github.com/sagernet/sing v0.8.12-0.20260721063414-596db5dd6ef4
 	github.com/sagernet/sing-box v1.13.14
 	github.com/sagernet/sing-tun v0.8.12-0.20260721064816-ac719ebeead0
 	github.com/spf13/cobra v1.10.2
+	github.com/spf13/pflag v1.0.9
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.47.0
@@ -136,7 +138,6 @@ require (
 	github.com/sagernet/gliderssh v0.3.4-0.20260531100337-2194faca5648 // indirect
 	github.com/sagernet/gvisor v0.0.0-20250811.0-sing-box-mod.1 // indirect
 	github.com/sagernet/netlink v0.0.0-20240612041022-b9a21c07ac6a // indirect
-	github.com/sagernet/nftables v0.3.0-mod.4 // indirect
 	github.com/sagernet/quic-go v0.59.0-sing-box-mod.4 // indirect
 	github.com/sagernet/sing-cloudflared v0.1.3-0.20260706062323-d9787e794aa3 // indirect
 	github.com/sagernet/sing-mux v0.3.5 // indirect
@@ -154,7 +155,6 @@ require (
 	github.com/sagernet/wireguard-go v0.0.5-0.20260717024847-6f5e8b1947ae // indirect
 	github.com/sagernet/ws v0.0.0-20231204124109-acfe8907c854 // indirect
 	github.com/smallstep/pkcs7 v0.1.1 // indirect
-	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/tailscale/certstore v0.1.1-0.20231202035212-d3fa0460f47e // indirect
 	github.com/tailscale/go-winio v0.0.0-20231025203758-c4f33415bf55 // indirect
 	github.com/tailscale/goupnp v1.0.1-0.20210804011211-c64d0f06ea05 // indirect

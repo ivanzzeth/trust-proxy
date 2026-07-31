@@ -48,6 +48,15 @@ spec:
         # looks healthy while every Pod on the node egresses straight past it.
         # Failing here, loudly, before the tunnel exists, beats a green Pod that
         # enforces nothing.
+        #
+        # `usable` is decided by the same netlink probe sing-tun runs before it
+        # programs the ruleset, so this gate answers the question it appears to
+        # ask. It deliberately does NOT require the `nft` userspace package: this
+        # image ships it for debugging, but capture never goes through the CLI,
+        # and an earlier version of this check would have refused a node where
+        # e2e proved forwarded traffic was captured. NET_ADMIN is granted here
+        # because the probe opens an nftables netlink socket; without it the
+        # check fails for lack of privilege rather than lack of nftables.
         - name: preflight
           image: {{ include "trust-proxy.image" . }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -57,7 +66,7 @@ spec:
               set -e
               trust-proxy doctor nftables
               trust-proxy doctor nftables --json | grep -q '"usable": *true' || {
-                echo "nftables is not usable on this node: forwarded Pod traffic will NOT be captured." >&2
+                echo "nftables is not usable on this node (netlink probe failed): forwarded Pod traffic would NOT be captured." >&2
                 exit 1
               }
           securityContext:
