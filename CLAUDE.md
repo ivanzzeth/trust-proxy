@@ -229,6 +229,7 @@ deploy/helm/trust-proxy/   同一套的 chart，外加 `templates/validate.yaml`
 docs/kubernetes.md         K8s 部署与自检清单（为什么是 DaemonSet 而非集中出口 Service、`--management-ports` 警告框与 CNI 端口表、6 步自检、加速那一半怎么配、卸载后怎么确认干净）
 configs/config.json        sing-box 配置：白名单默认拒绝 + clash_api + service/api(+dashboard)
 third_party/sing-box       【我们的 fork 子模块】`ivanzzeth/sing-box` 分支 `trust-proxy`，replace 进本模块；上游 SagerNet 为 `upstream`
+third_party/sing-tun       【我们的 fork 子模块】同上，`ivanzzeth/sing-tun` 分支 `trust-proxy`（上游 `dev`）。两个泄漏修在这里：gVisor 关闭时不停 dispatcher ⇒ 每次热重载漏一张 tun 网卡；`DOCKER-USER` 兼容规则在 Docker 用 iptables-nft 重写后认不出自己 ⇒ 死接口规则堆积。**包是 `//go:build linux`，测试只能在 Linux 上跑**
 data/                      运行时数据（subscriptions.json 等，gitignore）
 ```
 
@@ -242,9 +243,18 @@ data/                      运行时数据（subscriptions.json 等，gitignore�
 
 ## 从上游同步代码
 
-只有 **sing-box** 一个上游（曾 vendored 官方 dashboard 到 `webui/`，已删除——我们自研控制台后它只是个占端口的摆设）。
+两个上游，都是**我们自己的 fork 子模块**（曾 vendored 官方 dashboard 到 `webui/`，已删除——我们自研控制台后它只是个占端口的摆设）：
 
-### sing-box（`third_party/sing-box`）— 我们的 fork 子模块（唯一上游）
+| 子模块 | fork | 上游 remote | 为什么要 fork |
+|---|---|---|---|
+| `third_party/sing-box` | `ivanzzeth/sing-box` 分支 `trust-proxy` | `upstream` = SagerNet/sing-box (`testing`) | tracker/scorer 等钩子；urltest 改动 |
+| `third_party/sing-tun` | `ivanzzeth/sing-tun` 分支 `trust-proxy` | `upstream` = SagerNet/sing-tun (`dev`) | 两个泄漏修复，见下 |
+
+**sing-tun 为什么会被 fork（原本只是 go.mod 里的一个 pin）**：真机上每次热重载（任意会重建 box 的写操作：`dns set` / `acl` / `mode` / …）都会留下一个无地址、仍 UP 的孤儿 `tunN`，新实例另起 `tunN+1`。根因在 `stack_gvisor_filter.go`：`LinkEndpointFilter.Attach` 无条件包装参数，于是 `GVisor.Close()` 传的 `nil` 到达内层 fdbased endpoint 时成了非 nil；而 `fdbased.endpoint.Attach` **只在 `dispatcher == nil` 分支**才 `Stop()`+`Wait()` 它的 inbound dispatcher。dispatcher 于是永远阻塞在 `ppoll{efd, tunFd}` 里，**而 `poll()` 持有的是真实的 file 引用，`close(2)` 收不回**——内核因此不注销 netdev（`carrier=1`、`TUNSETIFF` 返回 EBUSY），`CalculateInterfaceName` 见残留就 +1。每次重建泄漏一个 goroutine + 一张网卡。修法是 `Attach` 里加一条 nil 直通。**Dawn 上一一对应地量到**：修复前 `ppoll=16→17→18` / `tuns=4→5→6`，修复后 6 次重载 `ppoll` 恒为 1、始终只有 `tun0`。上游 `dev` HEAD 同样存在此 bug。
+
+第二个泄漏是同一次排查里发现的、**独立**的：`DOCKER-USER` 链里堆积着早已消失的接口的兼容 accept 规则（真机上 9 对，只有 1 个接口还在）。那条链归 dockerd 所有，我们靠 comment 认自己的规则；而 Docker ≥28 走 iptables-nft 重写整条链（flush+restore），comment 从 nftables rule userdata 挪进了 `xt match comment` 表达式。只读 userdata 就再也认不出自己的规则，**两个后果同向**：死接口的规则删不掉，活接口的规则也认不出于是又插一对——每次 TUN 重建长一对，跨进程重启不清。修法见 `redirect_nftables_docker.go` 的 `nftablesRuleComment`（两处都读，userdata 优先）。
+
+### sing-box（`third_party/sing-box`）— 我们的 fork 子模块
 
 子模块指向 **[ivanzzeth/sing-box](https://github.com/ivanzzeth/sing-box)** 的 **`trust-proxy`** 分支（可在 fork 上改 urltest 等）。  
 SagerNet 官方仓库在子模块里登记为 remote **`upstream`**（`testing`），用来同步上游。
@@ -272,6 +282,19 @@ go mod tidy && make build-go
 git add third_party/sing-box go.mod go.sum
 git commit -m "chore: merge sing-box upstream/testing into trust-proxy"
 ```
+
+### sing-tun（`third_party/sing-tun`）— 同一套流程
+
+一模一样，只是上游分支叫 `dev`：
+
+```bash
+cd third_party/sing-tun
+git fetch upstream && git merge upstream/dev   # 或日常直接改 + push origin trust-proxy
+cd ../.. && go mod tidy && make build-go
+git add third_party/sing-tun go.mod go.sum
+```
+
+**跑它的测试要在 Linux 上**（整个包是 `//go:build linux`；Mac 上只能 `GOOS=linux go build/vet`）。
 
 注意：
 - **内部 Go API 无兼容承诺**（`adapter`/`trafficcontrol`/`route`）。升级后若 `main.go` 或未来的 tracker 编译失败，

@@ -208,6 +208,20 @@ func (l *tunLab) nftRuleset() string {
 	return l.exec("nft list ruleset 2>&1 || true")
 }
 
+// tunInterfaces lists the tun devices in the container's netns. A leaked one is
+// indistinguishable from a live one here — it is still UP — which is the point:
+// the count is the only thing that tells them apart.
+func (l *tunLab) tunInterfaces() []string {
+	out := l.exec("ip -br link | awk '/^tun/{print $1}'")
+	var names []string
+	for _, line := range strings.Split(out, "\n") {
+		if name := strings.TrimSpace(line); name != "" {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 // The claim: traffic forwarded from a container bridge enters the tunnel through
 // nftables, and every policy axis applies to it exactly as it does to the
 // gateway's own traffic.
@@ -284,7 +298,40 @@ func TestLinuxTUNCapturesForwardedBridgeTraffic(t *testing.T) {
 		return strings.Contains(l.fromApp(bridgeIP), "LOCAL-OK")
 	})
 
-	// (7) The teeth. Everything above would stay green if plain auto_route
+	// (7) One tun interface, however many times the box is rebuilt.
+	//
+	// Reported from a live gateway: every hot reload — any write that rebuilds
+	// sing-box, so `dns set`, `acl`, `mode`, all of them — left behind an
+	// addressless but still UP `tunN` and started `tunN+1`. Six of them had piled
+	// up. Nothing above notices: capture keeps working, because it is the *newest*
+	// interface that works.
+	//
+	// The cause was in sing-tun's gVisor stack (fixed in our fork):
+	// LinkEndpointFilter.Attach wrapped its argument unconditionally, so the nil
+	// that GVisor.Close() passes arrived at the fdbased endpoint as non-nil — and
+	// fdbased only stops and waits for its inbound dispatchers on the nil branch.
+	// The dispatchers stayed blocked in ppoll on the tun fd, poll holds a file
+	// reference that close(2) cannot revoke, and the kernel therefore kept the
+	// netdev alive. CalculateInterfaceName then hands out tunN+1 forever.
+	//
+	// This is the assertion that would have caught it. Interface names are a
+	// finite resource, orphans mislead anyone debugging the node, and netwatch
+	// identifies "our" tunnel by address across the interfaces it can see.
+	before := l.tunInterfaces()
+	for i := 0; i < 3; i++ {
+		l.exec("trust-proxy dns set --strategy ipv4_only")
+		l.exec("trust-proxy dns set --strategy prefer_ipv4")
+	}
+	l.waitFor("egress to work again after the rebuilds", func() bool {
+		return strings.Contains(l.fromApp(tunOriginIP), "ORIGIN-OK")
+	})
+	if after := l.tunInterfaces(); len(after) != 1 || len(before) != 1 {
+		t.Errorf("tun interfaces before 6 rebuilds: %v, after: %v — want exactly one "+
+			"throughout. Each rebuild leaks the interface it was supposed to close",
+			before, after)
+	}
+
+	// (8) The teeth. Everything above would stay green if plain auto_route
 	// happened to catch forwarded packets on its own and auto_redirect were doing
 	// nothing. Turn it off: the nftables table must go, and forwarded traffic must
 	// stop arriving through the redirect handler.

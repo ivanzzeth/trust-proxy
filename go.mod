@@ -197,3 +197,5 @@ require (
 // The submodule tracks the `testing` branch because the built-in API service
 // (service/api) that the official dashboard needs is not yet in a stable tag.
 replace github.com/sagernet/sing-box => ./third_party/sing-box
+
+replace github.com/sagernet/sing-tun => ./third_party/sing-tun

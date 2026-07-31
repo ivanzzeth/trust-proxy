@@ -219,6 +219,64 @@ func TestLinuxTUNCapturesRealDockerBridge(t *testing.T) {
 			"DOCKER-USER; sing-tun's reconciliation did not restore its rules:\n%s",
 			dockerUserChain(l))
 	}
+
+	// (11) Exactly one pair, no matter how many times the box is rebuilt.
+	//
+	// Every assertion above asks whether our rules are *present*, and presence is
+	// monotonic: it cannot see rules accumulating. A real gateway (Docker 29.1.3)
+	// had nine interface pairs in this chain, eight of them for interfaces that no
+	// longer existed, and gained another on the next reload — while every check
+	// here would have stayed green.
+	//
+	// The cause is that Docker >= 28 drives DOCKER-USER through iptables-nft,
+	// which rewrites the chain by flushing and restoring it. Our rules come back
+	// with the comment moved out of nftables userdata and into an `xt match
+	// comment` expression, so a userdata-only reader stops recognizing them:
+	// reconcile then neither deletes the stale pair nor keeps the live one, and
+	// inserts a duplicate instead. `docker network create` above is exactly such a
+	// rewrite, so by this point the rules have been through it.
+	//
+	// Two nftables rules per live interface, one iifname and one oifname. Force
+	// several rebuilds first — that is the axis the leak grows along.
+	for i := 0; i < 3; i++ {
+		l.exec("trust-proxy dns set --strategy ipv4_only >/dev/null 2>&1 || true")
+		l.exec("trust-proxy dns set --strategy prefer_ipv4 >/dev/null 2>&1 || true")
+	}
+	// The rebuilds are asynchronous; give reconciliation a chance to converge
+	// before counting, so a slow machine reads as slow rather than as a leak.
+	// Deliberately not waitFor: it fails with a timeout message, and the count
+	// plus the chain dump below is the diagnosis worth having.
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+		if countCompatRules(l) == 2 {
+			break
+		}
+		time.Sleep(time.Second)
+	}
+	if n := countCompatRules(l); n != 2 {
+		t.Errorf("DOCKER-USER holds %d compatibility rules after 6 rebuilds, want 2 "+
+			"(one iifname + one oifname for the live interface). Stale rules for dead "+
+			"interfaces are never removed and duplicates pile up:\n%s", n, dockerUserChain(l))
+	}
+	// And the surviving pair must name the interface that actually exists — two
+	// rules naming a dead tun would satisfy the count and capture nothing.
+	live := strings.TrimSpace(l.exec("ip -br link | awk '/^tun/{print $1; exit}'"))
+	chain = dockerUserChain(l)
+	if live == "" || !strings.Contains(chain, `"`+live+`"`) {
+		t.Errorf("the compatibility rules do not name the live interface %q:\n%s", live, chain)
+	}
+}
+
+// countCompatRules counts sing-tun's accept rules in DOCKER-USER. One line per
+// rule, which is why this reads the chain rather than parsing it.
+func countCompatRules(l *tunLab) int {
+	var n int
+	for _, line := range strings.Split(dockerUserChain(l), "\n") {
+		if strings.Contains(line, "counter") && strings.Contains(line, "accept") &&
+			(strings.Contains(line, "iifname") || strings.Contains(line, "oifname")) {
+			n++
+		}
+	}
+	return n
 }
 
 // fromDocker fetches the origin from inside a real container on docker0. Every

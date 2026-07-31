@@ -2,3 +2,7 @@
 	path = third_party/sing-box
 	url = https://github.com/ivanzzeth/sing-box.git
 	branch = trust-proxy
+[submodule "third_party/sing-tun"]
+	path = third_party/sing-tun
+	url = https://github.com/ivanzzeth/sing-tun.git
+	branch = trust-proxy
