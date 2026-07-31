@@ -15,7 +15,7 @@ VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 
 .PHONY: help run app build build-ui build-go build-embed build-app cross check-build-owner tidy \
-	e2e-fleet e2e-linux e2e-tun e2e-policy e2e-dataplane e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
+	e2e-fleet e2e-linux e2e-tun e2e-tun-dind e2e-policy e2e-dataplane e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
 	deps clean e2e redeploy desktop desktop-dev desktop-sidecar app-service-hint \
 	release version-check
 
@@ -279,12 +279,25 @@ e2e-policy:
 ## what auto_redirect exists for. A bridge + netns inside the container is the
 ## same kernel path docker0 and a CNI bridge use, so this is what says whether
 ## the K8s DaemonSet shape can work at all.
-## The second test here answers what a node *without* nftables does — the
-## question the DaemonSet's preflight container exists to ask. It is in the same
-## target because it needs the identical topology, and because the answer decides
-## whether that preflight gates on the right field.
+## The second test here answers what a node *without* the `nft` userspace binary
+## does — the question the DaemonSet's preflight container exists to ask. It is
+## in the same target because it needs the identical topology, and because its
+## first run is what caught the preflight gating on a field that did not track
+## whether capture works.
 e2e-tun:
-	go test -count=1 -tags docker_e2e -run 'TestLinuxTUN' -v -timeout 20m ./test/
+	go test -count=1 -tags docker_e2e -run 'TestLinuxTUNCapturesForwardedBridgeTraffic|TestLinuxTUNWithoutNftBinary' -v -timeout 20m ./test/
+
+## The DOCKER-USER layer, with a real dockerd nested inside the test container.
+## Everything above reproduces the forwarded path with a bridge and a netns,
+## which is the same kernel path but produces no Docker firewall. dockerd creates
+## `table ip filter` with a DOCKER-USER chain whose rules run before its own
+## accepts, so without sing-tun's compatibility rules (redirect_nftables_docker.go)
+## a container reaches nothing while the gateway reports it captured everything —
+## and that file has no other coverage, because the chain it reconciles against
+## does not exist unless a real daemon made it. Nested daemons are slow and
+## fragile, so this is nightly/on-demand rather than per-PR.
+e2e-tun-dind:
+	TP_E2E_DIND=1 go test -count=1 -tags docker_e2e -run TestLinuxTUNCapturesRealDockerBridge -v -timeout 25m ./test/
 
 ## Linux service lifecycle under a real systemd (privileged container, pid 1 =
 ## systemd): install, restart after kill -9, TUN, and a clean uninstall.

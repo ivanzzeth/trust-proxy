@@ -294,7 +294,7 @@ make run         # 用 configs/config.json 启动
 make build-ui    # 只构建自研控制台 -> dashboard/dist
 ```
 
-**Linux e2e 分五层**（`make e2e-linux` / `e2e-policy` / `e2e-dataplane` / `e2e-tun` / `e2e-fleet`，都在特权容器 pid1=真 systemd 里，全部进 CI）：
+**Linux e2e 分六层**（`make e2e-linux` / `e2e-policy` / `e2e-dataplane` / `e2e-tun` / **`e2e-tun-dind`** / `e2e-fleet`，都在特权容器 pid1=真 systemd 里；前五层每次 PR 都跑，`e2e-tun-dind` 因为要嵌一个真 dockerd，走 nightly + `workflow_dispatch`）：
 
 | 套件 | 覆盖 | 为什么单独一层 |
 |---|---|---|
@@ -302,6 +302,7 @@ make build-ui    # 只构建自研控制台 -> dashboard/dist
 | `e2e-policy` | **每一条会重建 sing-box 配置的命令**（约 20 条）：sub apply / acl / rules custom / dns / routing / final / mode / profile / posture。每步读回来确认生效 + 断言数据面还在 | 配置被 box 拒绝 = 网关不再执行任何策略。这层缺席时，「全新装机切 split 必炸」发布了才被用户发现 |
 | `e2e-dataplane` | **对包的断言**：默认拒绝拦得住、permit 放行、deny 压过 permit、**no-proxy 不开闸**（两轴正交）、Global 绕闸但地板仍在、模式死亡开关自动回滚、策略活过重启与原地升级、登录轮换 key 且旧 key 立即失效 | 前两层证明「命令成功、服务还在」，都不是产品的主张。产品的主张是关于**包**的 |
 | **`e2e-tun`** | **转发路径**（nftables `auto_redirect`）：容器内 netns+bridge 造出 `veth→bridge→forward` 链，与 Docker 容器/K8s Pod 出网**同构**；断言 nftables 表在、被捕获、默认拒绝对它生效、Permit 后通、**no-proxy 仍不通**、LAN 不受影响，最后 `--auto-redirect=false` 就必须失去这个能力 | 其余每一层的 TUN 断言都只 curl **容器自己**，走的是 **output 链**；`auto_redirect` 存在的理由是 **prerouting/forward 链**。于是「Linux TUN 捕获 Docker/containerd 容器出网」这个写在本文件里的主张，**在此之前一行测试都没有** |
+| **`e2e-tun-dind`** | **`DOCKER-USER` 链**：容器里再起一个**真 dockerd**，`docker run busybox` 出网；断言 sing-tun 往 `DOCKER-USER` 插的两条兼容规则（`iifname`/`oifname`，注释前缀 `!<table>: Docker compatibility `）在、容器被捕获、默认拒绝拦得住、Permit 后通，最后 `docker network create` **重写那条链之后规则被 monitor 调解回来且容器没断网** | 上一层的 netns+bridge 与 docker0 是同一条内核路径，但**不会产生 Docker 自己的防火墙**。dockerd 建的 `DOCKER-USER` 规则跑在它自己的 accept **之前**，没有兼容规则时**容器什么都连不上而网关坚称全部捕获**。`redirect_nftables_docker.go` 整个文件（含 nftables monitor 调解）在此之前零覆盖——**那条链不存在，除非有真守护进程建它**。嵌套守护进程慢且脆，故不进每次 PR |
 | `e2e-fleet` | 多网关：远程网关持策略，本地机器经它出网 | |
 
 **为什么 origin 用 `203.0.113.10/32 dev lo`**：私网 CIDR 在闸开时本来就在许可集里，把 origin 放在容器自己的网段上，**无论策略怎么写都能连通**——每条断言都会通过，什么也没证明。TEST-NET-3 不是私网，闸对它生效。

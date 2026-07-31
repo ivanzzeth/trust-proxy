@@ -8,6 +8,12 @@ on:
     branches: ['main']
   pull_request:
   workflow_dispatch: {}
+  # For linux-tun-dind only. Nesting a docker daemon inside the test container is
+  # slow and flaky enough that it would cost every PR more than it catches, but
+  # the code it covers (sing-tun's DOCKER-USER reconciliation) has no other test
+  # at all — the chain does not exist unless a real daemon made it.
+  schedule:
+    - cron: '37 4 * * *'
 
 jobs:
   go:
@@ -145,6 +151,31 @@ jobs:
         run: |
           chmod +x trust-proxy-e2e
           TP_TEST_BINARY="$PWD/trust-proxy-e2e" make e2e-tun
+
+  # The DOCKER-USER half, with a real dockerd nested in the test container.
+  # linux-tun above reproduces the forwarded path with a bridge and a netns —
+  # the same kernel path, but no Docker firewall. dockerd's DOCKER-USER rules run
+  # before its own accepts, so without sing-tun's compatibility rules a container
+  # reaches nothing while the gateway reports it captured everything.
+  # Nightly and on demand, not per-PR: nested daemons are slow and fragile.
+  linux-tun-dind:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: testbin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: actions/download-artifact@v4
+        with:
+          name: trust-proxy-e2e
+      - name: e2e-tun-dind
+        run: |
+          chmod +x trust-proxy-e2e
+          TP_TEST_BINARY="$PWD/trust-proxy-e2e" make e2e-tun-dind
 
   # Every command that rewrites policy rebuilds the sing-box config, and a config
   # the box refuses is a gateway that stops enforcing anything. About twenty such
