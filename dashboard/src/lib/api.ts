@@ -267,6 +267,17 @@ export interface Subscription {
   last_error?: string;
   applied?: boolean;
 }
+// A subscription's origin in the clear, admin-only, and fetched only when
+// someone clicks copy — never as part of the list. Recreating a subscription on
+// another gateway re-fetches the nodes, so no node credentials are here.
+export interface SubscriptionExport {
+  id: string;
+  name: string;
+  url?: string;
+  content?: string;
+  user_agent?: string;
+  via?: string;
+}
 export interface DetectEvent {
   id: number;
   time: string;
@@ -800,6 +811,9 @@ export const api = {
   unapplySub: (id: string) => post<Subscription>(`/subscriptions/${id}/unapply`),
   refreshSub: (id: string) => post<Subscription>(`/subscriptions/${id}/refresh`),
   delSub: (id: string) => del<void>(`/subscriptions/${id}`),
+  // Call this on click only. Keeping it out of subs() is what lets the list
+  // response stay credential-free unconditionally.
+  exportSub: (id: string) => get<SubscriptionExport>(`/subscriptions/${id}/export`),
 
   rulesets: () => get<RuleSet[]>('/rulesets'),
   ruleCatalog: () => get<CatalogEntry[]>('/rulesets/catalog'),

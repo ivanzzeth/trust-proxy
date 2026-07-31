@@ -49,6 +49,25 @@ func Public(s apitypes.Subscription) apitypes.SubscriptionPublic {
 	return p
 }
 
+// Export reduces one subscription to what recreating it on another gateway
+// needs: the origin and the knobs that were used to fetch it.
+//
+// Nodes are left out on purpose. They are re-fetched from the URL anyway, so
+// carrying them would hand out every uuid / password / reality key for no gain.
+// Listing the fields one by one (rather than copying the record and blanking
+// Nodes) means a credential added to apitypes.Subscription later does not travel
+// here by default.
+func Export(s apitypes.Subscription) apitypes.SubscriptionExport {
+	return apitypes.SubscriptionExport{
+		ID:        s.ID,
+		Name:      s.Name,
+		URL:       s.URL,
+		Content:   s.Content,
+		UserAgent: s.UserAgent,
+		Via:       s.Via,
+	}
+}
+
 // MaskSource renders where a subscription came from without revealing the secret
 // inside it.
 //

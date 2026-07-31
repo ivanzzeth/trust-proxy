@@ -179,6 +179,26 @@ func TestEffectiveRulesIsAdminOnly(t *testing.T) {
 	}
 }
 
+// The export endpoint is the only one that hands a subscription URL back out in
+// the clear, and a subscription URL is an airport account. Every other
+// /api/subscriptions* route is admin-only; this one especially has to be, because
+// its whole job is to defeat the redaction the rest of them rely on.
+func TestSubscriptionExportIsAdminOnly(t *testing.T) {
+	s, us, a, _ := newAuthServer(t)
+	_, _ = us.Create("admin", "admin-password-long", users.RoleAdmin)
+	bob, _ := us.Create("bob", "bob-password-long", users.RoleClient)
+	tok, _, _ := a.Issue(bob)
+
+	r := req("GET", "/api/subscriptions/s1/export")
+	r.AddCookie(&http.Cookie{Name: authn.CookieName, Value: tok})
+	if got := serve(s, r).Code; got != 403 {
+		t.Errorf("a client read a subscription's origin: got %d, want 403", got)
+	}
+	if got := serve(s, req("GET", "/api/subscriptions/s1/export")).Code; got != 401 {
+		t.Errorf("a subscription's origin was reachable anonymously: got %d, want 401", got)
+	}
+}
+
 // An unknown path must not be less protected than a known one. With levels
 // declared per route, anything unlisted is admin — so adding a handler and
 // forgetting its entry fails loudly for the operator instead of quietly for

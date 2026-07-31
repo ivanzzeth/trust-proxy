@@ -1,10 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ivanzzeth/trust-proxy/internal/subscription"
@@ -187,6 +189,57 @@ func TestHandleUnapplySub(t *testing.T) {
 	}
 	if len(fa.last) != 1 {
 		t.Fatalf("after unapply nodes=%d want 1", len(fa.last))
+	}
+}
+
+// Export is the one place that hands the subscription URL back out, so it has to
+// be the one place that says no to everyone but an admin. The 403 half lives in
+// access_test.go (it is the access matrix's job); here we pin the handler itself:
+// the origin comes back verbatim, the node credentials do not, and a bad id is a
+// 404 with an {"error":…} body rather than an empty 200 that reads like success.
+func TestHandleExportSub(t *testing.T) {
+	dir := t.TempDir()
+	yamlPath := filepath.Join(dir, "a.yaml")
+	if err := os.WriteFile(yamlPath, []byte(oneNodeYAMLForAPITest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	store, err := subscription.NewStore(filepath.Join(dir, "subscriptions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub, _ := store.Add("airport", "file://"+yamlPath, "clash-verge/v2.0.0", "", "")
+	s := &Server{store: store}
+
+	r := httptest.NewRequest(http.MethodGet, "/api/subscriptions/"+sub.ID+"/export", nil)
+	r.SetPathValue("id", sub.ID)
+	rec := httptest.NewRecorder()
+	s.handleExportSub(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("export: %d %s", rec.Code, rec.Body)
+	}
+	var got apitypes.SubscriptionExport
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.URL != "file://"+yamlPath {
+		t.Fatalf("export returned %q, want the real origin — the whole point is to be able to recreate it elsewhere", got.URL)
+	}
+	if got.UserAgent != "clash-verge/v2.0.0" || got.Name != "airport" {
+		t.Fatalf("export lost the knobs needed to recreate it: %+v", got)
+	}
+	if body := rec.Body.String(); strings.Contains(body, "outbound") {
+		t.Fatalf("export carries node outbounds:\n%s", body)
+	}
+
+	r = httptest.NewRequest(http.MethodGet, "/api/subscriptions/nope/export", nil)
+	r.SetPathValue("id", "nope")
+	rec = httptest.NewRecorder()
+	s.handleExportSub(rec, r)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown id: %d %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), `"error"`) {
+		t.Fatalf("a miss must surface as {\"error\":…}, got %s", rec.Body)
 	}
 }
 

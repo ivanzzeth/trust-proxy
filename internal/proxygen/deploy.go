@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/ivanzzeth/trust-proxy/internal/shellquote"
 )
 
 // Deploy commands. A generated exit is only useful once someone runs the server
@@ -64,18 +66,6 @@ func InstallScript(server map[string]any, path string) string {
 	}, "\n")
 }
 
-// shQuote makes a value safe as a single shell word. Single quotes disable every
-// expansion, and an embedded quote is closed, escaped and reopened — the usual
-// POSIX trick, since a server name or node title is user input.
-func shQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	if strings.IndexFunc(s, func(r rune) bool {
-		return !(r == '.' || r == '-' || r == '_' || r == '/' || r == ':' ||
-			(r >= '0' && r <= '9') || (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'))
-	}) < 0 {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
+// shQuote makes a value safe as a single shell word — a server name or node
+// title is user input. Shared with the subscription rebuild hint.
+func shQuote(s string) string { return shellquote.Quote(s) }

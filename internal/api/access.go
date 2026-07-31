@@ -103,6 +103,7 @@ func routeLevels() map[string]access {
 		"GET /api/subscriptions":               accessAdmin,
 		"POST /api/subscriptions":              accessAdmin,
 		"DELETE /api/subscriptions/{id}":       accessAdmin,
+		"GET /api/subscriptions/{id}/export":   accessAdmin,
 		"POST /api/subscriptions/{id}/refresh": accessAdmin,
 		"POST /api/subscriptions/{id}/apply":   accessAdmin,
 		"POST /api/subscriptions/{id}/unapply": accessAdmin,

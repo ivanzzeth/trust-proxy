@@ -344,6 +344,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.route(mux, "GET /api/proxy-gen/protocols", s.handleProxyProtocols)
 	s.route(mux, "POST /api/proxy-gen", s.handleProxyGen)
 	s.route(mux, "DELETE /api/subscriptions/{id}", s.handleDeleteSub)
+	s.route(mux, "GET /api/subscriptions/{id}/export", s.handleExportSub)
 	s.route(mux, "POST /api/subscriptions/{id}/refresh", s.handleRefreshSub)
 	s.route(mux, "POST /api/subscriptions/{id}/apply", s.handleApplySub)
 	s.route(mux, "POST /api/subscriptions/{id}/unapply", s.handleUnapplySub)
@@ -668,6 +669,23 @@ func (s *Server) handleAutoBlock(w http.ResponseWriter, r *http.Request) {
 // pasted node text, so is each node's outbound. See subscription.Public.
 func (s *Server) handleListSubs(w http.ResponseWriter, r *http.Request) {
 	writeArray(w, http.StatusOK, s.store.ListPublic())
+}
+
+// Export hands the origin back to an admin who explicitly asked for it, so one
+// subscription can be moved to another gateway without reaching into the
+// root-owned data directory.
+//
+// It is a separate endpoint rather than a ?reveal=1 on the list precisely so
+// that "the list response carries no credentials" stays unconditional — and so
+// that asking for plaintext is a distinct action, not a query string that ends
+// up in access logs alongside every ordinary read.
+func (s *Server) handleExportSub(w http.ResponseWriter, r *http.Request) {
+	sub, ok := s.store.Get(r.PathValue("id"))
+	if !ok {
+		writeErr(w, http.StatusNotFound, "subscription not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, subscription.Export(sub))
 }
 
 func (s *Server) handleAddSub(w http.ResponseWriter, r *http.Request) {

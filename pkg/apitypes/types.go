@@ -59,6 +59,25 @@ type SubscriptionPublic struct {
 	Applied    bool         `json:"applied,omitempty"`
 }
 
+// SubscriptionExport is one subscription's origin, handed back to an admin who
+// explicitly asked for it — enough to recreate it on another gateway with
+// `sub add` / `sub import`, and nothing more.
+//
+// The counterpart of SubscriptionPublic, not a replacement for it: Public is the
+// shape everything sees by default and stays credential-free unconditionally,
+// while this one is only ever produced by GET /api/subscriptions/{id}/export.
+// Nodes are deliberately absent — recreating a subscription re-fetches them, so
+// shipping every uuid / password / reality key would widen the exposure for
+// nothing.
+type SubscriptionExport struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	URL       string `json:"url,omitempty"`
+	Content   string `json:"content,omitempty"` // pasted node text, when there is no URL
+	UserAgent string `json:"user_agent,omitempty"`
+	Via       string `json:"via,omitempty"`
+}
+
 // NodePublic identifies a node without carrying the secret that dials it.
 type NodePublic struct {
 	Tag      string `json:"tag"`

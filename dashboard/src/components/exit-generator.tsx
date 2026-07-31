@@ -5,6 +5,7 @@ import { Check, Copy, Loader2, Plus, Server, Wand2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api, ProxyGenResult } from '@/lib/api';
+import { copyToClipboard } from '@/lib/clipboard';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -186,20 +187,13 @@ function CodeBlock({ text }: { text: string }) {
   const { t } = useTranslation();
   const [done, setDone] = useState(false);
   const copy = async () => {
-    try {
-      // navigator.clipboard needs a secure context; :21585 over plain HTTP is not
-      // one in every browser, so fall back rather than silently doing nothing.
-      if (navigator.clipboard?.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        throw new Error('no clipboard');
-      }
-      setDone(true);
-      setTimeout(() => setDone(false), 1500);
-      toast.success(t('pages.exitGen.copied'));
-    } catch {
+    if (!(await copyToClipboard(text))) {
       toast.error(t('pages.exitGen.copyFailed'));
+      return;
     }
+    setDone(true);
+    setTimeout(() => setDone(false), 1500);
+    toast.success(t('pages.exitGen.copied'));
   };
   return (
     <div className="relative">

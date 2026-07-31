@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { Check, Download, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import { Check, Copy, Download, Loader2, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '@/lib/api';
+import { copyToClipboard } from '@/lib/clipboard';
 import { PageHeader } from '@/components/page-header';
 import { ExitGenerator } from '@/components/exit-generator';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,6 +15,43 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+
+// Copy one subscription's origin so it can be recreated on another gateway.
+//
+// The list deliberately shows a masked source — a subscription URL is an airport
+// account — so this is the explicit way to ask for the real one. It is fetched on
+// click and never as part of the list query, which is what keeps "the list
+// carries no credentials" true without qualification.
+function CopyOriginButton({ id, hasUrl }: { id: string; hasUrl: boolean }) {
+  const { t } = useTranslation();
+  const [done, setDone] = useState(false);
+  const copy = useMutation({
+    mutationFn: () => api.exportSub(id),
+    onSuccess: async (e) => {
+      const text = e.url || e.content || '';
+      if (!text || !(await copyToClipboard(text))) {
+        toast.error(t('pages.subscriptions.copyOriginFailed'));
+        return;
+      }
+      setDone(true);
+      setTimeout(() => setDone(false), 1500);
+      toast.success(t(hasUrl ? 'pages.subscriptions.copiedUrl' : 'pages.subscriptions.copiedContent'));
+    },
+    onError: (e: unknown) => toast.error(String((e as Error).message)),
+  });
+  return (
+    <Button
+      size="icon"
+      variant="ghost"
+      className="size-7"
+      title={t('pages.subscriptions.copyOrigin')}
+      disabled={copy.isPending}
+      onClick={() => copy.mutate()}
+    >
+      {done ? <Check className="size-3.5 text-emerald-500" /> : <Copy className="size-3.5" />}
+    </Button>
+  );
+}
 
 export default function Subscriptions() {
   const { t } = useTranslation();
@@ -129,6 +167,7 @@ export default function Subscriptions() {
                             {t('pages.subscriptions.apply')}
                           </Button>
                         )}
+                        <CopyOriginButton id={s.id} hasUrl={s.has_url} />
                         <Button size="icon" variant="ghost" className="size-7" disabled={refresh.isPending} onClick={() => refresh.mutate(s.id)}>
                           <RefreshCw className="size-3.5" />
                         </Button>

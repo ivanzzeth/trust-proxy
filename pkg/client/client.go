@@ -113,6 +113,16 @@ func (c *Client) RefreshSubscription(id string) (apitypes.SubscriptionPublic, er
 	return out, err
 }
 
+// ExportSubscription returns one subscription's origin in the clear — the URL,
+// plus the user agent and via proxy that were used to fetch it — so it can be
+// recreated on another gateway with AddSubscription/ImportNodes. Admin only;
+// ListSubscriptions stays redacted.
+func (c *Client) ExportSubscription(id string) (apitypes.SubscriptionExport, error) {
+	var out apitypes.SubscriptionExport
+	err := c.do(http.MethodGet, "/api/subscriptions/"+id+"/export", nil, &out)
+	return out, err
+}
+
 // ---- ergonomic delegations to the low-level Clash primitives --------------
 
 // Connections returns the current Clash connection snapshot.

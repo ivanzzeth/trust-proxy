@@ -5,6 +5,7 @@ import { Check, Copy, KeyRound, Plus, ShieldCheck, Trash2, UserX, X } from 'luci
 import { useTranslation } from 'react-i18next';
 
 import { api, PermitRequest, Role, User } from '@/lib/api';
+import { copyToClipboard } from '@/lib/clipboard';
 import { PageHeader } from '@/components/page-header';
 import { OpenRegistrationSwitch } from '@/components/policy-rows';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -252,9 +253,11 @@ function UserCard({ u, onChanged, isMe }: { u: User; onChanged: () => void; isMe
                   size="icon"
                   variant="ghost"
                   className="size-7"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(freshKey);
-                    toast.success(t('pages.users.copied'));
+                  onClick={async () => {
+                    // Shown once and never again — a copy that silently did
+                    // nothing loses the key for good.
+                    if (await copyToClipboard(freshKey)) toast.success(t('pages.users.copied'));
+                    else toast.error(t('pages.users.copyFailed'));
                   }}
                 >
                   <Copy className="size-3.5" />
