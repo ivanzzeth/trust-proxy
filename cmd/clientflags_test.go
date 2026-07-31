@@ -103,9 +103,9 @@ func promptingCommands(t *testing.T) []*cobra.Command {
 		t.Fatal("cmd package did not parse")
 	}
 
-	use := map[string]string{}       // var name -> Use, first word
-	parent := map[string]string{}    // var name -> parent var name
-	confirms := map[string]bool{}    // var name -> body calls confirm()
+	use := map[string]string{}    // var name -> Use, first word
+	parent := map[string]string{} // var name -> parent var name
+	confirms := map[string]bool{} // var name -> body calls confirm()
 	for _, f := range pkg.Files {
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch node := n.(type) {
