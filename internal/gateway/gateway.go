@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -794,6 +795,19 @@ func (m *Manager) SetInitialTUN(t apitypes.TUNConfig) {
 	m.mu.Lock()
 	m.tun = t
 	m.mu.Unlock()
+}
+
+// TunPrefixes returns the prefixes the CURRENT tun config gives the interface,
+// for the host-level watcher to recognise our own tunnel by. It has to read live
+// config rather than a constant: `tun set --address` is a user-facing knob, and a
+// package-level list can only ever describe the default — on any machine that
+// changed it, the watcher would hunt for a network that does not exist and report
+// the tunnel as missing while it works fine.
+func (m *Manager) TunPrefixes() []netip.Prefix {
+	m.mu.Lock()
+	tun := m.tun
+	m.mu.Unlock()
+	return tunPrefixesOf(tun)
 }
 
 // SetTUN sets the tun-inbound options and hot-reloads (reverts on failure).

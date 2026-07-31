@@ -675,7 +675,7 @@ func runServe() error {
 	// gateway itself installs are "expected" and only later arrivals are reported.
 	syncNetWatch := func() {
 		active := mgr.Mode() == gateway.ModeTUN
-		netWatcher.SetTunnelActive(active, gateway.TunPrefixes())
+		netWatcher.SetTunnelActive(active, mgr.TunPrefixes())
 	}
 	mgr.SetOnRebuild(syncNetWatch)
 

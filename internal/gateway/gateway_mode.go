@@ -98,15 +98,26 @@ func setClashDefaultMode(cfg map[string]json.RawMessage, mode string) error {
 // applyMode rewrites the inbounds (and, for TUN, adds DNS + hijack) to match the
 // requested capture mode. The mixed inbound's listen/port is preserved from the
 // base config so 127.0.0.1:21584 stays available in every mode.
-// tunAddresses are the addresses the TUN inbound gets. Exported through
-// TunPrefixes so the host-level watcher can tell OUR tunnel apart from any other
-// utun on the machine (Tailscale, another VPN) by address rather than by name.
-var tunAddresses = []string{"172.19.0.1/30", "fdfe:dcba:9876::1/126"}
+// tunInboundAddresses is the ONE answer to "which CIDRs does our tun interface
+// carry". Both the inbound we build and the prefixes we hand the host-level
+// watcher come from here, because the watcher identifies OUR tunnel by address
+// rather than by name (a machine can have several utun devices — Tailscale,
+// another VPN). A second copy of this list drifts: one already did, and the
+// symptom was a tunnel-route-missing alert on every poll of a perfectly healthy
+// TUN, because the watcher was looking for a network nobody was using.
+func tunInboundAddresses(tun apitypes.TUNConfig) []string {
+	if len(tun.Address) > 0 {
+		return append([]string(nil), tun.Address...)
+	}
+	return append([]string(nil), apitypes.DefaultTUNAddresses...)
+}
 
-// TunPrefixes returns the TUN inbound's own prefixes.
-func TunPrefixes() []netip.Prefix {
-	out := make([]netip.Prefix, 0, len(tunAddresses))
-	for _, a := range tunAddresses {
+// tunPrefixesOf parses the addresses of a tun config into prefixes, dropping
+// anything unparseable (the store validates on write, so this is belt-and-braces).
+func tunPrefixesOf(tun apitypes.TUNConfig) []netip.Prefix {
+	addrs := tunInboundAddresses(tun)
+	out := make([]netip.Prefix, 0, len(addrs))
+	for _, a := range addrs {
 		if p, err := netip.ParsePrefix(a); err == nil {
 			out = append(out, p.Masked())
 		}
@@ -189,13 +200,9 @@ func buildTUNInbound(tun apitypes.TUNConfig) map[string]any {
 	if stack == "" {
 		stack = "gvisor"
 	}
-	addrs := tun.Address
-	if len(addrs) == 0 {
-		addrs = apitypes.DefaultTUNAddresses
-	}
 	tunIn := map[string]any{
 		"type": "tun", "tag": "tun-in",
-		"address":      append([]string(nil), addrs...),
+		"address":      tunInboundAddresses(tun),
 		"auto_route":   true,
 		"strict_route": tun.StrictRoute,
 		"stack":        stack,
