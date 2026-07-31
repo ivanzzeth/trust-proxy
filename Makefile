@@ -279,8 +279,12 @@ e2e-policy:
 ## what auto_redirect exists for. A bridge + netns inside the container is the
 ## same kernel path docker0 and a CNI bridge use, so this is what says whether
 ## the K8s DaemonSet shape can work at all.
+## The second test here answers what a node *without* nftables does — the
+## question the DaemonSet's preflight container exists to ask. It is in the same
+## target because it needs the identical topology, and because the answer decides
+## whether that preflight gates on the right field.
 e2e-tun:
-	go test -count=1 -tags docker_e2e -run TestLinuxTUNCapturesForwardedBridgeTraffic -v -timeout 15m ./test/
+	go test -count=1 -tags docker_e2e -run 'TestLinuxTUN' -v -timeout 20m ./test/
 
 ## Linux service lifecycle under a real systemd (privileged container, pid 1 =
 ## systemd): install, restart after kill -9, TUN, and a clean uninstall.

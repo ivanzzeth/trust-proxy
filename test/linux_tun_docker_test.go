@@ -300,3 +300,81 @@ func TestLinuxTUNCapturesForwardedBridgeTraffic(t *testing.T) {
 			"assertion (2) above was not testing what it claims:\n%s", after)
 	}
 }
+
+// What happens on a node that has no nftables — the question the DaemonSet's
+// preflight initContainer is supposed to answer before it lets a Pod start.
+//
+// Two things are being pinned down here, and they are pinned down by running the
+// thing rather than by reading it, because both have a plausible wrong answer
+// that reads fine:
+//
+//   - Does the gateway fail loudly, or does it start and quietly forward
+//     nothing? A gateway that reports healthy while every Pod on the node
+//     egresses straight past it is the worst outcome in this whole feature, and
+//     it is the outcome the preflight container exists to prevent.
+//   - Is `nft` (the userspace binary) actually required? sing-tun talks to
+//     nftables over netlink (sagernet/nftables -> mdlayher/netlink) and never
+//     execs `nft`, but internal/doctor reports usable=false without that binary
+//     in PATH — and deploy/kubernetes/daemonset.yaml gates on exactly that
+//     field. If the binary is not required, that preflight refuses nodes which
+//     would have worked.
+//
+// Removing the *kernel* side inside a privileged container is not something this
+// suite can do (it shares the host's netfilter). So the two halves are separated:
+// this test removes the binary, which is what a slim node image actually looks
+// like, and asserts what each layer then says.
+func TestLinuxTUNWithoutNftBinary(t *testing.T) {
+	l := newTunLab(t, "tp-e2e-tun-nonft")
+
+	// Baseline: with `nft` present the doctor says usable, which is what the
+	// DaemonSet preflight greps for. Without this the assertion below could pass
+	// on a container where the doctor never worked in the first place.
+	if before := l.exec("trust-proxy doctor nftables --json"); !strings.Contains(before, `"usable": true`) {
+		t.Fatalf("doctor does not report nftables usable even with nft installed; "+
+			"nothing below would mean anything:\n%s", before)
+	}
+
+	// dpkg rather than apt-get remove: apt would also take the systemd units and
+	// dependencies with it. Only the userspace binary goes away; the kernel's
+	// netfilter tables stay exactly as they were, which is the point.
+	l.exec("dpkg --remove --force-depends nftables >/dev/null 2>&1 || apt-get remove -y nftables >/dev/null 2>&1 || true")
+	if out := l.exec("command -v nft || echo GONE"); !strings.Contains(out, "GONE") {
+		t.Skipf("could not remove the nft binary from this image, so there is nothing to observe: %s", out)
+	}
+
+	rep := l.exec("trust-proxy doctor nftables --json")
+	t.Logf("doctor with no nft binary:\n%s", rep)
+
+	// Restart so auto_redirect re-initialises with the binary absent.
+	l.exec("systemctl restart trust-proxy")
+	l.waitAPI("21585")
+
+	// The observation that decides whether deploy/ needs changing: can forwarded
+	// traffic still be captured and refused without the userspace binary?
+	mark := l.logMark()
+	blocked := l.settleApp(false)
+	seen := l.logSince(mark)
+	redirected := strings.Contains(seen, "inbound redirect connection from "+appIP)
+	t.Logf("without the nft binary: default-deny held=%v, arrived via redirect=%v", blocked, redirected)
+
+	// Whatever the answer, this must hold: the gateway may not be *silently*
+	// permissive. Either it still captures and refuses, or it fails visibly. A
+	// container reaching the origin under a fresh install's default-deny means
+	// traffic bypassed the gateway entirely.
+	if !blocked {
+		t.Fatalf("without nftables the container reached the origin under default-deny — "+
+			"traffic is bypassing the gateway silently, which is exactly what the "+
+			"preflight check is supposed to make impossible:\n%s\n--- doctor ---\n%s",
+			seen, rep)
+	}
+
+	// And the finding that matters for the DaemonSet: if capture still works with
+	// no `nft` binary, then gating the preflight on doctor's usable=false rejects
+	// nodes that would have been fine.
+	if redirected && strings.Contains(rep, `"usable": false`) {
+		t.Logf("FINDING: forwarded traffic is still captured through the redirect chain " +
+			"with no nft binary present, yet doctor reports usable=false. sing-tun uses " +
+			"netlink, not the CLI. deploy/kubernetes/daemonset.yaml and the Helm chart " +
+			"gate their preflight on that field and would refuse such a node.")
+	}
+}
