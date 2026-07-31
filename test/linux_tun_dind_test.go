@@ -56,10 +56,16 @@ func buildDindImage(t *testing.T) string {
 	// iptables is pulled in as a dependency and defaults to the nft backend on
 	// bookworm, which is what makes dockerd create `table ip filter` with a
 	// DOCKER-USER chain that sing-tun can find.
+	//
+	// ca-certificates is listed explicitly and is not optional: with
+	// --no-install-recommends nothing here pulls it in, and without a CA bundle
+	// the nested daemon cannot verify registry-1.docker.io, so every pull dies
+	// with "x509: certificate signed by unknown authority". That is how this
+	// test's first CI run finished in 62 seconds and reported success.
 	dockerfile := `FROM debian:12
 RUN apt-get update -qq && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
-        systemd systemd-sysv dbus curl iproute2 procps python3 nftables \
+        systemd systemd-sysv dbus ca-certificates curl iproute2 procps python3 nftables \
         docker.io && \
     rm -rf /var/lib/apt/lists/*
 STOPSIGNAL SIGRTMIN+3
@@ -105,8 +111,14 @@ func TestLinuxTUNCapturesRealDockerBridge(t *testing.T) {
 	// After step (4) the only "internet" is a namespace serving one static file,
 	// and an image pull at that point would fail for reasons having nothing to do
 	// with what is under test.
+	//
+	// A failed pull is fatal, not a skip. Every assertion below needs a container,
+	// so skipping here leaves a job whose entire purpose is this one test
+	// reporting success having tested nothing — which is exactly what happened
+	// the first time it ran in CI.
 	if out := l.exec("docker pull -q busybox:latest 2>&1 || echo PULLFAIL"); strings.Contains(out, "PULLFAIL") {
-		t.Skipf("cannot pull busybox inside the nested daemon, so there is no container to forward: %s", out)
+		t.Fatalf("cannot pull busybox inside the nested daemon, so there is no container to "+
+			"forward and nothing below this line means anything: %s", out)
 	}
 
 	// (3) DOCKER-USER must exist before the gateway starts, or this test silently

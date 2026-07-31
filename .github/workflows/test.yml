@@ -172,10 +172,24 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: trust-proxy-e2e
+      # A skip is a failure here, and nowhere else in this workflow. The other
+      # suites hold several tests, so `go test` reporting ok means something even
+      # if one skipped; this job exists to run exactly one test, and its skips are
+      # all environment guards (no docker, image build failed, no DOCKER-USER
+      # chain) that are true statements locally and lies on a GitHub runner. The
+      # first run of this job took 62 seconds and reported success: the nested
+      # daemon had no CA bundle, could not pull busybox, and skipped.
       - name: e2e-tun-dind
         run: |
+          # pipefail, or `tee` decides the step's exit code and a genuinely
+          # failing test passes — the same class of bug as the skip below.
+          set -o pipefail
           chmod +x trust-proxy-e2e
-          TP_TEST_BINARY="$PWD/trust-proxy-e2e" make e2e-tun-dind
+          TP_TEST_BINARY="$PWD/trust-proxy-e2e" make e2e-tun-dind 2>&1 | tee dind.out
+          if grep -q -- '--- SKIP' dind.out; then
+            echo "::error::the dind test skipped, so the DOCKER-USER path was not exercised at all"
+            exit 1
+          fi
 
   # Every command that rewrites policy rebuilds the sing-box config, and a config
   # the box refuses is a gateway that stops enforcing anything. About twenty such
