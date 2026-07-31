@@ -1,0 +1,18 @@
+# Everything the image build does not need. Two entries here are not just about
+# size:
+#   dashboard/dist — the ui stage builds it; copying a stale local one in would
+#     silently ship whatever was last built on someone's laptop.
+#   data/ — a developer's runtime directory (keys, subscriptions, history).
+#     Baking it into a published image would leak secrets.
+.git
+.github
+data
+dashboard/dist
+dashboard/node_modules
+desktop/target
+desktop/src-tauri/target
+trust-proxy
+trust-proxy-e2e
+*.dmg
+*.app
+docs

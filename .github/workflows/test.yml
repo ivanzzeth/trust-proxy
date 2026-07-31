@@ -189,6 +189,34 @@ jobs:
           chmod +x trust-proxy-e2e
           TP_TEST_BINARY="$PWD/trust-proxy-e2e" make e2e-dataplane
 
+  # The container image the Kubernetes DaemonSet runs. Built here, never pushed:
+  # release.yml publishes it, and a Dockerfile that only ever runs at tag time
+  # breaks at tag time — which is the worst moment to find out. amd64 only, since
+  # what breaks is the build (submodule, embed_ui, apt), not the architecture.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive # go.mod replaces sing-box with third_party/
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: trust-proxy:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # A built image is not a working one. `version` exercises the binary, and
+      # `nft --version` checks the one package the DaemonSet cannot do without:
+      # auto_redirect is how forwarded Pod traffic gets captured at all.
+      - name: smoke
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint /usr/local/bin/trust-proxy trust-proxy:ci version
+          docker run --rm --entrypoint nft trust-proxy:ci --version
+
   shell:
     runs-on: ubuntu-latest
     steps:
