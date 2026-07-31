@@ -23,16 +23,33 @@
 //	tp-e2e-tun (privileged, systemd as pid 1)
 //	 ├─ trust-proxy install --mode tun     (auto_redirect on by default)
 //	 ├─ br-tp 10.88.0.1/24                 ← stands in for docker0 / cni0
-//	 ├─ netns "app":    10.88.0.2, default via 10.88.0.1   ← the "container"
-//	 └─ netns "origin": 203.0.113.10 behind a routed veth   ← the destination
+//	 ├─ netns "app":    10.88.0.2, default via 10.88.0.1        ← the "container"
+//	 └─ netns "origin": uplink 10.99.0.2, serves 203.0.113.10   ← "the internet"
+//	    (the gateway's default route points at it)
 //
-// The origin is deliberately NOT on the gateway's own `lo`. sing-tun excludes
-// every local address from redirection (nftablesCreateExcludeDestinationIPSet
-// over inet4_local_address_set), so an origin on `lo` would be delivered straight
-// to the host stack and every assertion here would pass without the tunnel doing
-// anything. It is also TEST-NET-3 rather than RFC1918, for the reason the
-// dataplane suite documents: private CIDRs join the permit set whenever the gate
-// is open, so a private origin would be reachable no matter what the policy said.
+// The origin's address is deliberately not covered by ANY prefix on the gateway's
+// interfaces, and getting that right is most of the reason this topology looks
+// the way it does. sing-tun feeds every interface *prefix* into
+// inet4_local_address_set (redirect_nftables.go, nftablesCreateLocalAddressSets)
+// and the prerouting chain returns early for destinations in it. So it is not
+// enough to keep the origin off the gateway's `lo`: putting the origin's /24 on
+// the gateway's own veth would declare that whole /24 local, forwarded packets
+// would skip the redirect chain entirely, and every assertion below would pass
+// with the tunnel doing nothing. (It did, on the first run of this suite.)
+//
+// That pulls against a second constraint. Once a connection *is* permitted, the
+// gateway dials the origin itself, and under TUN `auto_detect_interface` binds
+// that socket to the default interface (route/network.go: ByAddr first, default
+// interface otherwise) — a more specific `via` route through some other veth is
+// unusable from a socket bound elsewhere. The way to satisfy both is to make the
+// origin namespace the gateway's *uplink*: an ordinary 10.99.0.0/24 point-to-
+// point link carries the default route, and the service answers on a 203.0.113.10
+// that lives on the origin's own loopback. Not local to the gateway, yet reachable
+// from a socket bound to the default interface.
+//
+// 203.0.113.10 is TEST-NET-3 rather than RFC1918 for the reason the dataplane
+// suite documents: private CIDRs join the permit set whenever the gate is open,
+// so a private origin would be reachable no matter what the policy said.
 //
 // Run with: make e2e-tun   (needs docker; skipped otherwise)
 package test
@@ -51,11 +68,15 @@ const (
 	bridgeIP = "10.88.0.1"
 	// appIP is the "container": everything it sends is forwarded, never local.
 	appIP = "10.88.0.2"
-	// tunOriginIP lives behind a routed veth in its own namespace. Not local to the
-	// gateway, not private.
+	// tunOriginIP answers on the origin namespace's own loopback, so it is covered
+	// by no prefix on any gateway interface: not local, not private, and therefore
+	// subject to both the redirect chain and the Permit gate.
 	tunOriginIP = "203.0.113.10"
-	// tunOriginGW is the gateway's end of the routed link to the origin namespace.
-	tunOriginGW = "203.0.113.1"
+	// uplinkGW / uplinkNS are the two ends of the point-to-point link that carries
+	// the gateway's default route. Ordinary transit addresses; nothing is served on
+	// them.
+	uplinkGW = "10.99.0.1"
+	uplinkNS = "10.99.0.2"
 )
 
 type tunLab struct{ *systemdBox }
@@ -89,17 +110,25 @@ func newTunLab(t *testing.T, name string) *tunLab {
 	l.exec("ip netns exec app ip link set lo up")
 	l.exec("ip netns exec app ip route add default via " + bridgeIP)
 
-	// The origin, routed rather than bridged: it must be a forwarding hop away
-	// from the gateway, and it must not be one of the gateway's own addresses.
+	// The origin namespace, standing in for the internet: an ordinary transit link
+	// carries the gateway's default route, and the service answers on an address
+	// that belongs to no gateway interface.
 	l.exec("ip netns add origin")
 	l.exec("ip link add veth-o type veth peer name veth-o-c")
-	l.exec("ip addr add " + tunOriginGW + "/24 dev veth-o")
+	l.exec("ip addr add " + uplinkGW + "/24 dev veth-o")
 	l.exec("ip link set veth-o up")
 	l.exec("ip link set veth-o-c netns origin")
-	l.exec("ip netns exec origin ip addr add " + tunOriginIP + "/24 dev veth-o-c")
+	l.exec("ip netns exec origin ip addr add " + uplinkNS + "/24 dev veth-o-c")
 	l.exec("ip netns exec origin ip link set veth-o-c up")
 	l.exec("ip netns exec origin ip link set lo up")
-	l.exec("ip netns exec origin ip route add default via " + tunOriginGW)
+	l.exec("ip netns exec origin ip addr add " + tunOriginIP + "/32 dev lo")
+	l.exec("ip netns exec origin ip route add default via " + uplinkGW)
+	l.exec("ip netns exec origin sysctl -w net.ipv4.conf.all.rp_filter=0 || true")
+	// The gateway's default route now points at the origin namespace. A more
+	// specific route would not do: once a destination is permitted the gateway
+	// dials it itself, and under TUN that socket is bound to the *default*
+	// interface, which makes routes on any other link unusable.
+	l.exec("ip route replace default via " + uplinkNS + " dev veth-o")
 	l.exec("mkdir -p /srv/o && echo ORIGIN-OK > /srv/o/index.html")
 	l.exec("cd /srv/o && setsid nohup ip netns exec origin python3 -m http.server 80 --bind " + tunOriginIP + " >/dev/null 2>&1 < /dev/null &")
 	// A LAN service on the gateway itself, for the "strict_route did not kill the
