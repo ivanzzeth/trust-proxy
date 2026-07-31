@@ -122,6 +122,8 @@ sing-box 层写法（顺序敏感）：sniff → L1 reject → L2 Global → L3 
 - `install` **幂等，重跑就是升级**（换托管副本 + 重启服务）；它要**把活干完**——收编旧数据、注册服务、等它应答、认领并把 API key 交给 `SUDO_USER`。半装的机器不算装好。
 - 任何会 refuse 的检查都排在任何写操作**之前**。（踩过：console 检查排在种配置之后，于是被拒绝的 install 仍留下一个 config.json，害得下次收编被跳过。）
 
+**唯一的例外：容器 / K8s，那里 kubelet 就是服务管理器。** 镜像的 ENTRYPOINT 是 `serve` 不是 `install`——这是例外不是绕过。`install` 做的四件事（拷托管副本 / 注册服务 / 开机自启 / 收编旧数据）存在的前提是**裸机上没有别的东西托管这个进程**；K8s 里 Pod spec 就是服务定义、`imagePullPolicy` 就是托管副本、`restartPolicy` 就是自愈、hostPath/PVC 就是数据目录。在没有 systemd 的文件系统里注册一个重启即消失的 unit，是把铁律照字面执行而违背它的理由。`serve` 对非特权调用的那条拒绝是按**能不能写数据目录**判断的（`resolveDataDir`），容器里是 root，所以不触发。见 `Dockerfile` 与 `docs/kubernetes.md`。
+
 ### 单一二进制 + CLI/SDK 分层
 一个二进制既是网关也是 CLI 客户端，靠子命令区分：
 - `install` / `uninstall` — 把网关装上这台机器 / 拆干净（本地、特权，不接受 `--api-addr` 指向别处）。
@@ -221,6 +223,10 @@ pkg/clash/                 底层 SDK：标准 Clash API 客户端
 pkg/client/                上层 SDK：/api + 组合 clash
 pkg/apitypes/              共享 wire 类型
 internal/service/          装成系统服务：launchd(plist) / systemd(unit) / Windows SCM。共用一套 `Config` 与防板砖规则——托管副本（`/usr/local/libexec`，不在 .app 里）、`uninstall` 只删自己那份、install 不会顺手开 TUN。`File()`/`Program()`/`Installed()` 按 OS 分派（Windows 没有服务文件，SCM 注册本身就是安装）
+Dockerfile                 容器镜像（多阶段，TAGS 与 Makefile 一致 + `embed_ui`；运行层带 `nftables`/`iproute2`）。**ENTRYPOINT 是 `serve` 不是 `install`**——容器里 kubelet 就是服务管理器，见「一台机器一个网关」那条的例外
+deploy/kubernetes/         裸 manifests（`kubectl apply -k`）：namespace(PSA=privileged) / rbac(ServiceAccount **不绑任何 Role**，网关不跟 API server 说话) / daemonset / service(**headless**——ClusterIP 会在 N 个各自独立的网关之间轮询) / secret.example。`kustomization.yaml` 用 `labels: includeSelectors:false` 而**不是** `commonLabels`（后者会写进 `spec.selector`，DaemonSet 上不可变）
+deploy/helm/trust-proxy/   同一套的 chart，外加 `templates/validate.yaml` 的**模板期拒绝**（mode 取值 / managementPorts 空或越界或 ≥32768 / tun 模式关掉 preflight）——能在写之前失败的检查，胜过写之后的同一个检查
+docs/kubernetes.md         K8s 部署与自检清单（为什么是 DaemonSet 而非集中出口 Service、`--management-ports` 警告框与 CNI 端口表、6 步自检、加速那一半怎么配、卸载后怎么确认干净）
 configs/config.json        sing-box 配置：白名单默认拒绝 + clash_api + service/api(+dashboard)
 third_party/sing-box       【我们的 fork 子模块】`ivanzzeth/sing-box` 分支 `trust-proxy`，replace 进本模块；上游 SagerNet 为 `upstream`
 data/                      运行时数据（subscriptions.json 等，gitignore）
@@ -288,16 +294,18 @@ make run         # 用 configs/config.json 启动
 make build-ui    # 只构建自研控制台 -> dashboard/dist
 ```
 
-**Linux e2e 分四层**（`make e2e-linux` / `e2e-policy` / `e2e-dataplane` / `e2e-fleet`，都在特权容器 pid1=真 systemd 里，全部进 CI）：
+**Linux e2e 分五层**（`make e2e-linux` / `e2e-policy` / `e2e-dataplane` / `e2e-tun` / `e2e-fleet`，都在特权容器 pid1=真 systemd 里，全部进 CI）：
 
 | 套件 | 覆盖 | 为什么单独一层 |
 |---|---|---|
 | `e2e-linux` | 服务生命周期：install → 认领 → CLI 免配置可用 → TUN 捕获 → `kill -9` 自愈 → 无 pid 文件接管 → 卸载干净 | 装不上/回不来是最贵的失败 |
 | `e2e-policy` | **每一条会重建 sing-box 配置的命令**（约 20 条）：sub apply / acl / rules custom / dns / routing / final / mode / profile / posture。每步读回来确认生效 + 断言数据面还在 | 配置被 box 拒绝 = 网关不再执行任何策略。这层缺席时，「全新装机切 split 必炸」发布了才被用户发现 |
 | `e2e-dataplane` | **对包的断言**：默认拒绝拦得住、permit 放行、deny 压过 permit、**no-proxy 不开闸**（两轴正交）、Global 绕闸但地板仍在、模式死亡开关自动回滚、策略活过重启与原地升级、登录轮换 key 且旧 key 立即失效 | 前两层证明「命令成功、服务还在」，都不是产品的主张。产品的主张是关于**包**的 |
+| **`e2e-tun`** | **转发路径**（nftables `auto_redirect`）：容器内 netns+bridge 造出 `veth→bridge→forward` 链，与 Docker 容器/K8s Pod 出网**同构**；断言 nftables 表在、被捕获、默认拒绝对它生效、Permit 后通、**no-proxy 仍不通**、LAN 不受影响，最后 `--auto-redirect=false` 就必须失去这个能力 | 其余每一层的 TUN 断言都只 curl **容器自己**，走的是 **output 链**；`auto_redirect` 存在的理由是 **prerouting/forward 链**。于是「Linux TUN 捕获 Docker/containerd 容器出网」这个写在本文件里的主张，**在此之前一行测试都没有** |
 | `e2e-fleet` | 多网关：远程网关持策略，本地机器经它出网 | |
 
 **为什么 origin 用 `203.0.113.10/32 dev lo`**：私网 CIDR 在闸开时本来就在许可集里，把 origin 放在容器自己的网段上，**无论策略怎么写都能连通**——每条断言都会通过，什么也没证明。TEST-NET-3 不是私网，闸对它生效。
+**坑（`e2e-tun` 第一次 CI 就踩了）**：sing-tun 的「本地地址不重定向」是按**接口前缀**算的，不是按地址——`redirect_nftables.go` 把每个接口的 `Addresses []netip.Prefix` 全量灌进 `inet4_local_address_set`，prerouting 链对集合内的目的地**直接 return**。所以把 `203.0.113.1/24` 配在网关的 veth 上，等于宣布整个 `203.0.113.0/24` 是本地，转发包压根不进重定向链——**7 条断言全绿而隧道什么也没做**。同时还有一条相反方向的约束：TUN 下 `auto_detect_interface` 把出站 socket 绑到**默认接口**（`route/network.go` 的 `AutoDetectInterfaceFunc`），所以放在非默认链路上的 `via` 路由，在目的地被 Permit 之后网关自己拨号时用不了。两条约束的交集只有一个解：**origin 那个 netns 就是网关的上联**——普通 `10.99.0.0/24` 传输链路承载默认路由，服务答在 origin 自己 `lo` 上的 `203.0.113.10/32`（不属于网关任何接口的任何前缀）。
 **容器没有外网**（`raw.githubusercontent.com` 只解析出 IPv6 且无 v6 路由），所以远程规则集下不下来：`posture set split` 只能断言「失败原因不是我们自己造的配置错误」，不能断言切换成功。
 
 **端到端自测（`cmd/selftest.go`，`trust-proxy selftest`，hidden 子命令）**：**离线、确定性、可扔进 VM 跑**的核心引擎 e2e。自起两个本地「origin」（direct-origin 返回 `direct` / node-origin 返回 `node`）+ 一个 http CONNECT「node」上游，用**真实 `gateway.Manager`** 跑遍：默认拒绝拦截 / 白名单→node / no-proxy→direct / 黑名单胜 / 自定义规则 direct·proxy·block·node / system 模式 / **`== proxy scoring ==`**（两个真节点、其一中途停止 accept：断言①新连接迁到健康节点 ②**同时在故障节点上在飞的连接没有被杀**（`http.Server.Close()` 不动已 hijack 的隧道，正是「节点在你登录到一半时死了」的形状）③预热期不产生真实分数 ④断路器降级但节点仍在组里 ⑤过了 min_samples 才有实测分。③④⑤ 是接线的牙齿：把 scorer 从 box context 里摘掉，这三条立刻 FAIL）；`sudo trust-proxy selftest` 额外覆盖 tun（loopback 不被 tun 捕获，故 tun 分支只断言 box 能在 tun 模式起来）。任一场景失败则非零退出。**改引擎后务必 `make build-go && ./trust-proxy selftest`**（VM 里 `sudo` 跑覆盖全部）。
@@ -392,6 +400,10 @@ curl -x socks5h://127.0.0.1:21584 https://example.com            # 正常 -> 200
   **这一轮 4 个缺陷全部只有真机才暴露**——它们都编译干净、vet 干净、且通过了当时已有的全部单测：① **注册了但没接线的钩子是隐形的**：`serve` 从没注册 `SetInboundRevertHook`，gateway 包的单测只证明了「注册之后它会触发」。于是死亡开关只完成一半——数据面退回旧端口，而文件仍写着那个没人确认的端口，**下次重启会原样应用刚被守卫否决的配置，而那次重启没有守卫**。守卫语义要求 store 与数据面一起动，回滚是一个已定结论（与 `SetModePersister` 同形）。② `inbound`/`retention`/`defaults` 直接挂在 `rootCmd` 上、没进 `root.go` 的 `clients` 列表（`addClientFlags` 走的就是那个列表），于是 `--api-addr` 报「unknown flag」——**读起来像「这命令不存在」，而不是「它注册在错误的列表里」**；对默认地址又完全正常，所以本地怎么试都发现不了。③ `/api/defaults` 回的是**存储形态**而非生效形态（见 `internal/tuncfg` 那条）。④ `inbound set` 会提示确认却没注册 `--yes/-y`，于是**最可能被写进安装脚本的那个改动恰恰没法从脚本里做**。
   修①②④时都**没有**写点名式的测试——那种列表会在新增命令时陈旧，而那正是它唯一能派上用场的时刻。改成两条通用不变量：`TestBackendCommandsAllTakeTheClientFlags` 走整棵命令树；`TestPromptingCommandsOfferYes` 用 `go/parser` 扫本包里 body 含 `confirm(` 的 `cobra.Command` 字面量、再解析到活的命令上查旗标（因而不在乎 `--yes` 是单独注册、循环注册还是经 `f := cmd.Flags()` 注册——三种写法本仓库里都有）。**坑**：别用 cobra 的 `InheritedFlags()` 找父级持久旗标——它会**构建并缓存**一个合并后的 flagset 挂在命令上，之后别处的 `VisitAll` 就会数到这个命令从没声明过的旗标（`TestScoringFlagListMatchesRegisteredFlags` 数的正是这个，于是两条测试的成败取决于谁先跑）。
   新增 `selftest` 场景 `== inbound listen ==`：改端口 → 断言新端口能代理出网、**旧端口已经不再监听**（后者才是「配置真的生效了」的硬证据，只测新端口通的话一个什么都没做的实现也能过）→ 断言未确认自动回滚 → 回滚后原端口又能代理。`e2e-policy` 补守卫那一半：回滚之后**磁盘上**的值也要跟着退回去。
+- **里程碑 20（🟡）K8s DaemonSet 节点级网关**。诉求是「让 k8s 集群的服务都能有一个漂亮的全球加速能力」，而它和上一条（Linux TUN 走 nftables 全接管）**是同一件事**：K8s Pod 出网走 `veth → CNI bridge → forward 链`，与 Docker 容器出网是同一条内核路径。所以形态选 **DaemonSet（hostNetwork + NET_ADMIN + `/dev/net/tun`）而不是集中式出口 Service**——后者要求每个应用改配置指到一个 ClusterIP，而 DaemonSet 是**应用零改造**：Pod 照常出网，包在离开节点前被 `auto_redirect` 捞进隧道。这个主张不是断言，是 `e2e-tun` 证的。
+  交付：`Dockerfile`（多阶段 + `embed_ui` + 运行层 `nftables`/`iproute2`，GHCR 多架构）、`deploy/kubernetes/`（`kubectl apply -k`）、`deploy/helm/trust-proxy/`、`docs/kubernetes.md`。控制面**零新代码**——DaemonSet 里每个 Pod 就是一个标准网关，多节点管理复用 `internal/nodes` + Fleet 页。
+  **四个只有写部署产物才会撞上的坑**：① **`--management-ports` 是这套东西最可能板砖的地方**，且形状最坏——默认只有 22，而 K8s 上 kubelet(10250)/API server(6443)/DNS(53)/kube-proxy(10256)/etcd(2379,2380) 全走宿主网络，被默认拒绝拦下就是**节点脱离集群**，届时 `kubectl` 已经够不着它。manifests 给保守默认、chart 在**模板期**就拒绝空值/越界/≥32768（复刻网关自己的 `ephemeralFloor` 拒绝，理由同 `install`：能在写之前失败的检查胜过写之后的同一个），文档用警告框 + CNI 端口表（Calico 179、Cilium 4240/UDP 8472、Flannel UDP 8472）+ `ss -tunp` 自查命令。② **环境变量名不是我们能挑的**：一开始写的 `TRUST_PROXY_API_TOKEN` 是自造名，而 CLI 的 `resolveToken()`（`cmd/cli.go`）只认 `--api-token` → **`TP_API_KEY`** → 存储凭据。于是文档和 NOTES.txt 里那条 `kubectl exec ds/trust-proxy -- trust-proxy acl add …` 会对**它自己的网关**回 401。③ **kustomize 的 `commonLabels` 会写进 `spec.selector`**，而 DaemonSet 的 selector 不可变——半年后加一个标签就会让每次 `kubectl apply -k` 报 "field is immutable"，唯一出路是删掉 DaemonSet，也就是**为了加个标签把每个节点的出网都停一次**。改用 `labels: [{includeSelectors: false, …}]`；Helm 侧同形的雷是 `selectorLabels`，`_helpers.tpl` 里写了别动它。④ `${VAR:+--api-token "$VAR"}` 这种写法**太微妙不能信**：它依赖「不带引号的展开里的引号能挺过字段拆分」，POSIX 上正确但各 shell 实际表现有别，而失败形态是 token 悄悄变成两个参数、于是 API 在节点地址上**没有鉴权**。改成 `if [ -n … ]; then set -- "$@" --api-token "$VAR"; fi`。
+  文档里的**每一条 CLI 命令都拿新编的二进制 `--help` 核过**，因而抓出两个形状错：`node add` 是位置参数 `<name> <api-url>` 不是 `--name/--url`；`rules packs` 是命令组（`rules packs ls` / `apply <name>`，包名**大小写敏感**，`internal/api/customrules.go` 是精确匹配）。**真集群验证由用户跑**，按结果回来修。
 - **后续** DNS 查询级观测（TUN）、多节点聚合视图、**Segments**（按来源网段分层 split/strict 姿势,见 `docs/home-gateway-plan.md`）。
 
 ## 许可证
