@@ -1,0 +1,145 @@
+# trust-proxy — node-level egress gateway (DaemonSet).
+#
+# Read docs/kubernetes.md before the first install. The two settings that decide
+# whether this is safe on your cluster are `managementPorts` and `nodeSelector`;
+# both default to the conservative side, and both are explained below.
+
+image:
+  repository: ghcr.io/ivanzzeth/trust-proxy
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Nodes are opted in by label, one at a time:
+#   kubectl label node <node> trust-proxy.io/gateway=true
+#
+# The default is NOT "every node", and that is deliberate. A Deployment that
+# goes wrong leaves the cluster intact; an egress gateway that goes wrong takes
+# the node's networking with it, and you cannot fix a node you can no longer
+# reach. Pilot on one node, confirm it is still Ready, then widen.
+nodeSelector:
+  trust-proxy.io/gateway: "true"
+
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule
+
+affinity: {}
+
+# THE setting most likely to sever a node from its cluster.
+#
+# The gateway is default-deny: traffic that is not permitted is refused, and on
+# a hostNetwork node that includes the traffic which makes the node a cluster
+# member. These ports bypass the Permit gate entirely (L0, above every other
+# rule), so they keep working no matter what policy says.
+#
+#   22    ssh — so you can still get in when something else is wrong
+#   53    DNS (CoreDNS upstream, node resolver)
+#   6443  kube-apiserver
+#   10250 kubelet
+#   10256 kube-proxy health
+#   2379  etcd client   (control-plane nodes)
+#   2380  etcd peer     (control-plane nodes)
+#
+# Add whatever else your CNI, CSI, monitoring or cloud provider needs BEFORE
+# rolling out. Calico BGP is 179; Cilium's health checks are 4240; VXLAN
+# overlays run on UDP 8472 or 4789. Check what your nodes actually talk on.
+# Ports >= 32768 are refused by the gateway (they collide with the ephemeral
+# range, and exempting that range exempts everything).
+managementPorts:
+  - 22
+  - 53
+  - 6443
+  - 10250
+  - 10256
+  - 2379
+  - 2380
+
+# tun: capture everything on the node, including forwarded Pod traffic via
+#   nftables (auto_redirect). This is the whole point of the DaemonSet shape.
+# manual: run the proxy inbound only; workloads opt in with HTTPS_PROXY. Safe
+#   first step on a node you are not ready to capture.
+mode: tun
+
+api:
+  # hostNetwork means this listens on the node's own address. Without a token,
+  # reaching port 21585 is enough to rewrite that node's egress policy.
+  addr: 0.0.0.0:21585
+  # Name of an existing Secret holding key `api-token`. Create it out of band:
+  #   kubectl -n trust-proxy create secret generic trust-proxy \
+  #     --from-literal=api-token="$(openssl rand -hex 32)"
+  # Empty (and no existing Secret) => the API is unauthenticated. Lab only.
+  existingSecret: trust-proxy
+  tokenKey: api-token
+
+# hostPort makes the gateway reachable at <node-ip>:<port> without a Service.
+# Turn these off if you would rather reach it only through port-forward.
+hostPorts:
+  proxy: true
+  api: true
+
+# Policy, subscriptions, detection history and the node's config live here.
+#
+# hostPath, not a PVC: the Pod is pinned to its node, the data describes that
+# node, and an RWO volume per node is one more thing to provision on every node
+# you label. A PVC also outlives `helm uninstall` in a way a directory does not.
+# Set enabled=false to run on emptyDir — the gateway will work, and will forget
+# every policy on restart.
+persistence:
+  enabled: true
+  hostPath: /var/lib/trust-proxy
+
+# nftables is what captures *forwarded* traffic. Without it the gateway starts,
+# reports healthy, and every Pod on the node egresses straight past it. The
+# initContainer fails loudly instead. Disable only if you run mode=manual.
+preflight:
+  enabled: true
+
+# Deliberately slack. A restart here is not "recover a stuck Pod", it is "take
+# the node's egress down and rebuild the tunnel"; a probe blip must not be able
+# to do that. There is no readinessProbe: nothing routes to this Pod through a
+# Service, so readiness would gate nothing while adding one more way to look
+# broken.
+livenessProbe:
+  enabled: true
+  initialDelaySeconds: 30
+  periodSeconds: 20
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+resources:
+  requests: {cpu: 100m, memory: 128Mi}
+  limits: {memory: 1Gi}
+
+# Process-dimension Permit rules (process_name / process_path) match host
+# processes, which requires hostPID. Turn it off if you do not use them — it is
+# real visibility into every process on the node.
+hostPID: true
+
+priorityClassName: system-node-critical
+terminationGracePeriodSeconds: 30
+
+updateStrategy:
+  type: RollingUpdate
+  rollingUpdate:
+    # One node at a time. Every Pod owns its node's egress; replacing them all
+    # at once means every node loses egress at once.
+    maxUnavailable: 1
+
+service:
+  # Headless: these Pods are N independent gateways, not replicas. A ClusterIP
+  # would round-robin between different nodes' policies.
+  enabled: true
+
+serviceAccount:
+  create: true
+  name: ""
+
+# Extra flags appended verbatim to `trust-proxy serve`.
+extraArgs: []
+
+podAnnotations: {}
+podLabels: {}
+nameOverride: ""
+fullnameOverride: ""

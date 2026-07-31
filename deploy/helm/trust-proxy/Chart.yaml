@@ -1,0 +1,12 @@
+apiVersion: v2
+name: trust-proxy
+description: Node-level egress gateway for Kubernetes — default-deny Permit gate, exfiltration detection, and global acceleration for every Pod on the node.
+type: application
+# version is the chart's; appVersion tracks the image tag in values.yaml. They
+# move independently: a chart fix should not claim a new gateway release.
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/ivanzzeth/trust-proxy
+sources:
+  - https://github.com/ivanzzeth/trust-proxy
+keywords: [egress, gateway, proxy, sing-box, tun, security, exfiltration]

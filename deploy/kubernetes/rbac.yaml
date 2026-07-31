@@ -1,0 +1,19 @@
+# The gateway does not talk to the Kubernetes API. It captures packets on the
+# node it runs on; it does not list Pods, watch Services or write status. So the
+# ServiceAccount exists to *be named* — to give the Pod an identity that is not
+# `default`, and a place to hang an image-pull secret or a cluster's own
+# admission policy — and it is deliberately bound to no Role at all.
+#
+# If you find yourself adding permissions here, check first whether the thing you
+# want is already in the gateway's own API (:21585) or its multi-gateway
+# registry, which is how one console manages many nodes without any of them
+# needing cluster credentials.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: trust-proxy
+  namespace: trust-proxy
+  labels:
+    app.kubernetes.io/name: trust-proxy
+# imagePullSecrets:
+#   - name: ghcr-credentials

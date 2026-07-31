@@ -1,0 +1,150 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "trust-proxy.fullname" . }}
+  labels: {{- include "trust-proxy.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels: {{- include "trust-proxy.selectorLabels" . | nindent 6 }}
+  updateStrategy: {{- toYaml .Values.updateStrategy | nindent 4 }}
+  template:
+    metadata:
+      labels:
+        {{- include "trust-proxy.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{- toYaml . | nindent 8 }}{{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      # Evicting the gateway takes the node's egress with it, so it must outrank
+      # the workloads whose traffic it carries.
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      serviceAccountName: {{ include "trust-proxy.serviceAccountName" . }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      # The tunnel has to live in the *host* network namespace: inside a Pod
+      # netns it would only capture this Pod's own traffic, which is nothing.
+      hostNetwork: true
+      hostPID: {{ .Values.hostPID }}
+      dnsPolicy: ClusterFirstWithHostNet
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- if .Values.preflight.enabled }}
+      initContainers:
+        # nftables is what captures *forwarded* traffic — a Pod's veth arrives
+        # on prerouting/forward, not output, and auto_redirect is the only thing
+        # that reaches it. Without nftables the gateway still starts and still
+        # looks healthy while every Pod on the node egresses straight past it.
+        # Failing here, loudly, before the tunnel exists, beats a green Pod that
+        # enforces nothing.
+        - name: preflight
+          image: {{ include "trust-proxy.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              trust-proxy doctor nftables
+              trust-proxy doctor nftables --json | grep -q '"usable": *true' || {
+                echo "nftables is not usable on this node: forwarded Pod traffic will NOT be captured." >&2
+                exit 1
+              }
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN, NET_RAW]
+      {{- end }}
+      containers:
+        - name: gateway
+          image: {{ include "trust-proxy.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- if .Values.api.existingSecret }}
+          # TP_API_KEY, not a name of our own choosing: it is what the CLI reads
+          # when no --api-token is given, so `kubectl exec ds/... --
+          # trust-proxy acl add ...` works inside this container instead of
+          # answering 401 against its own gateway. The wrapper below passes the
+          # same value to serve as the flag.
+          env:
+            - name: TP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.api.existingSecret }}
+                  key: {{ .Values.api.tokenKey }}
+                  # optional so a first install in a lab does not fail before
+                  # the Secret exists. Outside a lab, create it.
+                  optional: true
+          {{- end }}
+          # A shell wrapper rather than a plain args list, for exactly one
+          # reason: --api-token is a *flag*, serve reads no environment, and the
+          # value has to come from a Secret rather than sit in the Pod spec
+          # where every `kubectl get ds -o yaml` prints it. `exec` keeps
+          # trust-proxy as PID 1 so kubelet's TERM reaches it and the tunnel is
+          # torn down rather than killed with the node's routes still pointing
+          # at it.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              set -- \
+                --data=/var/lib/trust-proxy \
+                --mode={{ .Values.mode }} \
+                --api-addr={{ .Values.api.addr }} \
+                --management-ports={{ join "," .Values.managementPorts }}{{- range .Values.extraArgs }} \
+                {{ . }}{{- end }}
+              # Built with `set --` rather than ${VAR:+--api-token "$VAR"}: the
+              # latter relies on quotes *inside* an unquoted expansion
+              # surviving field splitting, which is correct per POSIX and
+              # differs between shells in practice. A token that silently
+              # arrives as two arguments leaves the API unauthenticated on the
+              # node's address.
+              if [ -n "${TP_API_KEY:-}" ]; then
+                set -- "$@" --api-token "$TP_API_KEY"
+              fi
+              exec /usr/local/bin/trust-proxy serve "$@"
+          securityContext:
+            capabilities:
+              # NET_ADMIN: create the tun device, write nftables.
+              # NET_RAW: ICMP and the redirect path.
+              add: [NET_ADMIN, NET_RAW]
+          ports:
+            - name: proxy
+              containerPort: 21584
+              {{- if .Values.hostPorts.proxy }}
+              hostPort: 21584
+              {{- end }}
+            - name: api
+              containerPort: 21585
+              {{- if .Values.hostPorts.api }}
+              hostPort: 21585
+              {{- end }}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/trust-proxy}
+            - {name: dev-net-tun, mountPath: /dev/net/tun}
+          {{- if .Values.livenessProbe.enabled }}
+          livenessProbe:
+            httpGet: {path: /api/health, port: 21585}
+            initialDelaySeconds: {{ .Values.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ .Values.livenessProbe.periodSeconds }}
+            timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
+            failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
+          {{- end }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: data
+          {{- if .Values.persistence.enabled }}
+          hostPath: {path: {{ .Values.persistence.hostPath }}, type: DirectoryOrCreate}
+          {{- else }}
+          emptyDir: {}
+          {{- end }}
+        - name: dev-net-tun
+          hostPath: {path: /dev/net/tun, type: CharDevice}

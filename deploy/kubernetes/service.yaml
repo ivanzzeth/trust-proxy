@@ -1,0 +1,37 @@
+# Headless on purpose (clusterIP: None).
+#
+# A normal ClusterIP would load-balance across every node's gateway, and that is
+# the wrong shape for this: these Pods are not interchangeable replicas of one
+# service, they are N independent gateways, each owning the egress of the one
+# node it sits on. "Open the console" through a round-robin VIP means each
+# refresh shows you a different node's policy and connections, and a write lands
+# on whichever one answered — the failure mode is silent and looks like the UI
+# forgetting what you just did.
+#
+# Headless gives per-Pod DNS instead:
+#   <pod-name>.trust-proxy.trust-proxy.svc.cluster.local
+# so in-cluster tooling can address a specific node's gateway, and
+# `kubectl get endpoints -n trust-proxy trust-proxy` lists them all.
+#
+# For a human opening the console, the direct route is simpler and is what
+# docs/kubernetes.md tells you to use:
+#   kubectl port-forward -n trust-proxy <pod> 21585:21585
+# (hostNetwork also means http://<node-ip>:21585 works, which is precisely why
+# the API token is not optional outside a lab.)
+apiVersion: v1
+kind: Service
+metadata:
+  name: trust-proxy
+  namespace: trust-proxy
+  labels:
+    app.kubernetes.io/name: trust-proxy
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: trust-proxy
+  ports:
+    - {name: api, port: 21585, targetPort: 21585, protocol: TCP}
+    # The proxy inbound. Pods on a node reach their gateway through the tunnel
+    # without configuring anything — this port is for the explicit-proxy case
+    # (a workload that would rather set HTTPS_PROXY than be captured).
+    - {name: proxy, port: 21584, targetPort: 21584, protocol: TCP}

@@ -1,0 +1,37 @@
+# kubectl apply -k deploy/kubernetes
+#
+# Read docs/kubernetes.md first — in particular the two things that decide
+# whether this is safe on your cluster:
+#   1. --management-ports must cover everything that makes your node a cluster
+#      member (kubelet, API server, DNS, CNI, etcd). The defaults in
+#      daemonset.yaml cover a stock kubeadm cluster and nothing exotic.
+#   2. Nodes are opted in by label, one at a time:
+#        kubectl label node <node> trust-proxy.io/gateway=true
+#      Applying this manifest alone schedules nothing. That is the point.
+#
+# secret.example.yaml is deliberately NOT in the resource list: create the
+# Secret out of band so a token never lands in git.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: trust-proxy
+
+resources:
+  - namespace.yaml
+  - rbac.yaml
+  - daemonset.yaml
+  - service.yaml
+
+# `labels` with includeSelectors off, not `commonLabels`: the latter is
+# deprecated *and* it writes into spec.selector, which is immutable on a
+# DaemonSet. Adding one label six months from now would then make every
+# `kubectl apply -k` fail with "field is immutable" and the only way out is to
+# delete the DaemonSet — i.e. take every node's egress down to add a label.
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/part-of: trust-proxy
+
+images:
+  - name: ghcr.io/ivanzzeth/trust-proxy
+    newTag: latest

@@ -1,0 +1,32 @@
+{{/*
+Refusals, checked at template time rather than at Pod start.
+
+Everything here is something the gateway itself would also reject — but it would
+reject it inside a container, on a node, after the DaemonSet had already been
+accepted, which means the operator sees CrashLoopBackOff and has to go read
+logs. Any check that can fail before a write is worth more than the same check
+after it. Same reason `install` puts all its refusals before its first write.
+*/}}
+
+{{- if not (has .Values.mode (list "tun" "manual" "system")) }}
+{{- fail (printf "mode must be one of tun|manual|system, got %q" .Values.mode) }}
+{{- end }}
+
+{{- if not .Values.managementPorts }}
+{{- fail "managementPorts is empty: with default-deny on a hostNetwork node this cuts kubelet off from the API server and the node leaves the cluster. See docs/kubernetes.md." }}
+{{- end }}
+
+{{/* Range before ephemeral, or 99999 gets reported as "in the ephemeral range",
+     which sends you looking for a policy problem instead of a typo. */}}
+{{- range .Values.managementPorts }}
+{{- if or (le (int .) 0) (gt (int .) 65535) }}
+{{- fail (printf "managementPorts contains %v, which is not a port number" .) }}
+{{- end }}
+{{- if ge (int .) 32768 }}
+{{- fail (printf "managementPorts contains %v, which is in the ephemeral port range (>=32768). The gateway refuses these: exempting a source port that the kernel hands out to ordinary outbound connections exempts effectively everything, and the Permit gate stops meaning anything." .) }}
+{{- end }}
+{{- end }}
+
+{{- if and (eq .Values.mode "tun") (not .Values.preflight.enabled) }}
+{{- fail "mode=tun with preflight.enabled=false: nothing then checks for nftables, and without it forwarded Pod traffic silently bypasses the gateway while it reports healthy. Set preflight.enabled=true, or use mode=manual if you only want the explicit proxy inbound." }}
+{{- end }}

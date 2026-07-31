@@ -1,0 +1,55 @@
+trust-proxy is installed as a DaemonSet in namespace {{ .Release.Namespace }}, mode={{ .Values.mode }}.
+
+Nothing is scheduled yet. Nodes opt in by label, one at a time:
+
+    kubectl label node <node> {{- range $k, $v := .Values.nodeSelector }} {{ $k }}={{ $v }}{{- end }}
+
+Then, in this order (docs/kubernetes.md has the full checklist):
+
+  1. The node is still a cluster member. Check this FIRST — it is the failure
+     that costs the most and the one you can least easily undo:
+
+         kubectl get node <node>          # still Ready?
+         kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/name={{ include "trust-proxy.name" . }} -c gateway --tail=50
+
+     If the node goes NotReady, its management traffic was not exempt. Fix
+     `managementPorts` and re-check what your CNI needs. Current value:
+     {{ join "," .Values.managementPorts }}
+
+  2. The gateway thinks it is capturing:
+
+         kubectl -n {{ .Release.Namespace }} exec ds/{{ include "trust-proxy.fullname" . }} -- trust-proxy status --json
+
+     Expect mode={{ .Values.mode }} and can_tun=true.
+
+  3. Default-deny actually holds for Pods on that node. Run something on the
+     node and confirm it CANNOT reach the internet, then permit one destination
+     and confirm it can:
+
+         kubectl -n {{ .Release.Namespace }} exec ds/{{ include "trust-proxy.fullname" . }} -- trust-proxy acl add permit example.com --type domain
+
+     A test Pod that reaches the internet before you permit anything means
+     forwarded traffic is bypassing the gateway — check the preflight
+     initContainer's output, not the gateway's.
+
+  4. Open the console:
+
+         kubectl -n {{ .Release.Namespace }} port-forward ds/{{ include "trust-proxy.fullname" . }} 21585:21585
+         open http://127.0.0.1:21585
+
+{{ if not .Values.api.existingSecret }}
+WARNING: api.existingSecret is empty, so /api is unauthenticated — and
+hostNetwork means it is listening on every node's own address. Anyone who can
+reach port 21585 can rewrite that node's egress policy. Lab only.
+{{- else }}
+The API token comes from Secret {{ .Values.api.existingSecret }} (key {{ .Values.api.tokenKey }}). If you have
+not created it, the API is currently unauthenticated on the node's address:
+
+    kubectl -n {{ .Release.Namespace }} create secret generic {{ .Values.api.existingSecret }} \
+      --from-literal={{ .Values.api.tokenKey }}="$(openssl rand -hex 32)"
+    kubectl -n {{ .Release.Namespace }} rollout restart ds/{{ include "trust-proxy.fullname" . }}
+{{- end }}
+{{ if not .Values.persistence.enabled }}
+WARNING: persistence.enabled=false. Policy, subscriptions and history live on
+emptyDir and are lost every time the Pod restarts.
+{{- end }}

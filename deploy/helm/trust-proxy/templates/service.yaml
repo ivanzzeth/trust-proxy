@@ -1,0 +1,24 @@
+{{- if .Values.service.enabled }}
+# Headless on purpose (clusterIP: None).
+#
+# A normal ClusterIP would load-balance across every node's gateway, and that is
+# the wrong shape: these Pods are not interchangeable replicas of one service,
+# they are N independent gateways, each owning the egress of the one node it
+# sits on. Opening the console through a round-robin VIP means each refresh
+# shows a different node's policy, and a write lands on whichever one answered.
+#
+# Headless gives per-Pod DNS instead, so in-cluster tooling can address one
+# specific node's gateway. For a human, `kubectl port-forward` is simpler — see
+# docs/kubernetes.md.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "trust-proxy.fullname" . }}
+  labels: {{- include "trust-proxy.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector: {{- include "trust-proxy.selectorLabels" . | nindent 4 }}
+  ports:
+    - {name: api, port: 21585, targetPort: 21585, protocol: TCP}
+    - {name: proxy, port: 21584, targetPort: 21584, protocol: TCP}
+{{- end }}

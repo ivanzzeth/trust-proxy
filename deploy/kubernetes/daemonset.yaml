@@ -1,0 +1,159 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: trust-proxy
+  namespace: trust-proxy
+  labels: {app.kubernetes.io/name: trust-proxy}
+spec:
+  selector:
+    matchLabels: {app.kubernetes.io/name: trust-proxy}
+  updateStrategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # One node at a time. Every Pod here owns its node's egress; replacing them
+      # all at once means every node loses egress at once, and the rollout that
+      # was supposed to fix something takes the whole cluster with it.
+      maxUnavailable: 1
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: trust-proxy}
+    spec:
+      # Evicting the gateway takes the node's egress with it, so it must outrank
+      # the workloads whose traffic it carries.
+      priorityClassName: system-node-critical
+      serviceAccountName: trust-proxy
+      # The tunnel has to live in the *host* network namespace: inside a Pod
+      # netns it would only capture this Pod's own traffic, which is nothing.
+      hostNetwork: true
+      # Process-dimension Permit rules (process_name / process_path) match against
+      # host processes. Drop this if you do not use them — it is real visibility
+      # into every process on the node.
+      hostPID: true
+      dnsPolicy: ClusterFirstWithHostNet
+      # Deliberately NOT tolerating everything. A cluster-wide rollout of an
+      # egress gateway is not reversible in the way a Deployment is: label the
+      # nodes you have tested on. docs/kubernetes.md walks through the pilot.
+      nodeSelector:
+        trust-proxy.io/gateway: "true"
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 30
+      initContainers:
+        # nftables is what captures *forwarded* traffic — a Pod's veth arrives on
+        # prerouting/forward, not output, and auto_redirect is the only thing that
+        # reaches it. Without it the gateway still starts and still looks healthy
+        # while every Pod on the node egresses straight past it. Failing here,
+        # loudly, before the tunnel exists, beats a green Pod that enforces
+        # nothing.
+        - name: preflight
+          image: ghcr.io/ivanzzeth/trust-proxy:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              trust-proxy doctor nftables
+              trust-proxy doctor nftables --json | grep -q '"usable": *true' || {
+                echo "nftables is not usable on this node: forwarded Pod traffic will NOT be captured." >&2
+                exit 1
+              }
+          securityContext:
+            capabilities:
+              add: [NET_ADMIN, NET_RAW]
+      containers:
+        - name: gateway
+          image: ghcr.io/ivanzzeth/trust-proxy:latest
+          imagePullPolicy: IfNotPresent
+          # TP_API_KEY, not a name of our own choosing: it is what the CLI reads
+          # when no --api-token is given, so `kubectl exec ds/trust-proxy --
+          # trust-proxy acl add ...` works inside this container instead of
+          # answering 401 against its own gateway. The wrapper below passes the
+          # same value to serve as the flag.
+          env:
+            - name: TP_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: trust-proxy
+                  key: api-token
+                  optional: true
+          # A shell wrapper rather than a plain args list, for exactly one
+          # reason: --api-token is a *flag*, serve reads no environment, and the
+          # value has to come from a Secret rather than sit in the Pod spec
+          # where every `kubectl get ds -o yaml` prints it. `exec` keeps
+          # trust-proxy as PID 1 so kubelet's TERM reaches it and the tunnel is
+          # torn down instead of being killed with the node's routes still
+          # pointing at it.
+          #
+          # --api-addr is 0.0.0.0 because hostNetwork means this listens on the
+          # node's address. Without a token anyone who can reach port 21585
+          # administers that node's egress policy — so the token is optional in
+          # the Secret only to keep a first `kubectl apply` from failing; set it
+          # before anything but a lab.
+          #
+          # --management-ports is THE field most likely to sever a node from its
+          # cluster. Under default-deny anything unpermitted is refused,
+          # including the traffic that makes the node a cluster member: 10250
+          # kubelet, 6443 API server, 53 DNS, 10256 kube-proxy health,
+          # 2379/2380 etcd on control planes, 22 so you can still get in. Add
+          # whatever else your CNI needs BEFORE rolling this out, and read the
+          # warning box in docs/kubernetes.md.
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              set -- \
+                --data=/var/lib/trust-proxy \
+                --mode=tun \
+                --api-addr=0.0.0.0:21585 \
+                --management-ports=22,53,6443,10250,10256,2379,2380
+              # Built with `set --` rather than ${VAR:+--api-token "$VAR"}: the
+              # latter relies on quotes *inside* an unquoted expansion
+              # surviving field splitting, which is correct per POSIX and
+              # differs between shells in practice. A token that silently
+              # arrives as two arguments leaves the API unauthenticated on the
+              # node's address.
+              if [ -n "${TP_API_KEY:-}" ]; then
+                set -- "$@" --api-token "$TP_API_KEY"
+              fi
+              exec /usr/local/bin/trust-proxy serve "$@"
+          securityContext:
+            capabilities:
+              # NET_ADMIN: create the tun device, write nftables.
+              # NET_RAW: ICMP and the redirect path.
+              add: [NET_ADMIN, NET_RAW]
+          ports:
+            - {name: proxy, containerPort: 21584, hostPort: 21584}
+            - {name: api, containerPort: 21585, hostPort: 21585}
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/trust-proxy}
+            - {name: dev-net-tun, mountPath: /dev/net/tun}
+          livenessProbe:
+            httpGet: {path: /api/health, port: 21585}
+            # Deliberately slack. A restart here is not "recover a stuck Pod", it
+            # is "take the node's egress down and rebuild the tunnel". A probe
+            # blip must not be able to do that: it takes a full minute of
+            # consecutive failures. Same principle as the proxy scorer's circuit
+            # breaker — degrade rather than remove, because having no egress is
+            # worse than having a slow one.
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 10
+            failureThreshold: 3
+          # No readinessProbe on purpose. Nothing routes to this Pod through a
+          # Service — traffic reaches it by being on the node — so readiness
+          # would gate nothing while adding one more way to look broken.
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {memory: 1Gi}
+      volumes:
+        # Node-local, not a PVC: this DaemonSet's Pod is pinned to its node, the
+        # data is that node's policy and history, and a ReadWriteOnce PVC per
+        # node would be one more thing to provision on every node you label.
+        # hostPath survives Pod restarts and node reboots, which is what the data
+        # actually needs. See docs/kubernetes.md if you want it centralised.
+        - name: data
+          hostPath: {path: /var/lib/trust-proxy, type: DirectoryOrCreate}
+        - name: dev-net-tun
+          hostPath: {path: /dev/net/tun, type: CharDevice}
