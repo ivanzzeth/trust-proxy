@@ -177,6 +177,11 @@ func TestLinuxTUNCapturesRealDockerBridge(t *testing.T) {
 				"redirected traffic is accepted:\n%s", want, chain)
 		}
 	}
+	// Logged on success, not just on failure. This suite runs rarely and nobody
+	// watches it; a green line that says only PASS is indistinguishable from the
+	// skip that preceded it, and this is the artifact that proves a real dockerd
+	// was here and sing-tun found its chain.
+	t.Logf("--- DOCKER-USER after install ---\n%s", chain)
 
 	// (8) A fresh install permits nothing, and that has to hold for a container
 	// too. Capture without policy is the worst state available: it looks governed.
@@ -208,6 +213,7 @@ func TestLinuxTUNCapturesRealDockerBridge(t *testing.T) {
 	l.waitFor("compatibility rules to survive a docker network change", func() bool {
 		return strings.Contains(dockerUserChain(l), "Docker compatibility")
 	})
+	t.Logf("--- DOCKER-USER after `docker network create` ---\n%s", dockerUserChain(l))
 	if !settleDocker(l, true) {
 		t.Fatalf("the container lost egress after `docker network create` rewrote "+
 			"DOCKER-USER; sing-tun's reconciliation did not restore its rules:\n%s",
