@@ -19,7 +19,13 @@
 # node:sqlite. Same constraint the release workflow documents.
 FROM node:22-bookworm-slim AS ui
 WORKDIR /src
-COPY dashboard/package.json dashboard/pnpm-lock.yaml dashboard/
+# pnpm-workspace.yaml belongs in the dependency layer with the manifest and the
+# lockfile, not with the sources: pnpm 11 gates dependency build scripts and
+# reads the `allowBuilds` approval from *that* file (not package.json#pnpm).
+# Without it here, `pnpm install` fails with ERR_PNPM_IGNORED_BUILDS over
+# esbuild — a failure the console CI job cannot reproduce, because it has the
+# whole checkout and this stage deliberately does not.
+COPY dashboard/package.json dashboard/pnpm-lock.yaml dashboard/pnpm-workspace.yaml dashboard/
 RUN corepack enable && cd dashboard && corepack pnpm install --frozen-lockfile
 COPY dashboard/ dashboard/
 RUN cd dashboard && corepack pnpm build
