@@ -151,18 +151,23 @@ spec:
           # older posture.json from a Strict install; without this the node
           # stays default-deny under TUN and flakes NotReady. Idempotent when
           # already on the desired posture (and seeds Split if never seeded).
+          #
+          # lifecycle.exec has ONLY `command` (no `args`) — stuffing the script
+          # into a sibling args key left `/bin/sh -c` with an empty program,
+          # which FailedPostStartHook'd every Pod (live ACK 2026-08).
           lifecycle:
             postStart:
               exec:
-                command: ["/bin/sh", "-c"]
-                args:
+                command:
+                  - /bin/sh
+                  - -c
                   - |
                     set +e
                     WANT={{ .Values.posture }}
                     i=0
                     while [ "$i" -lt 30 ]; do
                       if trust-proxy posture get >/dev/null 2>&1; then
-                        trust-proxy posture set "$WANT" -y
+                        trust-proxy posture set "$WANT" -y || true
                         exit 0
                       fi
                       i=$((i + 1))
