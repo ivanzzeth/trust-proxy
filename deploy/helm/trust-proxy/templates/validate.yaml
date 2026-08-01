@@ -12,8 +12,12 @@ after it. Same reason `install` puts all its refusals before its first write.
 {{- fail (printf "mode must be one of tun|manual|system, got %q" .Values.mode) }}
 {{- end }}
 
+{{- if not (has .Values.posture (list "split" "strict")) }}
+{{- fail (printf "posture must be one of split|strict, got %q" .Values.posture) }}
+{{- end }}
+
 {{- if not .Values.managementPorts }}
-{{- fail "managementPorts is empty: with default-deny on a hostNetwork node this cuts kubelet off from the API server and the node leaves the cluster. See docs/kubernetes.md." }}
+{{- fail "managementPorts is empty: with Strict posture on a hostNetwork node this cuts kubelet off from the API server and the node leaves the cluster. See docs/kubernetes.md." }}
 {{- end }}
 
 {{/* Range before ephemeral, or 99999 gets reported as "in the ephemeral range",

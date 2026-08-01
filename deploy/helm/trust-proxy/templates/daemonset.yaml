@@ -147,6 +147,29 @@ spec:
             timeoutSeconds: {{ .Values.livenessProbe.timeoutSeconds }}
             failureThreshold: {{ .Values.livenessProbe.failureThreshold }}
           {{- end }}
+          # Force chart posture after serve is up. hostPath may still hold an
+          # older posture.json from a Strict install; without this the node
+          # stays default-deny under TUN and flakes NotReady. Idempotent when
+          # already on the desired posture (and seeds Split if never seeded).
+          lifecycle:
+            postStart:
+              exec:
+                command: ["/bin/sh", "-c"]
+                args:
+                  - |
+                    set +e
+                    WANT={{ .Values.posture }}
+                    i=0
+                    while [ "$i" -lt 30 ]; do
+                      if trust-proxy posture get >/dev/null 2>&1; then
+                        trust-proxy posture set "$WANT" -y
+                        exit 0
+                      fi
+                      i=$((i + 1))
+                      sleep 2
+                    done
+                    echo "postStart: posture set $WANT timed out waiting for API" >&2
+                    exit 0
           resources: {{- toYaml .Values.resources | nindent 12 }}
       volumes:
         - name: data

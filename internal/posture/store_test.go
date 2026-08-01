@@ -8,14 +8,16 @@ import (
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
-func TestNewStore_DefaultsStrict(t *testing.T) {
+func TestNewStore_DefaultsSplit(t *testing.T) {
+	// Fresh posture.json must come up Split: Strict default-deny bricks k8s
+	// nodes under TUN capture (kubelet/DNS/CNI look like ordinary egress).
 	dir := t.TempDir()
 	s, err := NewStore(filepath.Join(dir, "posture.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Active() != apitypes.PostureStrict {
-		t.Fatalf("active=%q want strict", s.Active())
+	if s.Active() != apitypes.PostureSplit {
+		t.Fatalf("active=%q want split", s.Active())
 	}
 	slot, err := s.Slot(apitypes.PostureSplit)
 	if err != nil {

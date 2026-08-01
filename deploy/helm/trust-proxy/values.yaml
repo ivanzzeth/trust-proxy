@@ -27,9 +27,10 @@ tolerations:
 
 affinity: {}
 
-# THE setting most likely to sever a node from its cluster.
+# THE setting most likely to sever a node from its cluster — under posture=strict.
 #
-# The gateway is default-deny: traffic that is not permitted is refused, and on
+# Chart default is posture=split (L3 gate open). If you switch to strict, the
+# gateway is default-deny: traffic that is not permitted is refused, and on
 # a hostNetwork node that includes the traffic which makes the node a cluster
 # member. These ports bypass the Permit gate entirely (L0, above every other
 # rule), so they keep working no matter what policy says.
@@ -61,6 +62,12 @@ managementPorts:
 # manual: run the proxy inbound only; workloads opt in with HTTPS_PROXY. Safe
 #   first step on a node you are not ready to capture.
 mode: tun
+
+# Security posture. Split is the chart default — Strict is L3 default-deny and
+# will NotReady the node under mode=tun unless every membership port is already
+# on managementPorts. Split skips the L3 permit gate, keeps the L1 floor, and
+# is what you want on a cluster node. Set strict only when you mean to.
+posture: split
 
 api:
   # hostNetwork means this listens on the node's own address. Without a token,

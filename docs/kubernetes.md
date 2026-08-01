@@ -1,7 +1,10 @@
 # Kubernetes：节点级网关（DaemonSet）
 
-给集群里的每个 Pod 一条**默认拒绝 + 全球加速**的出网路径，**应用零改造**——不改 Deployment、不设
-`HTTPS_PROXY`、不注入 sidecar。Pod 照常 `curl`，包在离开节点前就已经过了 Permit 闸、检测引擎和出口选择。
+给集群里的每个 Pod 一条**出网加速**路径（默认 **Split** 位姿：L3 闸开着，L1 底线还在），**应用零改造**——不改 Deployment、不设
+`HTTPS_PROXY`、不注入 sidecar。Pod 照常 `curl`，包在离开节点前就已经过了检测引擎和出口选择。
+
+> ⚠️ Chart / 产品默认是 **Split**。**Strict**（默认拒绝）在 `mode=tun` 下会把 kubelet/DNS/CNI
+> 当普通出网一起掐死 → 节点 `NotReady`。只有你明确知道 managementPorts 盖全了才改 `posture=strict`。
 
 ---
 
@@ -48,11 +51,12 @@ Pod 出网的内核路径是 `veth → CNI bridge → forward 链`。
 
 ---
 
-## ⚠️ 装之前必须先看的一件事：`--management-ports`
+## ⚠️ 装之前必须先看的两件事：`posture` + `--management-ports`
 
-**这是这套部署最可能板砖的地方，没有之一。**
+**Chart 默认 `posture=split`。** Split 跳过 L3 Permit 闸，节点不会因为漏端口就 NotReady。
+只有你改成 `posture=strict` 时，下面这条才变成「最可能板砖」：
 
-网关默认拒绝出网。在 `hostNetwork` 的节点上，「让这个节点还是集群成员」的流量——kubelet 连
+网关在 Strict 下默认拒绝出网。在 `hostNetwork` 的节点上，「让这个节点还是集群成员」的流量——kubelet 连
 API server、CoreDNS 查上游、CNI 的 overlay、etcd 互连——**也只是流量**，一样会被闸拦下。
 被拦下的结果是节点 `NotReady`，而你可能已经没法 SSH 进去了。
 

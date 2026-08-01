@@ -26,12 +26,18 @@ type Store struct {
 	data State
 }
 
-// NewStore opens (or seeds) posture.json. Missing file → active=strict, empty slots.
+// NewStore opens (or seeds) posture.json. Missing file → active=split, empty slots.
+//
+// Split (not Strict) is the product default: Strict is L3 default-deny and will
+// NotReady a Kubernetes node the moment TUN+auto_redirect captures kubelet /
+// DNS / CNI without a perfect managementPorts list. Split skips the L3 permit
+// gate, keeps the L1 floor, and is what bare-metal and chart installs expect
+// unless an operator explicitly switches to Strict.
 func NewStore(path string) (*Store, error) {
 	s := &Store{
 		path: path,
 		data: State{
-			Active: apitypes.PostureStrict,
+			Active: apitypes.PostureSplit,
 			Slots: map[string]apitypes.PolicySlot{
 				apitypes.PostureStrict: {},
 				apitypes.PostureSplit:  {},
@@ -49,7 +55,7 @@ func NewStore(path string) (*Store, error) {
 		return nil, err
 	}
 	if !apitypes.ValidPosture(s.data.Active) {
-		s.data.Active = apitypes.PostureStrict
+		s.data.Active = apitypes.PostureSplit
 	}
 	if s.data.Slots == nil {
 		s.data.Slots = map[string]apitypes.PolicySlot{}

@@ -57,15 +57,29 @@ func (s *Server) handleSetPosture(w http.ResponseWriter, r *http.Request) {
 	if p := s.profApplier.Posture(); apitypes.ValidPosture(p) {
 		from = p
 	}
-	if req.Active == from {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"active":       from,
-			"seeded_split": s.posture.Get().Slots[apitypes.PostureSplit].Seeded,
-		})
-		return
+	same := req.Active == from
+	if same {
+		if req.Active != apitypes.PostureSplit {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"active":       from,
+				"seeded_split": s.posture.Get().Slots[apitypes.PostureSplit].Seeded,
+			})
+			return
+		}
+		cur, _ := s.posture.Slot(apitypes.PostureSplit)
+		if cur.Seeded {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"active":       from,
+				"seeded_split": true,
+			})
+			return
+		}
+		// Already Split but never seeded — fall through and SeedSplit.
 	}
 
 	// 1) Snapshot live → leaving slot (preserve Seeded flag on split).
+	// When same==true we are reseeding Split in place; still snapshot so a
+	// failed apply can roll back to the live policy we had a moment ago.
 	leaving := s.snapshotLiveSlot()
 	if from == apitypes.PostureSplit {
 		prev, _ := s.posture.Slot(apitypes.PostureSplit)

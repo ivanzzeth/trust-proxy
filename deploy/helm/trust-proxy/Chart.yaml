@@ -1,6 +1,6 @@
 apiVersion: v2
 name: trust-proxy
-description: Node-level egress gateway for Kubernetes — default-deny Permit gate, exfiltration detection, and global acceleration for every Pod on the node.
+description: Node-level egress gateway for Kubernetes — Split posture by default (Strict opt-in), exfiltration detection, and global acceleration for every Pod on the node.
 type: application
 # version is the chart's; appVersion tracks the image tag in values.yaml. They
 # move independently: a chart fix should not claim a new gateway release.
