@@ -47,17 +47,21 @@ var validStrategy = map[string]bool{"": true, "prefer_ipv4": true, "prefer_ipv6"
 //   - `local` is kept as a server but is not final: something to fall back to by
 //     hand on a network where 1.1.1.1 is unreachable.
 //
-// Bootstrapping is fine with no nodes yet: `detour: proxy` resolves to the proxy
-// group, which is a selector over direct until an exit exists, and the server is
-// an IP so there is no name to look up first.
+// Bootstrapping: DoH via proxy is kept for once exits exist (anti-leak /
+// anti-poison). Fresh installs MUST NOT use it as final — with zero nodes
+// proxy is selector[direct], so DoH to 1.1.1.1 is a direct Cloudflare dial
+// that CN networks commonly blackhole, hanging every hijack-dns lookup and
+// blocking the subscription fetch that would populate the proxy group.
+// gateway.healBootstrapDNS also enforces this on rebuild when no exits exist.
 func Defaults() apitypes.DNSConfig {
 	return apitypes.DNSConfig{
 		Servers: []apitypes.DNSServer{
 			{Tag: "local", Type: "local"},
+			{Tag: "ali", Type: "udp", Server: "223.5.5.5"},
 			{Tag: "doh", Type: "https", Server: "1.1.1.1", Detour: "proxy"},
 		},
 		Rules: []apitypes.DNSRule{},
-		Final: "doh",
+		Final: "ali",
 	}
 }
 

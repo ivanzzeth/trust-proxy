@@ -43,6 +43,11 @@ func applyInvariants(cfg map[string]json.RawMessage, mode string, loopback map[s
 	if err := injectDirectDNS(cfg, dns, dnsSafeTags); err != nil {
 		return fmt.Errorf("invariant dns-follows-route: %w", err)
 	}
+	// After dns-follows-route (may create dns-direct): no-exit bootstrap must
+	// not leave final on DoH→proxy→direct→1.1.1.1 (dead in CN).
+	if err := healBootstrapDNS(cfg, dns); err != nil {
+		return fmt.Errorf("invariant dns-bootstrap: %w", err)
+	}
 	if err := assertDirectResolverSplit(cfg, dns); err != nil {
 		return fmt.Errorf("invariant dns-follows-route-assert: %w", err)
 	}

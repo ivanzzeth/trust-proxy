@@ -9,31 +9,40 @@ import (
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
-// The default must not be a resolver that leaks.
+// The default must bootstrap without exits AND keep a proxied resolver ready.
 //
-// It was `local` alone, which is the one shape this package's own doc comment
-// argues against: every domain you then proxy is still queried in the clear
-// against whatever the OS points at, a censored domain answers with a poisoned
-// address, and injectDirectDNS — the whole "DNS follows route" mechanism — never
-// activates, because it only splits away from a resolver that sits behind the
-// proxy. Every fresh install ran that way and nothing said so.
-func TestDefaultResolvesThroughTheExit(t *testing.T) {
+// Final used to be DoH→proxy (1.1.1.1). With zero applied nodes proxy is
+// selector[direct], so that DoH is a direct Cloudflare dial — commonly dead in
+// CN, hanging every hijack-dns lookup and blocking subscription fetch. Final is
+// therefore a domestic UDP resolver; DoH-via-proxy stays as a declared server
+// so injectDirectDNS / operators can use it once exits exist.
+func TestDefaultBootstrapsWithoutExits(t *testing.T) {
 	d := Defaults()
 
-	byTag := map[string]string{}
+	byTag := map[string]apitypes.DNSServer{}
 	for _, s := range d.Servers {
-		byTag[s.Tag] = s.Detour
+		byTag[s.Tag] = s
 	}
 	if d.Final == "" {
 		t.Fatal("no final resolver")
 	}
-	if byTag[d.Final] != "proxy" {
-		t.Fatalf("final resolver %q has detour %q — a fresh install would query every domain in the clear",
-			d.Final, byTag[d.Final])
+	fin, ok := byTag[d.Final]
+	if !ok {
+		t.Fatalf("final %q is not a declared server", d.Final)
 	}
-	// A rule naming a rule set would dangle on a fresh install (there are none to
-	// name), and the box refuses to start on a dangling reference. injectDirectDNS
-	// mirrors the real route table instead, so none is needed here.
+	if fin.Detour == "proxy" {
+		t.Fatalf("final resolver %q has detour=proxy — CN bootstrap with no exits blackholes DNS", d.Final)
+	}
+	var hasProxied bool
+	for _, s := range d.Servers {
+		if s.Detour == "proxy" {
+			hasProxied = true
+			break
+		}
+	}
+	if !hasProxied {
+		t.Fatal("defaults must still declare a detour=proxy resolver for once exits exist")
+	}
 	for _, r := range d.Rules {
 		if len(r.RuleSet) > 0 {
 			t.Fatalf("the default names rule set %v, which a fresh install does not have", r.RuleSet)
