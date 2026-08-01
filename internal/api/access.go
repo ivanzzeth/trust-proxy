@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 )
@@ -233,7 +234,17 @@ func accessLookup() (*http.ServeMux, map[string]access) {
 // quietly opening up for everybody.
 func levelOf(method, path string) access {
 	mux, table := accessLookup()
-	probe := httptest.NewRequest(method, path, nil)
+	// path often comes from r.URL.Path, which is decoded. A proxy named
+	// "香港 12" therefore arrives as "/api/proxies/香港 12/delay" with a
+	// literal space. httptest.NewRequest panics on that ("invalid control
+	// character in URL"), which tore the TCP connection down with no HTTP
+	// status — the Proxies page's "test all" then painted every spaced name
+	// as timeout even when the node itself was fine. Escape before probing.
+	escaped := (&url.URL{Path: path}).EscapedPath()
+	if escaped == "" {
+		escaped = "/"
+	}
+	probe := httptest.NewRequest(method, escaped, nil)
 	_, pattern := mux.Handler(probe)
 	if lvl, ok := table[pattern]; ok {
 		return lvl

@@ -84,6 +84,9 @@ func isSelfService(r *http.Request) (id string, ok bool) {
 // forwarded path *and* honouring a public level there is what turned this into an
 // anonymous, credential-carrying relay onto every registered probe.
 func requirement(r *http.Request) access {
+	// EscapedPath keeps %20 etc.; decoded Path with a space panics levelOf's
+	// httptest.NewRequest (see levelOf). nodeProxyTarget still parses the
+	// decoded form — levelOf re-escapes whatever it gets.
 	if target, ok := nodeProxyTarget(r.URL.Path); ok {
 		need := levelOf(r.Method, target)
 		if need < accessUser {
@@ -91,7 +94,7 @@ func requirement(r *http.Request) access {
 		}
 		return need
 	}
-	return levelOf(r.Method, r.URL.Path)
+	return levelOf(r.Method, r.URL.EscapedPath())
 }
 
 // path0 strips the /api/nodes/{id} reverse-proxy prefix. Used by the checks that

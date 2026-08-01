@@ -219,6 +219,13 @@ func buildTUNInbound(tun apitypes.TUNConfig) map[string]any {
 	if len(tun.IncludePackage) > 0 {
 		tunIn["include_package"] = tun.IncludePackage
 	}
+	// Carve private ranges out of the TUN catch-alls on desktop OSes. See
+	// tunPrivateRouteExcludes — without this, a missing on-link LAN route
+	// sucks intranet traffic into the tunnel where a wedged data plane takes
+	// the whole LAN with it.
+	if excl := tunPrivateRouteExcludes(); len(excl) > 0 {
+		tunIn["route_exclude_address"] = excl
+	}
 	return tunIn
 }
 

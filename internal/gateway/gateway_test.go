@@ -535,6 +535,7 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 	if !ok || len(ep) != 1 || ep[0] != "com.example.app" {
 		t.Fatalf("exclude_package=%v want [com.example.app]", tunIn["exclude_package"])
 	}
+	assertTUNPrivateRouteExclude(t, tunIn)
 	merged2, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, quarantine.List{}, directlist.Rules{}, customrules.Rules{}, proxygroups.Config{}, ModeTUN, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.InboundListen{}, apitypes.TUNConfig{Stack: "gvisor", StrictRoute: true}, nil, nil, "proxy", "", "s", "", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -548,6 +549,36 @@ func TestApplyMode_TUNOptions(t *testing.T) {
 	}
 	if _, present := ins2[0]["auto_redirect"]; present {
 		t.Fatal("auto_redirect must be omitted when AutoRedirect is false")
+	}
+	assertTUNPrivateRouteExclude(t, ins2[0])
+}
+
+// assertTUNPrivateRouteExclude locks the desktop-vs-Linux split: carving
+// privateCIDRs out of the TUN catch-alls is what keeps a flapping on-link LAN
+// route from sucking intranet traffic into a wedged tunnel, but doing the same
+// on Linux would hide Docker/CNI bridge egress from auto_redirect.
+func assertTUNPrivateRouteExclude(t *testing.T, tunIn map[string]any) {
+	t.Helper()
+	raw, has := tunIn["route_exclude_address"]
+	if runtime.GOOS == "linux" {
+		if has {
+			t.Fatalf("linux must not set route_exclude_address (got %v): private ranges are exactly what auto_redirect has to capture", raw)
+		}
+		return
+	}
+	list, ok := raw.([]any)
+	if !ok || len(list) == 0 {
+		t.Fatalf("desktop TUN must exclude privateCIDRs via route_exclude_address, got %v", raw)
+	}
+	got := map[string]bool{}
+	for _, v := range list {
+		s, _ := v.(string)
+		got[s] = true
+	}
+	for _, want := range PrivateCIDRs() {
+		if !got[want] {
+			t.Fatalf("route_exclude_address missing %s (got %v)", want, list)
+		}
 	}
 }
 

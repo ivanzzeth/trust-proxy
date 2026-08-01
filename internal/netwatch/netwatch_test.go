@@ -154,3 +154,37 @@ func TestIsLocalOnlyAcceptsRealSubnets(t *testing.T) {
 		t.Fatal("CGNAT space is inside the LAN bypass but is not on-link here")
 	}
 }
+
+// A stale/empty snapshot must not permanently brand the real LAN as
+// TunnelCrack. Live interface prefixes are the tie-breaker.
+func TestIsLocalRecoversFromStaleEmptySnapshot(t *testing.T) {
+	live, err := localPrefixes()
+	if err != nil || len(live) == 0 {
+		t.Skip("no local prefixes to prove the refresh against")
+	}
+	var onLink netip.Addr
+	for _, s := range live {
+		p, err := netip.ParsePrefix(s)
+		if err != nil || !p.Addr().Is4() || p.Addr().IsLoopback() {
+			continue
+		}
+		// Pick an address inside the prefix that isn't the interface itself,
+		// so we're testing Contains rather than "my own IP".
+		onLink = p.Addr()
+		break
+	}
+	if !onLink.IsValid() {
+		t.Skip("no IPv4 on-link prefix")
+	}
+
+	w := New(nil)
+	w.mu.Lock()
+	// Empty LocalNets with a non-zero Taken — the shape that used to make
+	// Snapshot() skip a fresh observe and return "not local" forever.
+	w.last = Snapshot{Taken: time.Now(), LocalNets: nil}
+	w.mu.Unlock()
+
+	if !w.IsLocal(onLink) {
+		t.Fatalf("IsLocal(%s) = false with a stale empty snapshot; live nets are %v", onLink, live)
+	}
+}

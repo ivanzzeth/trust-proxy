@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 	"testing"
 
 	"github.com/ivanzzeth/trust-proxy/internal/authn"
@@ -106,6 +107,47 @@ func TestPublicMutationsAreOriginChecked(t *testing.T) {
 // meaning not even a detection event. `name` may be `direct`. That is an
 // arbitrary-destination request with an attacker-chosen path, plus a port-scanning
 // oracle in the timing, handed to exactly the caller the gate exists to contain.
+// Proxy names from airport subscriptions almost always contain spaces
+// ("香港 12", "35.77 GB | 300 GB"). The access probe used to feed the decoded
+// path into httptest.NewRequest, which panics on a literal space — so every
+// latency test for a real node closed the TCP socket with no HTTP response,
+// and the UI reported "timeout".
+func TestLevelOfSurvivesSpacesInProxyNames(t *testing.T) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("levelOf panicked on a spaced proxy name: %v", rec)
+		}
+	}()
+	for _, path := range []string{
+		"/api/proxies/香港 12/delay",
+		"/api/proxies/35.77 GB | 300 GB/delay",
+		"/api/proxies/foo%20bar/delay",
+	} {
+		if got := levelOf(http.MethodGet, path); got != accessAdmin {
+			t.Fatalf("levelOf(%q) = %v, want accessAdmin (delay is admin-only)", path, got)
+		}
+	}
+}
+
+// End-to-end: withAuth must answer a spaced delay URL with an HTTP status, not
+// an empty TCP close. Clash itself may be nil — 503 is fine; panic is not.
+func TestProxyDelayWithSpaceInNameDoesNotDropTheConnection(t *testing.T) {
+	s, us, a, _ := newAuthServer(t)
+	admin, _ := us.Create("admin", "admin-password-long", users.RoleAdmin)
+	tok, _, _ := a.Issue(admin)
+
+	r := req("GET", "/api/proxies/"+url.PathEscape("香港 12")+"/delay?timeout=1000&url=https://www.gstatic.com/generate_204")
+	r.AddCookie(&http.Cookie{Name: authn.CookieName, Value: tok})
+	rec := serve(s, r)
+	if rec.Code == 0 {
+		t.Fatal("handler produced no HTTP status — the old panic path closed the socket raw")
+	}
+	// No clash client wired in this harness → 503; what matters is we got a response.
+	if rec.Code != http.StatusServiceUnavailable && rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body %q, want 503 (no clash) or 200", rec.Code, rec.Body.String())
+	}
+}
+
 func TestProxyDelayIsNotReachableByAClient(t *testing.T) {
 	s, us, a, _ := newAuthServer(t)
 	_, _ = us.Create("admin", "admin-password-long", users.RoleAdmin)

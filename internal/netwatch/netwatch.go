@@ -249,7 +249,31 @@ func (w *Watcher) IsLocal(addr netip.Addr) bool {
 	if !addr.IsValid() {
 		return false
 	}
-	for _, s := range w.Snapshot().LocalNets {
+	if prefixContains(w.Snapshot().LocalNets, addr) {
+		return true
+	}
+	// Snapshot.LocalNets can lag a flap or the first polls after tun comes up.
+	// A false negative here fires LocalNet alerts on the operator's own LAN —
+	// seen live when 192.168.31.72 was on-link and still reported as
+	// TunnelCrack. Re-check the interfaces before committing to "not local".
+	live, err := localPrefixes()
+	if err != nil {
+		return false
+	}
+	if !prefixContains(live, addr) {
+		return false
+	}
+	w.mu.Lock()
+	if !w.last.Taken.IsZero() {
+		w.last.LocalNets = live
+	}
+	w.mu.Unlock()
+	return true
+}
+
+// prefixContains reports whether addr sits in any of the prefix strings.
+func prefixContains(nets []string, addr netip.Addr) bool {
+	for _, s := range nets {
 		if p, err := netip.ParsePrefix(s); err == nil && p.Contains(addr) {
 			return true
 		}

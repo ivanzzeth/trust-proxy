@@ -103,17 +103,26 @@ export default function Proxies() {
 
   const testGroup = async (members: string[]) => {
     setTesting(members.join());
-    const results = await Promise.all(
-      members.map(async (m) => {
-        try {
-          const r = await api.delay(m);
-          return [m, r.error ? 0 : r.delay] as const;
-        } catch {
-          return [m, 0] as const;
-        }
-      }),
-    );
-    setDelays((d) => ({ ...d, ...Object.fromEntries(results) }));
+    // Cap concurrency: firing every member at once (often 80+) both wedges the
+    // Clash urltest path and used to panic our access probe on spaced names —
+    // every failure landed as "timeout" in the UI.
+    const concurrency = 5;
+    const results: [string, number][] = [];
+    for (let i = 0; i < members.length; i += concurrency) {
+      const batch = members.slice(i, i + concurrency);
+      const part = await Promise.all(
+        batch.map(async (m) => {
+          try {
+            const r = await api.delay(m);
+            return [m, r.error ? 0 : r.delay] as const;
+          } catch {
+            return [m, 0] as const;
+          }
+        }),
+      );
+      results.push(...part);
+      setDelays((d) => ({ ...d, ...Object.fromEntries(part) }));
+    }
     setTesting(null);
   };
 
