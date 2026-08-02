@@ -69,6 +69,13 @@ mode: tun
 # is what you want on a cluster node. Set strict only when you mean to.
 posture: split
 
+# Detection disposal (auto-drop + quarantine). Default OFF on the chart: a
+# cluster node runs Specula → object storage and other legit large uploads that
+# trip the exfil heuristic when disposal is on. Alerts still fire; only the
+# auto-ban is suppressed. Set true only when you mean the node to self-defend
+# that way (and have Permit/geosite warm enough that domestic OSS is trusted).
+autoBlock: false
+
 api:
   # hostNetwork means this listens on the node's own address. Without a token,
   # reaching port 21585 is enough to rewrite that node's egress policy.

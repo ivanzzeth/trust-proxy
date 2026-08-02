@@ -107,6 +107,7 @@ spec:
               set -- \
                 --data=/var/lib/trust-proxy \
                 --mode={{ .Values.mode }} \
+                --auto-block={{ .Values.autoBlock }} \
                 --api-addr={{ .Values.api.addr }} \
                 --management-ports={{ join "," .Values.managementPorts }}{{- range .Values.extraArgs }} \
                 {{ . }}{{- end }}
