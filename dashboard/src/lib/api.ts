@@ -246,6 +246,32 @@ export interface ProxyScores {
   formula: string; // rendered with the weights in force
   enabled: boolean;
 }
+
+export type NodeMemberStatus = 'live' | 'disabled' | 'junk';
+
+export interface NodeMember {
+  tag: string;
+  protocol?: string;
+  server?: string;
+  port?: number;
+  status: NodeMemberStatus;
+  reason?: string;
+}
+
+export interface JunkNode {
+  tag: string;
+  reason: string;
+  server?: string;
+  port?: number;
+  protocol?: string;
+}
+
+export interface NodeOverrides {
+  disabled: string[];
+  junk: JunkNode[];
+  nodes: NodeMember[];
+}
+
 export interface ProxyGroupsConfig {
   auto_country: boolean;
   exclude_countries: string[]; // ISO2 regions kept out of the shared Overseas group
@@ -873,6 +899,10 @@ export const api = {
 
   proxyScores: () => get<ProxyScores>('/proxy-scores'),
   resetProxyScores: () => post<{ ok: boolean }>('/proxy-scores/reset'),
+
+  nodeOverrides: () => get<NodeOverrides>('/node-overrides'),
+  setNodeDisabled: (tag: string, disabled: boolean) =>
+    post<NodeOverrides>(disabled ? '/nodes/disable' : '/nodes/enable', { tag }),
 
   proxies: () => get<{ proxies: Record<string, ProxyNode> }>('/proxies'),
   selectProxy: (group: string, name: string) => put<void>('/proxies/select', { group, name }),

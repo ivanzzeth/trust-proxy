@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/proxyscore"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -19,6 +20,7 @@ type fakeScorer struct {
 func (f *fakeScorer) Scores(tags []string) []proxyscore.View { return f.views }
 func (f *fakeScorer) ScoringConfig() proxyscore.Config       { return f.cfg }
 func (f *fakeScorer) ResetScores()                           { f.resetted = true }
+func (f *fakeScorer) NoteProbe(string, bool, time.Duration)  {}
 
 func getScores(t *testing.T, s *Server) apitypes.ProxyScores {
 	t.Helper()

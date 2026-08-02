@@ -564,6 +564,71 @@ func TestBlackholeCanBeDisabled(t *testing.T) {
 	}
 }
 
+// A successful generate_204 probe fetched bytes through the member — conclusive
+// counter-evidence for a blackhole. Without this, demoted members stay at
+// score 0 forever because they never receive real traffic to clear it.
+func TestNoteProbeClearsBlackhole(t *testing.T) {
+	s := newTestStore(t, Config{BlackholeStreak: 2, MinSamples: 1, BreakerFailures: 2, BreakerDelaySeconds: 60})
+	s.RecordTransfer("n", Transfer{Upload: 2048, Duration: time.Second, Handshook: true})
+	s.RecordTransfer("n", Transfer{Upload: 2048, Duration: time.Second, Handshook: true})
+	if got, _ := s.Score("n"); got != 0 {
+		t.Fatalf("score = %v before probe, want 0", got)
+	}
+	if !s.Snapshot(nil)[0].Blackhole {
+		t.Fatal("expected blackhole before probe")
+	}
+
+	s.NoteProbe("anytls/n", true, 200*time.Millisecond)
+	v := s.Snapshot(nil)[0]
+	if v.Blackhole || v.BlackholeStreak != 0 {
+		t.Fatalf("probe should clear blackhole, got bh=%v streak=%d", v.Blackhole, v.BlackholeStreak)
+	}
+	if got, _ := s.Score("n"); got == 0 {
+		t.Fatalf("score still 0 after probe recovery")
+	}
+	if v.Reliability < 50 {
+		t.Fatalf("reliability = %v, want soft-heal to ≥50", v.Reliability)
+	}
+
+	s.NoteProbe("n", false, 0)
+	if s.Snapshot(nil)[0].Blackhole {
+		t.Fatal("failed probe must not re-blackhole")
+	}
+}
+
+// After the open delay, the breaker stays Open in failsafe until TryAcquirePermit
+// runs. NoteProbe is that trial path for members that are not carrying traffic.
+func TestNoteProbeClosesBreakerAfterDelay(t *testing.T) {
+	s := New(filepath.Join(t.TempDir(), "s.json"), Config{
+		BreakerFailures: 2, BreakerSuccesses: 2, BreakerDelaySeconds: 1,
+	})
+	observeN(s, "n", 2, false, 0)
+	if v := s.Snapshot(nil)[0]; v.Breaker != "open" || v.BreakerRemaining <= 0 || v.Preferred {
+		t.Fatalf("want open+countdown+!preferred, got %+v", v)
+	}
+	// During the delay a probe must not close it (no permit).
+	s.NoteProbe("n", true, 50*time.Millisecond)
+	if v := s.Snapshot(nil)[0]; v.Breaker != "open" || v.Preferred {
+		t.Fatalf("probe during delay should leave open+!preferred, got %+v", v)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		v := s.Snapshot(nil)[0]
+		if v.Breaker == "half-open" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after delay want half-open (awaiting trial), got %+v", v)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	s.NoteProbe("n", true, 50*time.Millisecond)
+	s.NoteProbe("n", true, 50*time.Millisecond)
+	if v := s.Snapshot(nil)[0]; v.Breaker != "closed" {
+		t.Fatalf("two probes after delay should close, got %+v", v)
+	}
+}
+
 // Mid-stream stall kill must demote immediately (breaker open) so the client's
 // retry is not stuck on the same member — scoring alone only steers new dials.
 func TestRecordStreamStallDemotes(t *testing.T) {

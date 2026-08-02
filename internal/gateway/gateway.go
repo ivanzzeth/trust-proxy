@@ -11,6 +11,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -103,8 +105,11 @@ type Manager struct {
 	// gwExits are registered gateways used as egress: from the data plane's point
 	// of view just more outbound nodes, kept separate from m.nodes so applying a
 	// subscription cannot drop them.
-	gwExits   []apitypes.Node
-	mgmtPorts []int
+	gwExits []apitypes.Node
+	// disabledTags are outbound tags the operator turned off (nodeoverride).
+	// Applied in rebuild via FilterEligibleNodes; survives subscription refresh.
+	disabledTags map[string]bool
+	mgmtPorts    []int
 	final     string // catch-all egress when ACL gate is open (default direct)
 	posture   string // strict|split — Split skips L3 permit gate (default-allow)
 	// clientMode means this instance does not enforce egress policy itself: it
@@ -620,6 +625,45 @@ func (m *Manager) SetInitialProxyGroups(pg proxygroups.Config) {
 	m.applyScoring(pg)
 }
 
+// SetInitialDisabledNodes sets tags omitted from Auto before the first Start().
+func (m *Manager) SetInitialDisabledNodes(tags []string) {
+	m.mu.Lock()
+	m.disabledTags = disabledSet(tags)
+	m.mu.Unlock()
+}
+
+// SetDisabledNodes replaces the disabled-tag set and hot-reloads (reverts on failure).
+func (m *Manager) SetDisabledNodes(tags []string) error {
+	return m.setAndRebuild("node overrides", func() func() {
+		prev := m.disabledTags
+		m.disabledTags = disabledSet(tags)
+		return func() { m.disabledTags = prev }
+	})
+}
+
+// DisabledNodes returns the currently disabled outbound tags.
+func (m *Manager) DisabledNodes() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]string, 0, len(m.disabledTags))
+	for t := range m.disabledTags {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func disabledSet(tags []string) map[string]bool {
+	out := make(map[string]bool, len(tags))
+	for _, t := range tags {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			out[t] = true
+		}
+	}
+	return out
+}
+
 // SetProxyGroups sets the proxy-group config and hot-reloads (reverts on failure).
 func (m *Manager) SetProxyGroups(pg proxygroups.Config) error {
 	return m.setAndRebuild("proxy groups", func() func() {
@@ -878,6 +922,7 @@ func (m *Manager) rebuild() error {
 	m.mu.Lock()
 	nodes, wl, bl, quar, dl, cr, pg, mode, sets, dns, inbound, bind, tun, eps, mgmt, final, posture :=
 		m.nodes, m.wl, m.bl, m.quar, m.dl, m.cr, m.pg, m.mode, m.rulesets, m.dns, m.inbound, m.bind, m.tun, m.endpoints, m.mgmtPorts, m.final, m.posture
+	disabled := m.disabledTags
 	if m.clientMode {
 		// Enforcement lives at the gateway in client mode.
 		posture = apitypes.PostureSplit
@@ -891,6 +936,9 @@ func (m *Manager) rebuild() error {
 		nodes = merged
 	}
 	m.mu.Unlock()
+
+	// Junk info lines and operator-disabled tags never enter Auto/urltest.
+	nodes = FilterEligibleNodes(nodes, disabled)
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {

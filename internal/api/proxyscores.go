@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/proxyscore"
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
@@ -13,6 +14,8 @@ type ProxyScorer interface {
 	Scores(tags []string) []proxyscore.View
 	ScoringConfig() proxyscore.Config
 	ResetScores()
+	// NoteProbe heals blackhole / breaker state after a successful delay probe.
+	NoteProbe(tag string, success bool, latency time.Duration)
 }
 
 func scoreWire(v proxyscore.View) apitypes.ProxyScore {

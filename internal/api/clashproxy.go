@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 // These proxy the standard Clash API through our backend so the browser stays
@@ -64,12 +65,24 @@ func (s *Server) handleProxyDelay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	timeout, _ := strconv.Atoi(r.URL.Query().Get("timeout"))
-	b, err := s.clash.Delay(r.PathValue("name"), r.URL.Query().Get("url"), timeout)
+	name := r.PathValue("name")
+	b, err := s.clash.Delay(name, r.URL.Query().Get("url"), timeout)
 	if err != nil {
 		// A failed latency test (timeout/unreachable) is a normal result, not a
 		// server error — surface it so the UI can show "timeout".
 		writeJSON(w, http.StatusOK, map[string]any{"delay": 0, "error": err.Error()})
 		return
+	}
+	// A successful delay fetched bytes through the member — same recovery signal
+	// as the group's periodic urltest. Without this, admin "测速" would prove a
+	// node alive while scoring kept it blackholed forever.
+	if s.scorer != nil {
+		var parsed struct {
+			Delay int `json:"delay"`
+		}
+		if json.Unmarshal(b, &parsed) == nil && parsed.Delay > 0 {
+			s.scorer.NoteProbe(name, true, time.Duration(parsed.Delay)*time.Millisecond)
+		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(b)

@@ -409,6 +409,56 @@ func (s *Store) RecordTransfer(tag string, t Transfer) {
 	}
 }
 
+// NoteProbe records a successful urltest / Clash delay probe. The probe fetched
+// a generate_204 (or equivalent) *through* the member, so it is conclusive
+// counter-evidence for a blackhole verdict — and the recovery path that does
+// not require the demoted member to already be carrying user traffic.
+//
+// Failures are ignored: latency probes are not user traffic and must not reopen
+// breakers on their own. Dial Observe(success) must also NOT clear blackholes
+// (blackholes complete their handshake, so dials "succeed").
+func (s *Store) NoteProbe(tag string, success bool, latency time.Duration) {
+	if !success {
+		return
+	}
+	tag = normalizeTag(tag)
+	if !scorable(tag) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg.Disabled {
+		return
+	}
+	st := s.statLocked(tag)
+	wasBlackhole := s.blackholedLocked(st)
+	st.BlackholeStreak = 0
+	st.BlackholedAt = time.Time{}
+	if latency > 0 {
+		st.LatencyMS = pushInt(st.LatencyMS, int(latency.Milliseconds()))
+	}
+	// Soft-heal reliability after a blackhole: confirmation zeroed it, and with
+	// streak cleared scoreLocked would otherwise still land near the bottom
+	// until many real successes accumulate — leaving a recovered node unused.
+	if wasBlackhole && st.Reliability < 50 {
+		st.Reliability = 50
+		st.FailStreak = 0
+	}
+	st.LastOK = true
+	if wasBlackhole {
+		st.LastErr = ""
+	}
+	st.UpdatedAt = time.Now()
+	s.dirty = true
+	// Only record a success when a permit was acquired. During the open delay
+	// TryAcquirePermit is false and an orphan RecordSuccess is a no-op for
+	// state — but after the delay it is what moves Open → HalfOpen → Closed.
+	// Without probes calling this, a demoted node never gets a trial.
+	if st.breaker.TryAcquirePermit() {
+		st.breaker.RecordSuccess()
+	}
+}
+
 // RecordStreamStall demotes a member after the gateway killed a live connection
 // that uploaded a large payload and then went silent on download. Unlike
 // blackhole confirmation (finalize-only, download==0), this fires mid-stream so
@@ -456,8 +506,8 @@ func forceBreakerOpen(st *Stats) {
 // preferred is false only while an open breaker is inside its delay. Once the
 // delay elapses the node becomes preferable again *without* the read path
 // touching the breaker: acquiring a trial permit here would burn the half-open
-// budget on members that are merely being ranked, not dialed. The transition
-// happens in Observe, on the next real dial.
+// budget on members that are merely being ranked, not dialed. Closing the
+// breaker (Open→HalfOpen→Closed) happens in Observe / NoteProbe.
 func (s *Store) Score(tag string) (float64, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -482,10 +532,22 @@ func breakerState(st *Stats) (string, int) {
 	if st.breaker == nil {
 		return "closed", 0
 	}
-	rem := int(st.breaker.RemainingDelay() / time.Second)
 	switch {
 	case st.breaker.IsOpen():
-		return "open", rem
+		// failsafe-go stays in Open until the next TryAcquirePermit after the
+		// delay (Observe/NoteProbe). RemainingDelay==0 with IsOpen is "awaiting
+		// trial", not a permanent ban — surface it as half-open so the UI
+		// matches reality. Use the duration (not truncated seconds) so a 400ms
+		// remainder still reads as open, not half-open.
+		remDur := st.breaker.RemainingDelay()
+		if remDur > 0 {
+			rem := int((remDur + time.Second - 1) / time.Second) // ceil
+			if rem < 1 {
+				rem = 1
+			}
+			return "open", rem
+		}
+		return "half-open", 0
 	case st.breaker.IsHalfOpen():
 		return "half-open", 0
 	default:

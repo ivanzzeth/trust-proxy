@@ -507,6 +507,32 @@ func (c *Client) ResetProxyScores() error {
 	return c.do(http.MethodPost, "/api/proxy-scores/reset", nil, nil)
 }
 
+// NodeOverrides returns disabled tags, auto-detected junk, and the full
+// applied-node status table.
+func (c *Client) NodeOverrides() (apitypes.NodeOverrides, error) {
+	var out apitypes.NodeOverrides
+	err := c.do(http.MethodGet, "/api/node-overrides", nil, &out)
+	return out, err
+}
+
+// SetDisabledNodes replaces the whole disabled-tag list.
+func (c *Client) SetDisabledNodes(tags []string) (apitypes.NodeOverrides, error) {
+	var out apitypes.NodeOverrides
+	err := c.do(http.MethodPut, "/api/node-overrides", apitypes.NodeOverridesPatch{Disabled: &tags}, &out)
+	return out, err
+}
+
+// SetNodeDisabled enables or disables one outbound tag.
+func (c *Client) SetNodeDisabled(tag string, disabled bool) (apitypes.NodeOverrides, error) {
+	path := "/api/nodes/enable"
+	if disabled {
+		path = "/api/nodes/disable"
+	}
+	var out apitypes.NodeOverrides
+	err := c.do(http.MethodPost, path, apitypes.NodeTagBody{Tag: tag}, &out)
+	return out, err
+}
+
 // Endpoints lists WireGuard/Tailscale exits.
 func (c *Client) Endpoints() ([]apitypes.Endpoint, error) {
 	var out []apitypes.Endpoint

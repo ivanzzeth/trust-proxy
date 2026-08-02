@@ -546,6 +546,53 @@ type ProxyScores struct {
 	Enabled bool         `json:"enabled"`
 }
 
+// Node member status values for /api/node-overrides.
+const (
+	NodeStatusLive     = "live"
+	NodeStatusDisabled = "disabled"
+	NodeStatusJunk     = "junk"
+)
+
+// JunkNode is one airport info/redirect line filtered out of Auto by fingerprint.
+type JunkNode struct {
+	Tag      string `json:"tag"`
+	Reason   string `json:"reason"`
+	Server   string `json:"server,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// NodeMember is one applied subscription/exit node with its inject status.
+type NodeMember struct {
+	Tag      string `json:"tag"`
+	Protocol string `json:"protocol,omitempty"`
+	Server   string `json:"server,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Status   string `json:"status"`           // live|disabled|junk
+	Reason   string `json:"reason,omitempty"` // junk fingerprint, when status=junk
+}
+
+// NodeOverrides is the /api/node-overrides response: operator disables, auto-
+// detected junk, and the full applied-node table for CLI/UI.
+type NodeOverrides struct {
+	Disabled []string     `json:"disabled"`
+	Junk     []JunkNode   `json:"junk"`
+	Nodes    []NodeMember `json:"nodes"`
+}
+
+// NodeOverridesPatch is PUT/PATCH /api/node-overrides. Set Disabled for a full
+// replace; or Disable/Enable for a single tag. Exactly one form should be set.
+type NodeOverridesPatch struct {
+	Disabled *[]string `json:"disabled,omitempty"`
+	Disable  string    `json:"disable,omitempty"`
+	Enable   string    `json:"enable,omitempty"`
+}
+
+// NodeTagBody is POST /api/nodes/disable|enable.
+type NodeTagBody struct {
+	Tag string `json:"tag"`
+}
+
 // Blacklist is the egress deny-list snapshot: destinations that are REJECTED
 // even if an allow rule (whitelist / allow rule-set) would otherwise permit
 // them. Domains match domain_suffix, Keywords match domain_keyword, Regexes

@@ -30,6 +30,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/history"
 	"github.com/ivanzzeth/trust-proxy/internal/inboundcfg"
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
+	"github.com/ivanzzeth/trust-proxy/internal/nodeoverride"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/paths"
 	"github.com/ivanzzeth/trust-proxy/internal/posture"
@@ -223,10 +224,12 @@ type Options struct {
 	RetApplier   RetentionApplier
 	TUN          *tuncfg.Store
 	TUNApplier   TUNApplier
-	Endpoints    *endpoints.Store
-	EPApplier    EndpointsApplier
-	History      *history.Store
-	Detections   *detect.Store // durable alert findings (JSONL)
+	Endpoints     *endpoints.Store
+	EPApplier     EndpointsApplier
+	NodeOverrides *nodeoverride.Store
+	NOApplier     NodeOverridesApplier
+	History       *history.Store
+	Detections    *detect.Store // durable alert findings (JSONL)
 	Nodes        *nodes.Store  // brain: registry of remote gateways (reverse-proxied)
 	GWApplier    GatewayExitApplier
 	CMApplier    ClientModeApplier
@@ -286,6 +289,8 @@ type Server struct {
 	tunApplier       TUNApplier
 	eps              *endpoints.Store
 	epApplier        EndpointsApplier
+	nodeOverrides    *nodeoverride.Store
+	noApplier        NodeOverridesApplier
 	history          *history.Store
 	detections       *detect.Store
 	nodes            *nodes.Store
@@ -312,7 +317,7 @@ type Server struct {
 
 // NewServer builds the API server.
 func NewServer(o Options) *Server {
-	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, scorer: o.Scorer, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, inbListen: o.InbListen, inbListenApplier: o.InbListenApp, retention: o.Retention, retApplier: o.RetApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, cmApplier: o.CMApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS,
+	s := &Server{queryStats: o.QueryStats, netstate: o.NetState, fingerprints: o.Fingerprints, detcfg: o.Detection, detApplier: o.DetApplier, quar: o.Quarantine, quarApplier: o.QuarApplier, store: o.Store, applier: o.Applier, wl: o.Whitelist, wlApplier: o.WLApplier, bl: o.Blacklist, blApplier: o.BLApplier, dl: o.Directlist, dlApplier: o.DLApplier, cr: o.CustomRules, crApplier: o.CRApplier, rulesView: o.RulesView, pgroups: o.ProxyGroups, pgApplier: o.PGApplier, scorer: o.Scorer, detect: o.Detect, mode: o.Mode, rs: o.RuleSets, rsApplier: o.RSApplier, profStore: o.Profiles, profApplier: o.ProfApplier, posture: o.Posture, final: o.Final, finalApplier: o.FinalApplier, dns: o.DNS, dnsApplier: o.DNSApplier, users: o.Users, authn: o.Authn, dataDir: o.DataDir, inbApplier: o.InbApplier, inbListen: o.InbListen, inbListenApplier: o.InbListenApp, retention: o.Retention, retApplier: o.RetApplier, tun: o.TUN, tunApplier: o.TUNApplier, eps: o.Endpoints, epApplier: o.EPApplier, nodeOverrides: o.NodeOverrides, noApplier: o.NOApplier, history: o.History, detections: o.Detections, nodes: o.Nodes, gwApplier: o.GWApplier, cmApplier: o.CMApplier, token: o.Token, clash: o.Clash, consoleDir: o.ConsoleDir, consoleFS: o.ConsoleFS,
 		version: o.Version, managedBinary: runningTheManagedCopy(),
 		throttle: newThrottle(defaultLoginConcurrency, defaultLoginAttempts, defaultLoginWindow)}
 	mux := http.NewServeMux()
@@ -398,6 +403,11 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.route(mux, "PUT /api/proxygroups", s.handleSetProxyGroups)
 	s.route(mux, "GET /api/proxy-scores", s.handleGetProxyScores)
 	s.route(mux, "POST /api/proxy-scores/reset", s.handleResetProxyScores)
+	s.route(mux, "GET /api/node-overrides", s.handleGetNodeOverrides)
+	s.route(mux, "PUT /api/node-overrides", s.handlePutNodeOverrides)
+	s.route(mux, "PATCH /api/node-overrides", s.handlePutNodeOverrides)
+	s.route(mux, "POST /api/nodes/disable", s.handleDisableNode)
+	s.route(mux, "POST /api/nodes/enable", s.handleEnableNode)
 	s.route(mux, "GET /api/rulesets", s.handleListRuleSets)
 	s.route(mux, "GET /api/rulesets/catalog", s.handleRuleSetCatalog)
 	s.route(mux, "GET /api/rulesets/{tag}/rules", s.handleRuleSetRules)

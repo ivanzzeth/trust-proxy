@@ -93,6 +93,42 @@ func injectEndpoints(cfg map[string]json.RawMessage, list []apitypes.Endpoint, d
 	return tags, nil
 }
 
+// FilterEligibleNodes drops airport junk (info/redirect lines) and operator-
+// disabled tags before injectOutbounds. Tags are the same names memberTags
+// would assign, so a disable keyed by the tag shown in the console matches.
+func FilterEligibleNodes(nodes []apitypes.Node, disabled map[string]bool) []apitypes.Node {
+	if len(nodes) == 0 {
+		return nodes
+	}
+	tags := memberTags(nodes, nil)
+	ti := 0
+	out := make([]apitypes.Node, 0, len(nodes))
+	for _, n := range nodes {
+		if len(n.Outbound) == 0 {
+			continue
+		}
+		var ob map[string]any
+		if err := json.Unmarshal(n.Outbound, &ob); err != nil {
+			continue
+		}
+		tag := tags[ti]
+		ti++
+		server := stringOr(ob["server"], n.Server)
+		port := n.Port
+		if p, ok := ob["server_port"].(float64); ok && int(p) > 0 {
+			port = int(p)
+		}
+		if junk, _ := proxygroups.IsJunkNode(tag, server, port); junk {
+			continue
+		}
+		if disabled != nil && disabled[tag] {
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
 // memberTags computes the proxy group's member tags for the given nodes +
 // extra (endpoint) tags, applying the same empty->"node" fallback and -2/-3
 // de-duplication that injectOutbounds uses. It is the single source of truth

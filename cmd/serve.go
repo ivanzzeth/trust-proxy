@@ -36,6 +36,7 @@ import (
 	"github.com/ivanzzeth/trust-proxy/internal/logging"
 	"github.com/ivanzzeth/trust-proxy/internal/modecfg"
 	"github.com/ivanzzeth/trust-proxy/internal/netwatch"
+	"github.com/ivanzzeth/trust-proxy/internal/nodeoverride"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
 	"github.com/ivanzzeth/trust-proxy/internal/paths"
 	"github.com/ivanzzeth/trust-proxy/internal/policymigrate"
@@ -496,6 +497,10 @@ func runServe() error {
 	if err != nil {
 		return err
 	}
+	noStore, err := nodeoverride.NewStore(serveDataDir + "/nodeoverrides.json")
+	if err != nil {
+		return err
+	}
 	finalStore, err := finalroute.NewStore(serveDataDir + "/final.json")
 	if err != nil {
 		return err
@@ -580,6 +585,7 @@ func runServe() error {
 	})
 	mgr.SetInitialTUN(tunStore.Get())
 	mgr.SetInitialEndpoints(epStore.All())
+	mgr.SetInitialDisabledNodes(noStore.Disabled())
 	// Gateways registered as exits are outbound nodes to the data plane; feeding
 	// them before the first Start() means an exit survives a restart without
 	// waiting for the console to touch anything.
@@ -740,9 +746,11 @@ func runServe() error {
 		RetApplier:   retentionApplier{hist: histStore},
 		TUN:          tunStore,
 		TUNApplier:   mgr,
-		Endpoints:    epStore,
-		EPApplier:    mgr,
-		History:      histStore,
+		Endpoints:     epStore,
+		EPApplier:     mgr,
+		NodeOverrides: noStore,
+		NOApplier:     mgr,
+		History:       histStore,
 		Detections:   detStore,
 		Nodes:        nodesStore,
 		GWApplier:    mgr,

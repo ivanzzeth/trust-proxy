@@ -29,7 +29,21 @@ func (b boxScorer) Observe(tag string, success bool, latency time.Duration, err 
 	b.store.Observe(tag, o)
 }
 
+func (b boxScorer) NoteProbe(tag string, success bool, latency time.Duration) {
+	if b.store != nil {
+		b.store.NoteProbe(tag, success, latency)
+	}
+}
+
 func (b boxScorer) TieMargin() float64 { return float64(b.store.Config().TieMargin()) }
+
+// NoteProbe forwards a Clash / urltest probe success into the scorer so
+// blackhole / open-breaker members can recover without already carrying traffic.
+func (m *Manager) NoteProbe(tag string, success bool, latency time.Duration) {
+	if m != nil && m.scores != nil {
+		m.scores.NoteProbe(tag, success, latency)
+	}
+}
 
 // RecordTransfer feeds the throughput term from a finished connection, and the
 // blackhole detector — a node that completes handshakes and relays nothing is

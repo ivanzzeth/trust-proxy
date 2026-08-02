@@ -31,6 +31,8 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	wl, bl, quar, dl, cr, pg, sets, mode, mgmt, nodes, eps, final, posture, clientMode :=
 		m.wl, m.bl, m.quar, m.dl, m.cr, m.pg, m.rulesets, m.mode, m.mgmtPorts, m.nodes,
 		m.endpoints, m.final, m.posture, m.clientMode
+	disabled := m.disabledTags
+	gwExits := m.gwExits
 	m.mu.Unlock()
 	if posture == "" {
 		posture = apitypes.PostureStrict
@@ -42,6 +44,13 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	if clientMode {
 		posture = apitypes.PostureSplit
 	}
+	if len(gwExits) > 0 {
+		merged := make([]apitypes.Node, 0, len(nodes)+len(gwExits))
+		merged = append(merged, nodes...)
+		merged = append(merged, gwExits...)
+		nodes = merged
+	}
+	nodes = FilterEligibleNodes(nodes, disabled)
 
 	var epTags []string
 	for _, e := range eps {

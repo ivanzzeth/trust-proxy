@@ -592,6 +592,26 @@ func TestResetProxyScoresSDK(t *testing.T) {
 	}
 }
 
+func TestNodeOverridesSDK(t *testing.T) {
+	c, seen := fakeAPI(t, `{"disabled":["新加坡 C"],"junk":[{"tag":"跳转域名","reason":"tag:跳转域名"}],"nodes":[]}`)
+	out, err := c.NodeOverrides()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := last(t, seen); got.method != http.MethodGet || got.path != "/api/node-overrides" {
+		t.Fatalf("%s %s", got.method, got.path)
+	}
+	if len(out.Disabled) != 1 || out.Disabled[0] != "新加坡 C" || len(out.Junk) != 1 {
+		t.Fatalf("decoded=%+v", out)
+	}
+	if _, err := c.SetNodeDisabled("美国 03", true); err != nil {
+		t.Fatal(err)
+	}
+	if got := last(t, seen); got.method != http.MethodPost || got.path != "/api/nodes/disable" || !strings.Contains(got.body, "美国 03") {
+		t.Fatalf("%s %s body=%s", got.method, got.path, got.body)
+	}
+}
+
 // Scoring rides the proxygroups document, so a patch that reads-modifies-writes
 // must not drop it — that would silently reset the user's tuning on any
 // unrelated group edit.

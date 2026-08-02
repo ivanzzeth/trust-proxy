@@ -847,6 +847,78 @@ func scoreState(s apitypes.ProxyScore) string {
 	return "ok"
 }
 
+var proxiesNodesCmd = &cobra.Command{
+	Use:   "nodes",
+	Short: "List applied subscription nodes with live/disabled/junk status",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		o, err := sdk().NodeOverrides()
+		if err != nil {
+			return err
+		}
+		if jsonOut {
+			return emit(o)
+		}
+		fmt.Printf("%-8s %-12s %-36s %s\n", "STATUS", "PROTO", "SERVER", "TAG")
+		for _, n := range o.Nodes {
+			st := n.Status
+			if n.Status == apitypes.NodeStatusJunk && n.Reason != "" {
+				st = "junk(" + n.Reason + ")"
+			}
+			srv := n.Server
+			if n.Port > 0 {
+				srv = fmt.Sprintf("%s:%d", n.Server, n.Port)
+			}
+			fmt.Printf("%-8s %-12s %-36s %s\n", truncate(st, 8), truncate(n.Protocol, 12), truncate(srv, 36), n.Tag)
+		}
+		if len(o.Disabled) > 0 {
+			fmt.Printf("\ndisabled: %s\n", strings.Join(o.Disabled, ", "))
+		}
+		return nil
+	},
+}
+
+var proxiesDisableCmd = &cobra.Command{
+	Use:   "disable <tag>…",
+	Short: "Keep tag(s) out of Auto / urltest (survives subscription refresh)",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var last apitypes.NodeOverrides
+		for _, tag := range args {
+			o, err := sdk().SetNodeDisabled(tag, true)
+			if err != nil {
+				return err
+			}
+			last = o
+			fmt.Printf("disabled %s\n", tag)
+		}
+		if jsonOut {
+			return emit(last)
+		}
+		return nil
+	},
+}
+
+var proxiesEnableCmd = &cobra.Command{
+	Use:   "enable <tag>…",
+	Short: "Re-admit previously disabled tag(s) into Auto / urltest",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var last apitypes.NodeOverrides
+		for _, tag := range args {
+			o, err := sdk().SetNodeDisabled(tag, false)
+			if err != nil {
+				return err
+			}
+			last = o
+			fmt.Printf("enabled %s\n", tag)
+		}
+		if jsonOut {
+			return emit(last)
+		}
+		return nil
+	},
+}
+
 var proxiesScoresResetCmd = &cobra.Command{
 	Use:   "scores-reset",
 	Short: "Discard every observation and put all nodes back into warm-up",
@@ -1143,5 +1215,6 @@ func init() {
 	tunCmd.AddCommand(tunGetCmd, tunSetCmd)
 	groupsCmd.AddCommand(groupsGetCmd, groupsSetCmd, groupsFailoverCmd, groupsScoringCmd)
 	endpointsCmd.AddCommand(endpointsLsCmd, endpointsAddCmd, endpointsToggleCmd, endpointsRmCmd)
-	proxiesCmd.AddCommand(proxiesLsCmd, proxiesSelectCmd, proxiesDelayCmd, proxiesScoresCmd, proxiesScoresResetCmd)
+	proxiesCmd.AddCommand(proxiesLsCmd, proxiesSelectCmd, proxiesDelayCmd, proxiesScoresCmd, proxiesScoresResetCmd,
+		proxiesNodesCmd, proxiesDisableCmd, proxiesEnableCmd)
 }

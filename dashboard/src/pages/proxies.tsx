@@ -12,6 +12,7 @@ import {
   ProxyFailover,
   ProxyGroup,
   ProxyGroupsConfig,
+  NodeMember,
   ProxyNode,
   ProxyScore,
   ProxyScores,
@@ -135,6 +136,7 @@ export default function Proxies() {
       />
       <GroupSettings />
       <ScoreBoard data={scores} />
+      <NodeMembersBoard search={deferredNodeSearch} />
       {groups.length === 0 && (
         <Card>
           <CardContent className="py-16 text-center text-sm text-muted-foreground">
@@ -317,6 +319,97 @@ function ScoreBadge({ s }: { s: ProxyScore }) {
         {s.last_err && <div className="truncate text-destructive">{s.last_err}</div>}
       </TooltipContent>
     </Tooltip>
+  );
+}
+
+function NodeMembersBoard({ search }: { search: string }) {
+  const { t } = useTranslation();
+  const qc = useQueryClient();
+  const k = (x: string, o?: Record<string, unknown>) => t(`pages.proxies.members.${x}`, o) as string;
+  const { data } = useQuery({
+    queryKey: ['node-overrides'],
+    queryFn: api.nodeOverrides,
+    refetchInterval: 10000,
+    retry: false,
+  });
+  const toggle = useMutation({
+    mutationFn: (v: { tag: string; disabled: boolean }) => api.setNodeDisabled(v.tag, v.disabled),
+    onSuccess: (_d, v) => {
+      qc.invalidateQueries({ queryKey: ['node-overrides'] });
+      qc.invalidateQueries({ queryKey: ['proxies'] });
+      toast.success(v.disabled ? k('toggledOff', { tag: v.tag }) : k('toggledOn', { tag: v.tag }));
+    },
+    onError: (e) => toast.error(String((e as Error).message)),
+  });
+  const rows = useMemo(() => {
+    const list = data?.nodes ?? [];
+    const q = search.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((n) => matchesQuery(q, n.tag, n.server, n.protocol, n.status, n.reason));
+  }, [data, search]);
+  if (!data) return null;
+  return (
+    <Card className="mb-4">
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm">{k('title')}</CardTitle>
+        <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{k('hint')}</p>
+      </CardHeader>
+      <CardContent className="pt-0">
+        {rows.length === 0 ? (
+          <p className="py-6 text-center text-sm text-muted-foreground">{k('empty')}</p>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{k('tag')}</TableHead>
+                <TableHead>{k('proto')}</TableHead>
+                <TableHead>{k('server')}</TableHead>
+                <TableHead>{k('status')}</TableHead>
+                <TableHead className="text-right">{k('enabled')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((n: NodeMember) => (
+                <TableRow key={n.tag} className={n.status === 'junk' ? 'opacity-60' : undefined}>
+                  <TableCell className="max-w-[220px] truncate font-medium">{n.tag}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{n.protocol || '—'}</TableCell>
+                  <TableCell className="max-w-[200px] truncate text-xs text-muted-foreground">
+                    {n.server ? `${n.server}${n.port ? `:${n.port}` : ''}` : '—'}
+                  </TableCell>
+                  <TableCell>
+                    {n.status === 'junk' ? (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Badge variant="muted">{k('junk')}</Badge>
+                          </TooltipTrigger>
+                          <TooltipContent>{k('junkReason', { reason: n.reason || '' })}</TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    ) : n.status === 'disabled' ? (
+                      <Badge variant="warning">{k('disabled')}</Badge>
+                    ) : (
+                      <Badge variant="success">{k('live')}</Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    {n.status === 'junk' ? (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    ) : (
+                      <Switch
+                        checked={n.status === 'live'}
+                        disabled={toggle.isPending}
+                        onCheckedChange={(on) => toggle.mutate({ tag: n.tag, disabled: !on })}
+                      />
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
