@@ -128,7 +128,7 @@ var Presets = []apitypes.PackPreset{
 	{
 		Name: "China (wide)",
 		Description: "Permit all geosite-cn destinations (mainland coverage). " +
-			"Does NOT pick an egress — pair with China-direct for 直连, or leave Final=proxy.",
+			"Does NOT pick an egress — pair with China-direct for 直连, or set Final=proxy if unmatched should go overseas.",
 		Warning: "Security: this opens the ACL gate for the entire mainland geosite list. " +
 			"A C2 host in China would be allowed out. Only enable if you accept that trade-off.",
 		RuleSets: catalogRSRole(apitypes.RuleRolePermit, "geosite-cn"),

@@ -105,7 +105,7 @@ type Manager struct {
 	// subscription cannot drop them.
 	gwExits   []apitypes.Node
 	mgmtPorts []int
-	final     string // catch-all egress when ACL gate is open (default proxy)
+	final     string // catch-all egress when ACL gate is open (default direct)
 	posture   string // strict|split — Split skips L3 permit gate (default-allow)
 	// clientMode means this instance does not enforce egress policy itself: it
 	// captures local traffic and hands it to a gateway that does. Its own Permit
@@ -238,7 +238,7 @@ func NewManager(configPath, dataDir string, wl whitelist.Rules, engine *detect.E
 	return &Manager{
 		configPath: configPath, dataDir: dataDir, logger: log.StdLogger(),
 		wl: wl, engine: engine, clashSecret: clashSecret, clashAddr: clashAddr, mode: ModeManual,
-		final: "proxy", posture: apitypes.PostureStrict,
+		final: "direct", posture: apitypes.PostureStrict,
 		// Observations, not configuration: they live beside the other runtime
 		// data and are deliberately NOT part of a profile snapshot. Activating a
 		// week-old profile must not restore a week-old opinion of the nodes.
@@ -1018,6 +1018,7 @@ func (m *Manager) buildBox(configBytes []byte) (*box.Box, error) {
 //	                       process+device invert -> reject
 //	L2 Global bypass       clash_mode=Global -> proxy   (injectClashModeGlobal)
 //	L3 Permit gate         NOT(permit-set) -> blocked   (injectAllow; skipped in Split)
+//	resolve                action=resolve (domain→IP so geoip / ip_cidr L4 can match)
 //	L4 Route egress        custom / no-proxy / route-* rule_sets
 //	   catch-all           network matcher -> Final (gate present OR Split) / blocked
 //

@@ -33,7 +33,7 @@ func TestSeedSplit_AllPacksAndGeoIP(t *testing.T) {
 	if !slot.Seeded {
 		t.Fatal("seeded flag")
 	}
-	if slot.Final != "proxy" {
+	if slot.Final != "direct" {
 		t.Fatalf("final=%q", slot.Final)
 	}
 	if len(slot.CustomRules) == 0 {

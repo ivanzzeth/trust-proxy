@@ -187,6 +187,8 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 		add(apitypes.RuleView{Layer: "L3", Source: "permit-gate", Action: "route:blocked", Matcher: "logical (inverted)", Values: truncVals(allowBits, 40), Note: "anything NOT permitted is blocked; Route never opens this gate"})
 	}
 
+	add(apitypes.RuleView{Layer: "resolve", Source: "inject", Action: "resolve", Matcher: "", Note: "domain→IP before geoip/ip_cidr L4 so CN addresses match without geosite"})
+
 	// L4 Route: custom → no-proxy → route-proxy RS → route-direct RS → Final.
 	for _, r := range routeCustom {
 		key, ok := customrules.SingboxMatchKey(r.Match)

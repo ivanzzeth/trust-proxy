@@ -21,8 +21,11 @@ func TestSourcesOffersTheMirrorsAsWellAsGitHub(t *testing.T) {
 	if len(got) < 3 {
 		t.Fatalf("only %d source(s): %v — a machine that cannot reach GitHub has nowhere to go", len(got), got)
 	}
-	if got[0] != e.URL {
-		t.Fatalf("the primary should come first, got %q", got[0])
+	if got[0] != e.Mirror {
+		t.Fatalf("the jsdelivr mirror should come first (both reachable → avoid GitHub stall), got %q", got[0])
+	}
+	if got[len(got)-1] != e.URL {
+		t.Fatalf("GitHub primary should be last fallback, got last=%q", got[len(got)-1])
 	}
 	var mirrors int
 	for _, u := range got {
@@ -35,6 +38,32 @@ func TestSourcesOffersTheMirrorsAsWellAsGitHub(t *testing.T) {
 	}
 	if mirrors < 2 {
 		t.Fatalf("expected several jsdelivr front-ends, got %d: %v", mirrors, got)
+	}
+}
+
+// A box already pointing at raw.githubusercontent must still be rewritten when a
+// mirror answers — ResolveSources used to only touch rs.URL == catalog primary,
+// so a stalled GitHub URL never healed once it was already "the primary".
+func TestResolveSourcesRewritesAnyCatalogSourceURL(t *testing.T) {
+	entry, ok := CatalogByTag("geosite-cn")
+	if !ok || entry.Mirror == "" {
+		t.Skip("catalog changed")
+	}
+	sets := []apitypes.RuleSet{
+		{Tag: entry.Tag, Type: "remote", URL: entry.URL, Enabled: true},
+	}
+	disabled := ResolveSourcesWith(sets, func(probe map[string]string) map[string]bool {
+		out := map[string]bool{}
+		for h := range probe {
+			out[h] = strings.Contains(h, "jsdelivr.net")
+		}
+		return out
+	})
+	if len(disabled) != 0 {
+		t.Fatalf("mirror was reachable; should not disable: %v", disabled)
+	}
+	if !strings.Contains(sets[0].URL, "jsdelivr") {
+		t.Fatalf("still on %q — expected rewrite to a jsdelivr mirror", sets[0].URL)
 	}
 }
 

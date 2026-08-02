@@ -158,7 +158,7 @@ func (s *Server) resolveProfileRuleSets(p apitypes.Profile) ruleset.Sets {
 			// Fill missing URL from catalog so a restored remote set still downloads.
 			if rs.Type == "remote" && rs.URL == "" {
 				if entry, ok := ruleset.CatalogByTag(rs.Tag); ok {
-					rs.URL = entry.URL
+					rs.URL = ruleset.PreferredURL(entry)
 					if rs.Format == "" {
 						rs.Format = entry.Format
 					}

@@ -218,6 +218,95 @@ func TestLayerOrder(t *testing.T) {
 	}
 }
 
+// Resolve must sit after the L3 gate (or after prelude when Split skips the
+// gate) and before any L4 egress rule — otherwise geoip-cn never sees
+// DestinationAddresses for domain dials (private CN hostnames miss direct).
+func TestResolveBeforeL4Egress_StrictAndSplit(t *testing.T) {
+	isResolve := func(r map[string]any) bool { return r["action"] == "resolve" }
+
+	assertResolvePlacement := func(t *testing.T, rules []map[string]any) {
+		t.Helper()
+		ri := firstIdx(rules, isResolve)
+		if ri == -1 {
+			t.Fatal("missing action=resolve before L4")
+		}
+		gate := firstIdx(rules, isGate)
+		if gate >= 0 && !(gate < ri) {
+			t.Fatalf("resolve at %d must follow L3 gate at %d", ri, gate)
+		}
+		// First L4 route with a destination matcher must be after resolve.
+		l4 := -1
+		for i, r := range rules {
+			if r["action"] == "route" && r["network"] == nil && r["type"] != "logical" &&
+				(r["domain_suffix"] != nil || r["domain_regex"] != nil || r["ip_cidr"] != nil || r["rule_set"] != nil) {
+				l4 = i
+				break
+			}
+		}
+		if l4 == -1 {
+			t.Fatal("expected at least one L4 egress rule after resolve")
+		}
+		if !(ri < l4) {
+			t.Fatalf("resolve at %d must precede first L4 at %d", ri, l4)
+		}
+		for i, r := range rules {
+			if isResolve(r) && i != ri {
+				t.Fatalf("duplicate resolve at %d (first at %d)", i, ri)
+			}
+		}
+	}
+
+	// Strict: whitelist opens the gate; geoip-cn is route-direct.
+	strictSets := ruleset.Sets{Sets: []apitypes.RuleSet{
+		{Tag: "geoip-cn", Type: "remote", Format: "binary", URL: "https://example.com/geoip-cn.srs", Role: apitypes.RuleRoleRouteDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+		{Tag: "geosite-cn", Type: "remote", Format: "binary", URL: "https://example.com/geosite-cn.srs", Role: apitypes.RuleRoleRouteDirect, DownloadDetour: "direct", UpdateInterval: "1d", Enabled: true},
+	}}
+	strict := build(t, whitelist.Rules{Domains: []string{"ok.example"}}, blacklist.Rules{}, directlist.Rules{}, strictSets)
+	parseValidate(t, strict)
+	sr := routeRules(t, strict)
+	assertResolvePlacement(t, sr)
+	if firstIdx(sr, isGate) == -1 {
+		t.Fatal("Strict fixture needs an L3 gate")
+	}
+	foundGeoIP, foundGeoSite := false, false
+	for _, r := range sr {
+		if !isDirectRoute(r) {
+			continue
+		}
+		if containsStr(r["rule_set"], "geoip-cn") {
+			foundGeoIP = true
+		}
+		if containsStr(r["rule_set"], "geosite-cn") {
+			foundGeoSite = true
+		}
+	}
+	if !foundGeoIP || !foundGeoSite {
+		t.Fatalf("geoip-cn/geosite-cn route-direct must remain (geoip=%v geosite=%v)", foundGeoIP, foundGeoSite)
+	}
+
+	// Split: no gate, but resolve still precedes L4 (incl. geoip).
+	split, err := buildMergedConfig([]byte(baseCfg), nil, whitelist.Rules{}, blacklist.Rules{}, quarantine.List{}, directlist.Rules{}, customrules.Rules{},
+		proxygroups.Config{}, ModeManual, strictSets, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.InboundListen{}, apitypes.TUNConfig{},
+		nil, nil, "direct", apitypes.PostureSplit, "s", "", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parseValidate(t, split)
+	spr := routeRules(t, split)
+	if firstIdx(spr, isGate) != -1 {
+		t.Fatal("Split must not emit L3 gate")
+	}
+	assertResolvePlacement(t, spr)
+
+	// Fail-closed Strict with nothing permitted: no resolve (nothing to route).
+	empty := build(t, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, ruleset.Sets{})
+	for _, r := range routeRules(t, empty) {
+		if isResolve(r) {
+			t.Fatal("empty Strict allow-set must not inject resolve")
+		}
+	}
+}
+
 // Route-only China (geosite-cn as route-direct) must NOT open the Permit gate.
 func TestChinaRouteOnlyDoesNotPermit(t *testing.T) {
 	sets := ruleset.Sets{Sets: []apitypes.RuleSet{
@@ -264,7 +353,7 @@ func TestChinaPermitOnlyUsesFinal(t *testing.T) {
 		}
 	}
 	if rules[firstIdx(rules, isCatchAll)]["outbound"] != ProxyGroupTag {
-		t.Fatalf("catch-all should be Final=proxy, got %v", rules[firstIdx(rules, isCatchAll)])
+		t.Fatalf("catch-all should be Final (proxy in this fixture), got %v", rules[firstIdx(rules, isCatchAll)])
 	}
 }
 
@@ -412,7 +501,7 @@ func TestFinal_CatchAllEgress(t *testing.T) {
 		t.Fatalf("empty allow-set must stay blocked even with Final=direct, got %v", er[eci]["outbound"])
 	}
 
-	// Unknown node tag → self-heal to proxy when gate is open.
+	// Unknown node tag → self-heal to direct when gate is open.
 	healed, err := buildMergedConfig([]byte(baseCfg), nil, wl, blacklist.Rules{}, quarantine.List{}, directlist.Rules{}, customrules.Rules{},
 		proxygroups.Config{}, ModeManual, ruleset.Sets{}, apitypes.DNSConfig{}, apitypes.InboundAuth{}, apitypes.InboundListen{}, apitypes.TUNConfig{},
 		nil, nil, "no-such-node", "", "s", "", t.TempDir())
@@ -421,8 +510,8 @@ func TestFinal_CatchAllEgress(t *testing.T) {
 	}
 	hr := routeRules(t, healed)
 	hci := firstIdx(hr, isCatchAll)
-	if hr[hci]["outbound"] != ProxyGroupTag {
-		t.Fatalf("missing Final node should self-heal to proxy, got %v", hr[hci]["outbound"])
+	if hr[hci]["outbound"] != "direct" {
+		t.Fatalf("missing Final node should self-heal to direct, got %v", hr[hci]["outbound"])
 	}
 }
 
@@ -848,6 +937,8 @@ func layerOf(r map[string]any) string {
 		return "L2"
 	case r["type"] == "logical":
 		return "L3"
+	case r["action"] == "resolve":
+		return "resolve"
 	case r["network"] != nil:
 		return "catch-all"
 	default:

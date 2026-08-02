@@ -417,12 +417,12 @@ func runSelftest() error {
 	fmt.Println("== Posture SeedSplit contents ==")
 	{
 		slot := posture.SeedSplit()
-		if !slot.Seeded || slot.Final != "proxy" {
+		if !slot.Seeded || slot.Final != "direct" {
 			fail++
 			fmt.Printf("  FAIL  SeedSplit meta seeded=%v final=%q\n", slot.Seeded, slot.Final)
 		} else {
 			pass++
-			fmt.Println("  PASS  SeedSplit seeded + Final=proxy")
+			fmt.Println("  PASS  SeedSplit seeded + Final=direct")
 		}
 		packs := map[string]bool{}
 		for _, r := range slot.CustomRules {

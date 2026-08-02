@@ -17,7 +17,7 @@ import (
 // saved Profile (snapshotProfile), which otherwise differ only in their extra
 // metadata (Seeded vs ID/Name/SubID/Mode/...).
 func (s *Server) snapshotLivePolicy() apitypes.PolicySlot {
-	slot := apitypes.PolicySlot{Final: "proxy"}
+	slot := apitypes.PolicySlot{Final: "direct"}
 	if s.wl != nil {
 		wl := s.wl.Get()
 		slot.Whitelist = apitypes.Rules{Domains: wl.Domains, IPs: wl.IPs, Processes: wl.Processes, Devices: wl.Devices}

@@ -203,7 +203,7 @@ func (s *Server) handleApplyPack(w http.ResponseWriter, r *http.Request) {
 			}
 			rs := apitypes.RuleSet{
 				Tag: entry.Tag, Name: entry.Name, Type: "remote", Format: entry.Format,
-				URL: entry.URL, DownloadDetour: "direct", UpdateInterval: "1d",
+				URL: ruleset.PreferredURL(entry), DownloadDetour: "direct", UpdateInterval: "1d",
 				Role: role, Enabled: true,
 			}
 			if _, err := s.rs.Add(rs); err != nil {
@@ -327,7 +327,7 @@ func (s *Server) handlePatchPack(w http.ResponseWriter, r *http.Request) {
 				}
 				rs := apitypes.RuleSet{
 					Tag: entry.Tag, Name: entry.Name, Type: "remote", Format: entry.Format,
-					URL: entry.URL, DownloadDetour: "direct", UpdateInterval: "1d",
+					URL: ruleset.PreferredURL(entry), DownloadDetour: "direct", UpdateInterval: "1d",
 					Role: merged, Enabled: true,
 				}
 				if existing != nil {

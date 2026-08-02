@@ -37,6 +37,10 @@ const maxRuleSetProbeBytes = 32 << 20
 
 // Sources lists everywhere a catalog entry can be fetched from, best-known
 // first. Duplicates and empties are dropped.
+//
+// Mirrors (jsdelivr) come before the catalog primary (raw.githubusercontent):
+// when both answer, GitHub-first used to win and then stall mid-body inside the
+// GFW — sing-box hung for minutes while the mirror would have finished in ~1s.
 func Sources(e apitypes.RuleSetCatalogEntry) []string {
 	var out []string
 	seen := map[string]bool{}
@@ -47,7 +51,6 @@ func Sources(e apitypes.RuleSetCatalogEntry) []string {
 		seen[u] = true
 		out = append(out, u)
 	}
-	add(e.URL)
 	add(e.Mirror)
 	// The catalog stores one mirror; the other jsdelivr front-ends are the same
 	// path on a different host, so they come for free rather than needing three
@@ -62,7 +65,34 @@ func Sources(e apitypes.RuleSetCatalogEntry) []string {
 			}
 		}
 	}
+	add(e.URL)
 	return out
+}
+
+// PreferredURL returns the catalog URL a fresh seed / pack import should write:
+// the jsdelivr mirror when present, else the primary. Callers that can probe
+// should still Prefer PickReachableWith(Sources(...)); this is the offline default.
+func PreferredURL(e apitypes.RuleSetCatalogEntry) string {
+	if e.Mirror != "" {
+		return e.Mirror
+	}
+	return e.URL
+}
+
+// isCatalogSource reports whether url is one of the known fetch locations for
+// this catalog entry (primary, mirror, or a derived jsdelivr front-end).
+// ResolveSources must rewrite any of these — not only the primary — or a box
+// already on a dead GitHub URL / a stale mirror host never heals.
+func isCatalogSource(e apitypes.RuleSetCatalogEntry, url string) bool {
+	if url == "" {
+		return false
+	}
+	for _, u := range Sources(e) {
+		if u == url {
+			return true
+		}
+	}
+	return false
 }
 
 // PickReachable returns the candidate that can be *downloaded* first, or "" when
@@ -182,7 +212,7 @@ func ResolveSourcesWith(sets []apitypes.RuleSet, reach func(probe map[string]str
 		if rs.Type != "remote" || !rs.Enabled {
 			continue
 		}
-		if entry, ok := CatalogByTag(rs.Tag); ok && entry.URL == rs.URL {
+		if entry, ok := CatalogByTag(rs.Tag); ok && isCatalogSource(entry, rs.URL) {
 			for _, u := range Sources(entry) {
 				if h := hostOf(u); h != "" {
 					if _, seen := probe[h]; !seen {
@@ -204,8 +234,8 @@ func ResolveSourcesWith(sets []apitypes.RuleSet, reach func(probe map[string]str
 			continue
 		}
 		entry, ok := CatalogByTag(rs.Tag)
-		if !ok || entry.URL != rs.URL {
-			continue // hand-entered or already customised: theirs, not ours
+		if !ok || !isCatalogSource(entry, rs.URL) {
+			continue // hand-entered URL: theirs, not ours
 		}
 		picked := ""
 		for _, u := range Sources(entry) {

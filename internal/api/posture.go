@@ -212,7 +212,7 @@ func (s *Server) applySlot(slot apitypes.PolicySlot, postureName string) ([]stri
 	in.dns = s.resolveSlotDNS(slot)
 	final := slot.Final
 	if final == "" {
-		final = "proxy"
+		final = "direct"
 	}
 	nodes := s.profApplier.Nodes()
 

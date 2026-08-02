@@ -9,10 +9,13 @@ import (
 
 // SeedSplit builds the first-time Split policy: every Allow pack preset
 // (rules + catalog rule sets, roles merged on shared tags) plus geoip-cn
-// route-direct, Final=proxy, and default Overseas-aware proxy groups.
+// route-direct, Final=direct, and default Overseas-aware proxy groups.
+//
+// Final=direct (not proxy): packs still send Claude/Google/… overseas; private
+// CN hostnames that geosite-cn does not list must not fall into an exit.
 func SeedSplit() apitypes.PolicySlot {
 	slot := apitypes.PolicySlot{
-		Final:  "proxy",
+		Final:  "direct",
 		Seeded: true,
 		ProxyGroups: &apitypes.ProxyGroupsConfig{
 			AutoCountry:      true,
@@ -39,7 +42,7 @@ func SeedSplit() apitypes.PolicySlot {
 			}
 			byTag[entry.Tag] = apitypes.RuleSet{
 				Tag: entry.Tag, Name: entry.Name, Type: "remote", Format: entry.Format,
-				URL: entry.URL, DownloadDetour: "direct", UpdateInterval: "1d",
+				URL: ruleset.PreferredURL(entry), DownloadDetour: "direct", UpdateInterval: "1d",
 				Role: role, Enabled: true,
 			}
 		}
@@ -60,7 +63,7 @@ func SeedSplit() apitypes.PolicySlot {
 		}
 		byTag[entry.Tag] = apitypes.RuleSet{
 			Tag: entry.Tag, Name: entry.Name, Type: "remote", Format: entry.Format,
-			URL: entry.URL, DownloadDetour: "direct", UpdateInterval: "1d",
+			URL: ruleset.PreferredURL(entry), DownloadDetour: "direct", UpdateInterval: "1d",
 			Role: role, Enabled: true,
 		}
 	}

@@ -15,11 +15,14 @@ import (
 	"github.com/ivanzzeth/trust-proxy/pkg/apitypes"
 )
 
-// injectAllow builds the Permit gate (L3) and the Route egress (L4), then flips
-// the catch-all default egress. Permit and Route are orthogonal:
+// injectAllow builds the Permit gate (L3), a domain→IP resolve step, the Route
+// egress (L4), then flips the catch-all default egress. Permit and Route are
+// orthogonal:
 //
 //	allow-set (L3) = whitelist domains+ips ∪ role=permit(+route) rule_sets ∪
 //	                 custom/pack rules with Permit ∪ private CIDRs (when gate open)
+//	resolve        = sing-box action=resolve (fills DestinationAddresses so
+//	                 geoip / ip_cidr L4 rules can match domain dials)
 //	direct (L4)    = route-direct rule_sets + no-proxy domains+ips + private CIDRs
 //	proxy  (L4)    = route-proxy rule_sets
 //	catch-all      = Final when gate present OR posture=Split; else blocked
@@ -186,6 +189,10 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 		})
 		inserted = append(inserted, gate)
 	}
+	// Domain dials must resolve before geoip-cn / ip_cidr L4 rules run —
+	// otherwise DestinationAddresses stays empty and CN IPs never match.
+	resolveRule, _ := json.Marshal(map[string]any{"action": "resolve"})
+	inserted = append(inserted, resolveRule)
 	inserted = append(inserted, egress...)
 
 	var rules []json.RawMessage
