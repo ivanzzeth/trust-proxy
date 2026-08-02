@@ -61,6 +61,14 @@ const (
 	// fire-and-forget push legitimately produces a single such connection; three
 	// in a row on the same node does not happen to a node that works.
 	DefaultBlackholeStreak = 3
+
+	// Stream-stall watchdog (mid-connection). Cursor-agent shape: ~150 KiB up,
+	// a few KiB down, then silence while the IDE hangs. Scoring alone only
+	// steers the *next* dial; this kills the stuck conn so the client retries
+	// onto a demoted-away member.
+	DefaultStreamStallSec       = 20
+	DefaultStreamStallMinUpload = 64 * 1024
+	DefaultStreamStallMinAgeSec = 8
 )
 
 // maxBreakerTrip bounds forceBreakerOpen's loop. It only needs BreakerFailures
@@ -114,6 +122,12 @@ type Config struct {
 	// connections. -1 disables the detection entirely (0 means "unset" and
 	// resolves to the default, like every other field here).
 	BlackholeStreak int `json:"blackhole_streak,omitempty"`
+
+	// StreamStallSec / MinUpload / MinAgeSec: see Defaults above. -1 on Sec
+	// disables; 0 means unset → default.
+	StreamStallSec       int `json:"stream_stall_sec,omitempty"`
+	StreamStallMinUpload int `json:"stream_stall_min_upload,omitempty"`
+	StreamStallMinAgeSec int `json:"stream_stall_min_age_sec,omitempty"`
 }
 
 func orDefault(v, def int) int {
@@ -143,8 +157,11 @@ func (c Config) Resolved() Config {
 		BreakerFailures:     c.BreakFails(),
 		BreakerDelaySeconds: c.BreakDelay(),
 		BreakerSuccesses:    c.BreakOKs(),
-		StaleHours:          c.Stale(),
-		BlackholeStreak:     c.Blackhole(),
+		StaleHours:           c.Stale(),
+		BlackholeStreak:      c.Blackhole(),
+		StreamStallSec:       c.StreamStall(),
+		StreamStallMinUpload: c.StallMinUpload(),
+		StreamStallMinAgeSec: c.StallMinAge(),
 	}
 }
 
@@ -199,7 +216,23 @@ func (c Config) BreakDelay() int {
 	return orDefault(c.BreakerDelaySeconds, DefaultBreakerDelaySeconds)
 }
 func (c Config) BreakOKs() int { return orDefault(c.BreakerSuccesses, DefaultBreakerSuccesses) }
-func (c Config) Stale() int    { return orDefault(c.StaleHours, DefaultStaleHours) }
+func (c Config) Stale() int { return orDefault(c.StaleHours, DefaultStaleHours) }
+
+// StreamStall returns the stall silence window in seconds, or 0 when disabled.
+func (c Config) StreamStall() int {
+	if c.StreamStallSec < 0 {
+		return 0
+	}
+	return orDefault(c.StreamStallSec, DefaultStreamStallSec)
+}
+
+func (c Config) StallMinUpload() int {
+	return orDefault(c.StreamStallMinUpload, DefaultStreamStallMinUpload)
+}
+
+func (c Config) StallMinAge() int {
+	return orDefault(c.StreamStallMinAgeSec, DefaultStreamStallMinAgeSec)
+}
 
 // Formula renders the scoring formula with the weights currently in force. The
 // UI puts this next to the live per-term values so "why is this node at 62"
@@ -268,6 +301,18 @@ func (c Config) Validate() error {
 	}
 	if c.BlackholeStreak > 100 {
 		return fmt.Errorf("scoring: blackhole_streak must be at most 100")
+	}
+	if c.StreamStallSec < -1 {
+		return fmt.Errorf("scoring: stream_stall_sec must be -1 (off), 0 (default) or positive")
+	}
+	if c.StreamStallSec > 600 {
+		return fmt.Errorf("scoring: stream_stall_sec must be at most 600")
+	}
+	if c.StreamStallMinUpload < 0 || c.StreamStallMinUpload > 50<<20 {
+		return fmt.Errorf("scoring: stream_stall_min_upload out of range")
+	}
+	if c.StreamStallMinAgeSec < 0 || c.StreamStallMinAgeSec > 600 {
+		return fmt.Errorf("scoring: stream_stall_min_age_sec out of range")
 	}
 	return nil
 }

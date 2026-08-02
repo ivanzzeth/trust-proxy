@@ -928,39 +928,40 @@ func (s *Server) mutateWhitelist(w http.ResponseWriter, r *http.Request, add boo
 		writeErr(w, http.StatusServiceUnavailable, "whitelist not available")
 		return
 	}
-	typ, value, ok := decodeListReq(w, r)
+	req, ok := decodeListReq(w, r)
 	if !ok {
 		return
 	}
+	note := noteArgs(req.Note)
 	prev := s.wl.Get() // for rollback if the apply fails
 	var (
 		rules whitelist.Rules
 		err   error
 	)
-	switch typ {
+	switch req.Type {
 	case "domain":
 		if add {
-			rules, err = s.wl.AddDomain(value)
+			rules, err = s.wl.AddDomain(req.Value, note...)
 		} else {
-			rules, err = s.wl.RemoveDomain(value)
+			rules, err = s.wl.RemoveDomain(req.Value)
 		}
 	case "ip":
 		if add {
-			rules, err = s.wl.AddIP(value)
+			rules, err = s.wl.AddIP(req.Value, note...)
 		} else {
-			rules, err = s.wl.RemoveIP(value)
+			rules, err = s.wl.RemoveIP(req.Value)
 		}
 	case "process":
 		if add {
-			rules, err = s.wl.AddProcess(value)
+			rules, err = s.wl.AddProcess(req.Value, note...)
 		} else {
-			rules, err = s.wl.RemoveProcess(value)
+			rules, err = s.wl.RemoveProcess(req.Value)
 		}
 	case "device":
 		if add {
-			rules, err = s.wl.AddDevice(value)
+			rules, err = s.wl.AddDevice(req.Value, note...)
 		} else {
-			rules, err = s.wl.RemoveDevice(value)
+			rules, err = s.wl.RemoveDevice(req.Value)
 		}
 	default:
 		writeErr(w, http.StatusBadRequest, "type must be domain, ip, process or device")
@@ -1003,39 +1004,40 @@ func (s *Server) mutateBlacklist(w http.ResponseWriter, r *http.Request, add boo
 		writeErr(w, http.StatusServiceUnavailable, "blacklist not available")
 		return
 	}
-	typ, value, ok := decodeListReq(w, r)
+	req, ok := decodeListReq(w, r)
 	if !ok {
 		return
 	}
+	note := noteArgs(req.Note)
 	prev := s.bl.Get() // for rollback if the apply fails
 	var (
 		rules blacklist.Rules
 		err   error
 	)
-	switch typ {
+	switch req.Type {
 	case "domain":
 		if add {
-			rules, err = s.bl.AddDomain(value)
+			rules, err = s.bl.AddDomain(req.Value, note...)
 		} else {
-			rules, err = s.bl.RemoveDomain(value)
+			rules, err = s.bl.RemoveDomain(req.Value)
 		}
 	case "keyword":
 		if add {
-			rules, err = s.bl.AddKeyword(value)
+			rules, err = s.bl.AddKeyword(req.Value, note...)
 		} else {
-			rules, err = s.bl.RemoveKeyword(value)
+			rules, err = s.bl.RemoveKeyword(req.Value)
 		}
 	case "regex":
 		if add {
-			rules, err = s.bl.AddRegex(value)
+			rules, err = s.bl.AddRegex(req.Value, note...)
 		} else {
-			rules, err = s.bl.RemoveRegex(value)
+			rules, err = s.bl.RemoveRegex(req.Value)
 		}
 	case "ip":
 		if add {
-			rules, err = s.bl.AddIP(value)
+			rules, err = s.bl.AddIP(req.Value, note...)
 		} else {
-			rules, err = s.bl.RemoveIP(value)
+			rules, err = s.bl.RemoveIP(req.Value)
 		}
 	default:
 		writeErr(w, http.StatusBadRequest, "type must be domain, keyword, regex or ip")
@@ -1068,6 +1070,7 @@ func (s *Server) handleGetDirectlist(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"domains": rules.Domains,
 		"ips":     rules.IPs,
+		"notes":   rules.Notes,
 		"builtin": gateway.PrivateCIDRs(),
 	})
 }
@@ -1085,27 +1088,28 @@ func (s *Server) mutateDirectlist(w http.ResponseWriter, r *http.Request, add bo
 		writeErr(w, http.StatusServiceUnavailable, "directlist not available")
 		return
 	}
-	typ, value, ok := decodeListReq(w, r)
+	req, ok := decodeListReq(w, r)
 	if !ok {
 		return
 	}
+	note := noteArgs(req.Note)
 	prev := s.dl.Get() // for rollback if the apply fails
 	var (
 		rules directlist.Rules
 		err   error
 	)
-	switch typ {
+	switch req.Type {
 	case "domain":
 		if add {
-			rules, err = s.dl.AddDomain(value)
+			rules, err = s.dl.AddDomain(req.Value, note...)
 		} else {
-			rules, err = s.dl.RemoveDomain(value)
+			rules, err = s.dl.RemoveDomain(req.Value)
 		}
 	case "ip":
 		if add {
-			rules, err = s.dl.AddIP(value)
+			rules, err = s.dl.AddIP(req.Value, note...)
 		} else {
-			rules, err = s.dl.RemoveIP(value)
+			rules, err = s.dl.RemoveIP(req.Value)
 		}
 	default:
 		writeErr(w, http.StatusBadRequest, "type must be domain or ip")

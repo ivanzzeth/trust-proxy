@@ -31,14 +31,20 @@ var Presets = []apitypes.PackPreset{
 	},
 	{
 		Name: "Cursor",
-		Description: "Cursor editor + Agent/tools: permit official hosts + route via Overseas. " +
-			"Under TUN these must be permitted or the IDE agent hangs.",
-		Exit: apitypes.PackExitOverseas,
-		Rules: overseasRules("Cursor",
-			"cursor.com", "cursor.sh",
-			"cursorapi.com", "cursor-cdn.com", "cursorvm.com",
-			"todesktop.com",
-			"anysphere-binaries.s3.us-east-1.amazonaws.com",
+		Description: "Cursor editor + Agent/tools: permit official hosts; Agent streaming " +
+			"(api5.*) goes direct for stability, editor/API/CDN via Overseas. " +
+			"Under TUN these must be permitted or the IDE agent hangs. Re-apply the pack to refresh.",
+		Exit: apitypes.PackExitMixed,
+		// More-specific matchers first: domain_suffix api5.cursor.sh must beat
+		// the broad cursor.sh Overseas rule (first match wins).
+		Rules: concatRules(
+			directRules("Cursor", "api5.cursor.sh"),
+			overseasRules("Cursor",
+				"cursor.com", "cursor.sh",
+				"cursorapi.com", "cursor-cdn.com", "cursorvm.com",
+				"todesktop.com",
+				"anysphere-binaries.s3.us-east-1.amazonaws.com",
+			),
 		),
 	},
 	{
@@ -249,4 +255,8 @@ func proxyRules(pack string, domains ...string) []apitypes.CustomRule {
 
 func overseasRules(pack string, domains ...string) []apitypes.CustomRule {
 	return packRules(pack, apitypes.CustomActionProxy, proxygroups.OverseasGroupTag, domains...)
+}
+
+func directRules(pack string, domains ...string) []apitypes.CustomRule {
+	return packRules(pack, apitypes.CustomActionDirect, "", domains...)
 }

@@ -15,9 +15,9 @@ vi.mock('react-i18next', () => ({
 }));
 
 function mockPolicy() {
-  vi.spyOn(api, 'whitelist').mockResolvedValue({ domains: ['a.com', 'b.com', 'c.com'], ips: ['1.2.3.4'], processes: [], devices: [] });
-  vi.spyOn(api, 'blacklist').mockResolvedValue({ domains: ['bad.com'], keywords: ['ads'], regexes: [], ips: [] });
-  vi.spyOn(api, 'directlist').mockResolvedValue({ domains: ['cn.com'], ips: [], builtin: [] });
+  vi.spyOn(api, 'whitelist').mockResolvedValue({ domains: ['a.com', 'b.com', 'c.com'], ips: ['1.2.3.4'], processes: [], devices: [], notes: {} });
+  vi.spyOn(api, 'blacklist').mockResolvedValue({ domains: ['bad.com'], keywords: ['ads'], regexes: [], ips: [], notes: {} });
+  vi.spyOn(api, 'directlist').mockResolvedValue({ domains: ['cn.com'], ips: [], builtin: [], notes: {} });
   vi.spyOn(api, 'customRules').mockResolvedValue([{ id: 'r1' }] as unknown as Awaited<ReturnType<typeof api.customRules>>);
   vi.spyOn(api, 'rulesets').mockResolvedValue([
     { tag: 'geosite-cn' }, { tag: 'geoip-cn' },

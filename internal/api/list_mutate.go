@@ -5,19 +5,32 @@ import (
 	"net/http"
 )
 
-// decodeListReq decodes the shared {type,value} body used by whitelist/
-// blacklist/directlist add/remove handlers. ok=false means a 400 was already
-// written and the caller should return immediately.
-func decodeListReq(w http.ResponseWriter, r *http.Request) (typ, value string, ok bool) {
-	var req struct {
-		Type  string `json:"type"`
-		Value string `json:"value"`
-	}
+// listMutateReq is the shared body for whitelist/blacklist/directlist add/
+// remove. Note is optional: present on add to set/update a remark (empty
+// string clears); ignored on remove (the remark is dropped with the entry).
+type listMutateReq struct {
+	Type  string  `json:"type"`
+	Value string  `json:"value"`
+	Note  *string `json:"note"`
+}
+
+// decodeListReq decodes the shared {type,value,note?} body. ok=false means a
+// 400 was already written and the caller should return immediately.
+func decodeListReq(w http.ResponseWriter, r *http.Request) (req listMutateReq, ok bool) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Value == "" {
 		writeErr(w, http.StatusBadRequest, "type and value are required")
-		return "", "", false
+		return listMutateReq{}, false
 	}
-	return req.Type, req.Value, true
+	return req, true
+}
+
+// noteArgs turns an optional *string into the variadic form the stores expect:
+// nil → omit (preserve existing remark on re-add); non-nil → set/clear.
+func noteArgs(note *string) []string {
+	if note == nil {
+		return nil
+	}
+	return []string{*note}
 }
 
 // applyOrRollback applies rules to the running gateway via apply (nil = no

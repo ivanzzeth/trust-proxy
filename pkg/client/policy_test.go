@@ -85,6 +85,14 @@ func TestListKindMapsToItsOwnEndpoint(t *testing.T) {
 			t.Fatalf("%s add body = %s", name, r.body)
 		}
 	}
+	c, seen := fakeAPI(t, `{"domains":["x.tp"],"notes":{"domain:x.tp":"lab"}}`)
+	if _, err := c.AddListEntry(ListPermit, "domain", "x.tp", "lab host"); err != nil {
+		t.Fatal(err)
+	}
+	r := last(t, seen)
+	if !strings.Contains(r.body, `"note":"lab host"`) {
+		t.Fatalf("add with note body = %s", r.body)
+	}
 	if _, err := ValidListKind("whatever"); err == nil {
 		t.Fatal("an unknown list name must be rejected, not silently mapped")
 	}

@@ -409,6 +409,32 @@ func (s *Store) RecordTransfer(tag string, t Transfer) {
 	}
 }
 
+// RecordStreamStall demotes a member after the gateway killed a live connection
+// that uploaded a large payload and then went silent on download. Unlike
+// blackhole confirmation (finalize-only, download==0), this fires mid-stream so
+// the client's retry is not stuck on the same dead member.
+func (s *Store) RecordStreamStall(tag string) {
+	tag = normalizeTag(tag)
+	if !scorable(tag) {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cfg.Disabled || s.cfg.StreamStall() <= 0 {
+		return
+	}
+	st := s.statLocked(tag)
+	st.OKStreak = 0
+	st.FailStreak++
+	st.Reliability = clamp100(st.Reliability - float64(s.cfg.Penalty()*minInt(st.FailStreak, s.cfg.Streak())))
+	st.LastOK = false
+	st.LastErr = "stream stall: upload then silence (conn killed)"
+	st.UpdatedAt = time.Now()
+	st.Samples++
+	s.dirty = true
+	forceBreakerOpen(st)
+}
+
 // forceBreakerOpen trips the breaker regardless of its failure threshold. Used
 // for blackhole confirmation, where the evidence is already conclusive and
 // waiting for BreakerFailures more dead connections would mean waiting for more

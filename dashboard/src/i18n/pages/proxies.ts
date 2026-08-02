@@ -93,6 +93,15 @@ export default {
         blackholeStreak: 'Blackhole after (dead connections)',
         blackholeStreakHint:
           'Consecutive connections that completed this node’s handshake, sent bytes and got nothing back. Subscriptions do ship nodes like this: the dial succeeds so they look healthy and score well, while relaying nothing. On confirmation the node scores 0 and is moved to last choice — never removed. Set -1 to turn the detection off.',
+        stallTitle: 'Stream stall (live kill)',
+        stallHint:
+          'For long hangs scoring cannot see until the connection ends (Cursor Agent streams, etc.): if a proxied connection uploaded enough bytes and then produces no download for N seconds, kill it and demote the member so the retry lands elsewhere.',
+        stallSec: 'Silence before kill (seconds)',
+        stallSecHint: 'No download bytes for this long after the upload arm. -1 disables. Default 20.',
+        stallMinUpload: 'Arm after upload (bytes)',
+        stallMinUploadHint: 'Watchdog ignores tiny requests. Default 65536 (64 KiB).',
+        stallMinAge: 'Minimum age (seconds)',
+        stallMinAgeHint: 'Do not kill brand-new connections still waiting for the first reply. Default 8.',
         reward: 'Reward per success',
         rewardHint: 'Points added for a success. The Nth consecutive one counts N×.',
         penalty: 'Penalty per failure',
@@ -211,6 +220,15 @@ export default {
         blackholeStreak: '判定黑洞（不通的连接数）',
         blackholeStreakHint:
           '连续多少条连接「握手通过、也发出了数据、却一个字节都没回来」就判定为黑洞。订阅里确实存在这种假节点：拨号是成功的，所以看起来健康、分数还很高，实际什么都不转发。判定后直接 0 分并排到最后备选——但绝不剔除。填 -1 关闭该检测。',
+        stallTitle: '长流卡死（强制断开）',
+        stallHint:
+          '针对打分要等连接结束才看得见的挂死（如 Cursor Agent 长流）：代理连接已上传足够字节、之后 N 秒没有任何下行，就掐断并把该节点降级，让客户端重试落到别的节点。',
+        stallSec: '静默多久后掐断（秒）',
+        stallSecHint: '武装后下行静默这么久就杀。-1 关闭。默认 20。',
+        stallMinUpload: '武装所需上传（字节）',
+        stallMinUploadHint: '忽略很小的请求。默认 65536（64 KiB）。',
+        stallMinAge: '最短存活（秒）',
+        stallMinAgeHint: '别掐还在等首包的新连接。默认 8。',
         reward: '单次成功奖励',
         rewardHint: '一次成功加多少分。连续第 N 次按 N 倍计。',
         penalty: '单次失败惩罚',

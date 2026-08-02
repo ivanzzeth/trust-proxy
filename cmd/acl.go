@@ -37,13 +37,17 @@ var aclLsCmd = &cobra.Command{
 			return err
 		}
 		return out(list, func() {
-			print := func(label string, vals []string) {
+			print := func(dim, label string, vals []string) {
 				if len(vals) == 0 {
 					return
 				}
 				fmt.Printf("%s (%d):\n", label, len(vals))
 				for _, v := range vals {
-					fmt.Println("  " + v)
+					if note := list.Notes[dim+":"+v]; note != "" {
+						fmt.Printf("  %s  # %s\n", v, note)
+					} else {
+						fmt.Println("  " + v)
+					}
 				}
 			}
 			if len(list.Builtin) > 0 {
@@ -52,12 +56,12 @@ var aclLsCmd = &cobra.Command{
 					fmt.Println("  " + v)
 				}
 			}
-			print("domains", list.Domains)
-			print("ips", list.IPs)
-			print("processes", list.Processes)
-			print("devices", list.Devices)
-			print("keywords", list.Keywords)
-			print("regexes", list.Regexes)
+			print("domain", "domains", list.Domains)
+			print("ip", "ips", list.IPs)
+			print("process", "processes", list.Processes)
+			print("device", "devices", list.Devices)
+			print("keyword", "keywords", list.Keywords)
+			print("regex", "regexes", list.Regexes)
 			if len(list.Domains)+len(list.IPs)+len(list.Processes)+len(list.Devices)+len(list.Keywords)+len(list.Regexes) == 0 {
 				fmt.Printf("(%s list is empty)\n", args[0])
 			}
@@ -65,7 +69,10 @@ var aclLsCmd = &cobra.Command{
 	},
 }
 
-var aclType string
+var (
+	aclType string
+	aclNote string
+)
 
 var aclAddCmd = &cobra.Command{
 	Use:   "add <permit|deny|no-proxy> <value>",
@@ -76,11 +83,21 @@ var aclAddCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		list, err := sdk().AddListEntry(kind, aclType, args[1])
+		var noteArgs []string
+		if cmd.Flags().Changed("note") {
+			noteArgs = []string{aclNote}
+		}
+		list, err := sdk().AddListEntry(kind, aclType, args[1], noteArgs...)
 		if err != nil {
 			return err
 		}
-		return out(list, func() { fmt.Printf("added %s %q to %s\n", aclType, args[1], args[0]) })
+		return out(list, func() {
+			if cmd.Flags().Changed("note") && aclNote != "" {
+				fmt.Printf("added %s %q to %s (%s)\n", aclType, args[1], args[0], aclNote)
+			} else {
+				fmt.Printf("added %s %q to %s\n", aclType, args[1], args[0])
+			}
+		})
 	},
 }
 
@@ -105,5 +122,6 @@ func init() {
 	for _, c := range []*cobra.Command{aclAddCmd, aclRmCmd} {
 		c.Flags().StringVar(&aclType, "type", "domain", "entry kind: domain|ip|process|device (deny also: keyword|regex)")
 	}
+	aclAddCmd.Flags().StringVar(&aclNote, "note", "", "optional remark (shown in ls / console; re-add with --note \"\" to clear)")
 	aclCmd.AddCommand(aclLsCmd, aclAddCmd, aclRmCmd)
 }

@@ -197,6 +197,7 @@ const (
 	PackExitOverseas = "overseas" // via the shared Overseas group (geofenced services)
 	PackExitAuto     = "auto"     // via the default proxy group (fastest)
 	PackExitDirect   = "direct"   // direct, no proxy
+	PackExitMixed    = "mixed"    // per-rule egress (some direct, some Overseas/proxy)
 )
 
 // Custom-rule actions (legacy aliases of CustomEgress*) + match kinds.
@@ -340,13 +341,16 @@ type ACLList struct {
 	// Builtin are always-on entries the gateway owns (No-Proxy's LAN/private
 	// ranges). Read-only: the API reports them so a client doesn't present the
 	// list as if those ranges could be removed.
-	Builtin   []string `json:"builtin,omitempty"`
-	Domains   []string `json:"domains,omitempty"`
-	IPs       []string `json:"ips,omitempty"`
-	Processes []string `json:"processes,omitempty"`
-	Devices   []string `json:"devices,omitempty"`
-	Keywords  []string `json:"keywords,omitempty"`
-	Regexes   []string `json:"regexes,omitempty"`
+	Builtin   []string          `json:"builtin,omitempty"`
+	Domains   []string          `json:"domains,omitempty"`
+	IPs       []string          `json:"ips,omitempty"`
+	Processes []string          `json:"processes,omitempty"`
+	Devices   []string          `json:"devices,omitempty"`
+	Keywords  []string          `json:"keywords,omitempty"`
+	Regexes   []string          `json:"regexes,omitempty"`
+	// Notes are optional remarks keyed as "<dim>:<value>" (e.g. "ip:1.2.3.4").
+	// Informational only — never consulted by the data plane.
+	Notes map[string]string `json:"notes,omitempty"`
 }
 
 // FinalConfig is the catch-all egress for permitted-but-unrouted traffic.
@@ -397,16 +401,18 @@ const ProfilePolicyVersion = 2
 // Rules is the egress allow-list snapshot (mirrors whitelist.Rules) embedded in
 // a Profile; kept here so apitypes stays dependency-free.
 type Rules struct {
-	Domains   []string `json:"domains"`
-	IPs       []string `json:"ips"`
-	Processes []string `json:"processes"`
-	Devices   []string `json:"devices"`
+	Domains   []string          `json:"domains"`
+	IPs       []string          `json:"ips"`
+	Processes []string          `json:"processes"`
+	Devices   []string          `json:"devices"`
+	Notes     map[string]string `json:"notes,omitempty"`
 }
 
 // DirectList is the no-proxy / bypass snapshot (mirrors directlist.Rules).
 type DirectList struct {
-	Domains []string `json:"domains"`
-	IPs     []string `json:"ips"`
+	Domains []string          `json:"domains"`
+	IPs     []string          `json:"ips"`
+	Notes   map[string]string `json:"notes,omitempty"`
 }
 
 // ProxyGroup is one user-defined group in a Profile / proxygroups config.
@@ -469,6 +475,16 @@ type ProxyScoring struct {
 	// back" connections that confirm a node as a blackhole. -1 turns the
 	// detection off; 0 means unset and resolves to the default.
 	BlackholeStreak int `json:"blackhole_streak,omitempty"`
+
+	// StreamStallSec: mid-connection watchdog. After a proxied connection has
+	// uploaded StreamStallMinUpload bytes and then produces no download for
+	// this many seconds, the gateway kills the conn and demotes the member so
+	// the client's retry lands elsewhere. Scoring alone only steers *new*
+	// dials — Cursor-agent streams die while still open. 0 = unset (default
+	// on); -1 disables.
+	StreamStallSec       int `json:"stream_stall_sec,omitempty"`
+	StreamStallMinUpload int `json:"stream_stall_min_upload,omitempty"`
+	StreamStallMinAgeSec int `json:"stream_stall_min_age_sec,omitempty"`
 }
 
 // ProxyGroupsConfig mirrors internal/proxygroups.Config for wire/profile use.
@@ -536,10 +552,11 @@ type ProxyScores struct {
 // match domain_regex, IPs match ip_cidr. Injected as reject rules above the
 // allows so a blacklisted target is dropped first.
 type Blacklist struct {
-	Domains  []string `json:"domains"`
-	Keywords []string `json:"keywords"`
-	Regexes  []string `json:"regexes"`
-	IPs      []string `json:"ips"`
+	Domains  []string          `json:"domains"`
+	Keywords []string          `json:"keywords"`
+	Regexes  []string          `json:"regexes"`
+	IPs      []string          `json:"ips"`
+	Notes    map[string]string `json:"notes,omitempty"`
 }
 
 // DNSServer is one resolver. Type: local (system) | udp | tcp | tls | https |

@@ -563,3 +563,29 @@ func TestBlackholeCanBeDisabled(t *testing.T) {
 		t.Fatalf("unset did not resolve to the default")
 	}
 }
+
+// Mid-stream stall kill must demote immediately (breaker open) so the client's
+// retry is not stuck on the same member — scoring alone only steers new dials.
+func TestRecordStreamStallDemotes(t *testing.T) {
+	s := newTestStore(t, Config{StreamStallSec: 5, BreakerFailures: 3})
+	s.RecordStreamStall("anytls/node-a")
+	v := s.Snapshot(nil)
+	if len(v) != 1 || v[0].Tag != "node-a" {
+		t.Fatalf("normalizeTag should strip type prefix, got %+v", v)
+	}
+	if v[0].Preferred {
+		t.Fatal("stall must demote (preferred=false)")
+	}
+	if v[0].Breaker != "open" {
+		t.Fatalf("breaker=%q, want open", v[0].Breaker)
+	}
+	if v[0].FailStreak < 1 {
+		t.Fatal("fail streak should advance")
+	}
+
+	off := newTestStore(t, Config{StreamStallSec: -1})
+	off.RecordStreamStall("node-b")
+	if len(off.Snapshot(nil)) != 0 {
+		t.Fatal("disabled stall must not record demotion")
+	}
+}

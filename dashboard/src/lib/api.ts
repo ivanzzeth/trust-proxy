@@ -89,6 +89,8 @@ export interface Whitelist {
   ips: string[];
   processes: string[];
   devices: string[];
+  /** Remarks keyed as "<dim>:<value>" (e.g. "ip:1.2.3.4"). */
+  notes?: Record<string, string>;
 }
 export type WLType = 'domain' | 'ip' | 'process' | 'device';
 export interface Blacklist {
@@ -96,12 +98,14 @@ export interface Blacklist {
   keywords: string[];
   regexes: string[];
   ips: string[];
+  notes?: Record<string, string>;
 }
 export type BLType = 'domain' | 'keyword' | 'regex' | 'ip';
 export interface Directlist {
   domains: string[];
   ips: string[];
   builtin: string[];
+  notes?: Record<string, string>;
 }
 export type DLType = 'domain' | 'ip';
 export type CRMatch = 'domain' | 'domain_suffix' | 'keyword' | 'regex' | 'ip_cidr';
@@ -129,7 +133,7 @@ export interface PackPreset {
   name: string;
   description: string;
   warning?: string;
-  exit?: 'overseas' | 'auto' | 'direct';
+  exit?: 'overseas' | 'auto' | 'direct' | 'mixed';
   rule_sets?: PackRuleSet[];
   rules: CustomRule[];
 }
@@ -199,6 +203,12 @@ export interface ProxyScoring {
   // Consecutive "handshake ok, we sent bytes, nothing came back" connections
   // before a node is called a blackhole. -1 turns the detection off.
   blackhole_streak?: number;
+  // Mid-connection watchdog: after a large upload, kill the live conn if
+  // download is silent for this many seconds, then demote the member.
+  // Scoring alone cannot unstick an open hang. -1 = off; 0 = default.
+  stream_stall_sec?: number;
+  stream_stall_min_upload?: number;
+  stream_stall_min_age_sec?: number;
 }
 // One member's score with every input that produced it, so the UI can explain
 // a ranking instead of asserting one.
@@ -760,8 +770,10 @@ export const api = {
       ips: w.ips ?? [],
       processes: w.processes ?? [],
       devices: w.devices ?? [],
+      notes: w.notes ?? {},
     })),
-  addWL: (type: WLType, value: string) => post<Whitelist>('/whitelist', { type, value }),
+  addWL: (type: WLType, value: string, note?: string) =>
+    post<Whitelist>('/whitelist', note !== undefined ? { type, value, note } : { type, value }),
   delWL: (type: WLType, value: string) => del<Whitelist>('/whitelist', { type, value }),
 
   blacklist: () =>
@@ -770,8 +782,10 @@ export const api = {
       keywords: b.keywords ?? [],
       regexes: b.regexes ?? [],
       ips: b.ips ?? [],
+      notes: b.notes ?? {},
     })),
-  addBL: (type: BLType, value: string) => post<Blacklist>('/blacklist', { type, value }),
+  addBL: (type: BLType, value: string, note?: string) =>
+    post<Blacklist>('/blacklist', note !== undefined ? { type, value, note } : { type, value }),
   delBL: (type: BLType, value: string) => del<Blacklist>('/blacklist', { type, value }),
 
   directlist: () =>
@@ -779,8 +793,10 @@ export const api = {
       domains: d.domains ?? [],
       ips: d.ips ?? [],
       builtin: d.builtin ?? [],
+      notes: d.notes ?? {},
     })),
-  addDL: (type: DLType, value: string) => post<Directlist>('/directlist', { type, value }),
+  addDL: (type: DLType, value: string, note?: string) =>
+    post<Directlist>('/directlist', note !== undefined ? { type, value, note } : { type, value }),
   delDL: (type: DLType, value: string) => del<Directlist>('/directlist', { type, value }),
 
   customRules: () => get<CustomRule[]>('/customrules'),
@@ -789,6 +805,7 @@ export const api = {
     patch<CustomRule[]>(`/customrules/${encodeURIComponent(id)}`, patchBody),
   delCR: (id: string) => del<CustomRule[]>(`/customrules/${encodeURIComponent(id)}`),
   moveCR: (id: string, dir: number) => post<CustomRule[]>(`/customrules/${encodeURIComponent(id)}/move`, { dir }),
+  moveCRTop: (id: string) => post<CustomRule[]>(`/customrules/${encodeURIComponent(id)}/move`, { to: 'top' }),
   packsCatalog: () => get<PackPreset[]>('/customrules/packs/catalog'),
   // Applying a pack changes two things, so this one stays a result object.
   applyPack: (catalog: string) =>

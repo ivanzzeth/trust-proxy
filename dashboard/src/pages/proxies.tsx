@@ -110,13 +110,13 @@ export default function Proxies() {
     const results: [string, number][] = [];
     for (let i = 0; i < members.length; i += concurrency) {
       const batch = members.slice(i, i + concurrency);
-      const part = await Promise.all(
+      const part: [string, number][] = await Promise.all(
         batch.map(async (m) => {
           try {
             const r = await api.delay(m);
-            return [m, r.error ? 0 : r.delay] as const;
+            return [m, r.error ? 0 : r.delay] as [string, number];
           } catch {
-            return [m, 0] as const;
+            return [m, 0] as [string, number];
           }
         }),
       );
@@ -585,6 +585,16 @@ function ScoringSettings({
             {num(k('tieMargin'), k('tieMarginHint'), 'tie_margin_points')}
             {num(k('staleHours'), k('staleHoursHint'), 'stale_hours')}
             {num(k('blackholeStreak'), k('blackholeStreakHint'), 'blackhole_streak')}
+          </div>
+
+          <div>
+            <div className="mb-1.5 text-xs font-medium">{k('stallTitle')}</div>
+            <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground">{k('stallHint')}</p>
+            <div className="grid gap-3 sm:grid-cols-3">
+              {num(k('stallSec'), k('stallSecHint'), 'stream_stall_sec')}
+              {num(k('stallMinUpload'), k('stallMinUploadHint'), 'stream_stall_min_upload')}
+              {num(k('stallMinAge'), k('stallMinAgeHint'), 'stream_stall_min_age_sec')}
+            </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-3">

@@ -101,9 +101,9 @@ func (s *Server) handleActivateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	in := policyInputs{
-		wl:   whitelist.Rules{Domains: p.Whitelist.Domains, IPs: p.Whitelist.IPs, Processes: p.Whitelist.Processes, Devices: p.Whitelist.Devices},
-		bl:   blacklist.Rules{Domains: p.Blacklist.Domains, Keywords: p.Blacklist.Keywords, Regexes: p.Blacklist.Regexes, IPs: p.Blacklist.IPs},
-		dl:   directlist.Rules{Domains: p.Directlist.Domains, IPs: p.Directlist.IPs},
+		wl:   whitelist.Rules{Domains: p.Whitelist.Domains, IPs: p.Whitelist.IPs, Processes: p.Whitelist.Processes, Devices: p.Whitelist.Devices, Notes: p.Whitelist.Notes},
+		bl:   blacklist.Rules{Domains: p.Blacklist.Domains, Keywords: p.Blacklist.Keywords, Regexes: p.Blacklist.Regexes, IPs: p.Blacklist.IPs, Notes: p.Blacklist.Notes},
+		dl:   directlist.Rules{Domains: p.Directlist.Domains, IPs: p.Directlist.IPs, Notes: p.Directlist.Notes},
 		cr:   customrules.Rules{Rules: append([]apitypes.CustomRule(nil), p.CustomRules...)},
 		sets: s.resolveProfileRuleSets(p),
 		pg:   s.resolveProfileProxyGroups(p),

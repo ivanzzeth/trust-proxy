@@ -1,7 +1,7 @@
 import { useDeferredValue, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
-import { ArrowDown, ArrowUp, Download, Package, Plus, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, ChevronsUp, Download, Package, Plus, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { api, CRAction, CRMatch, CustomRule, PackPreset } from '@/lib/api';
@@ -42,6 +42,7 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
   const patch = useMutation({ mutationFn: (v: { id: string; patch: Partial<Omit<CustomRule, 'id'>> }) => api.patchCR(v.id, v.patch), onSuccess: invalidate, onError: err });
   const del = useMutation({ mutationFn: api.delCR, onSuccess: invalidate, onError: err });
   const move = useMutation({ mutationFn: (v: { id: string; dir: number }) => api.moveCR(v.id, v.dir), onSuccess: invalidate, onError: err });
+  const moveTop = useMutation({ mutationFn: (id: string) => api.moveCRTop(id), onSuccess: invalidate, onError: err });
   const applyPack = useMutation({
     mutationFn: api.applyPack,
     onSuccess: (_data, name) => {
@@ -201,6 +202,8 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
                     <Badge variant="default" title={t('pages.customRules.exitOverseasHint')}>
                       🌏 {t('pages.customRules.exitOverseas')}
                     </Badge>
+                  ) : p.exit === 'mixed' ? (
+                    <Badge variant="default" title={t('pages.customRules.exitMixedHint')}>{t('pages.customRules.exitMixed')}</Badge>
                   ) : p.exit === 'direct' ? (
                     <Badge variant="muted" title={t('pages.customRules.exitDirectHint')}>{t('pages.customRules.exitDirect')}</Badge>
                   ) : p.exit === 'auto' ? (
@@ -285,6 +288,16 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
                   <TableRow key={r.id}>
                     <TableCell>
                       <div className="flex">
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-6"
+                          title={t('pages.customRules.moveTop')}
+                          disabled={i <= 0}
+                          onClick={() => moveTop.mutate(r.id)}
+                        >
+                          <ChevronsUp className="size-3.5" />
+                        </Button>
                         <Button size="icon" variant="ghost" className="size-6" disabled={i <= 0} onClick={() => move.mutate({ id: r.id, dir: -1 })}>
                           <ArrowUp className="size-3.5" />
                         </Button>

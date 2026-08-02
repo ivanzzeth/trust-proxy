@@ -142,21 +142,25 @@ var customToggleCmd = &cobra.Command{
 }
 
 var customMoveCmd = &cobra.Command{
-	Use:       "move <id> <up|down>",
-	Short:     "Change a rule's priority (first match wins)",
+	Use:       "move <id> <up|down|top>",
+	Short:     "Change a rule's priority (first match wins; top = index 0, not a pin)",
 	Args:      cobra.ExactArgs(2),
-	ValidArgs: []string{"up", "down"},
+	ValidArgs: []string{"up", "down", "top"},
 	RunE: func(cmd *cobra.Command, args []string) error {
-		dir := -1
+		var (
+			rules []apitypes.CustomRule
+			err   error
+		)
 		switch args[1] {
 		case "up":
-			dir = -1
+			rules, err = sdk().MoveCustomRule(args[0], -1)
 		case "down":
-			dir = 1
+			rules, err = sdk().MoveCustomRule(args[0], 1)
+		case "top":
+			rules, err = sdk().MoveCustomRuleTop(args[0])
 		default:
-			return fmt.Errorf("direction must be up or down")
+			return fmt.Errorf("direction must be up, down, or top")
 		}
-		rules, err := sdk().MoveCustomRule(args[0], dir)
 		if err != nil {
 			return err
 		}

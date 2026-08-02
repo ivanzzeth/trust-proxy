@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/ivanzzeth/trust-proxy/internal/customrules"
 	"github.com/ivanzzeth/trust-proxy/internal/nodes"
@@ -103,13 +104,32 @@ func (s *Server) handleMoveCustomRule(w http.ResponseWriter, r *http.Request) {
 	}
 	prev := s.cr.Get()
 	var req struct {
-		Dir int `json:"dir"` // <0 up (higher priority), >0 down
+		// Dir <0 up / >0 down by one step. Ignored when To is set.
+		Dir int `json:"dir"`
+		// To "top" promotes the rule to index 0 (highest priority). Not a pin.
+		To string `json:"to,omitempty"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Dir == 0 {
-		writeErr(w, http.StatusBadRequest, "dir must be a non-zero integer")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid body")
 		return
 	}
-	rules, err := s.cr.Move(r.PathValue("id"), req.Dir)
+	var (
+		rules customrules.Rules
+		err   error
+	)
+	switch strings.ToLower(strings.TrimSpace(req.To)) {
+	case "top":
+		rules, err = s.cr.MoveTop(r.PathValue("id"))
+	case "":
+		if req.Dir == 0 {
+			writeErr(w, http.StatusBadRequest, "dir must be non-zero, or to=top")
+			return
+		}
+		rules, err = s.cr.Move(r.PathValue("id"), req.Dir)
+	default:
+		writeErr(w, http.StatusBadRequest, "to must be \"top\" when set")
+		return
+	}
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

@@ -47,16 +47,24 @@ func (c *Client) List(kind listKind) (apitypes.ACLList, error) {
 	return out, err
 }
 
-// listEntry is the shared {type,value} mutation body.
+// listEntry is the shared {type,value,note?} mutation body.
 type listEntry struct {
-	Type  string `json:"type"`
-	Value string `json:"value"`
+	Type  string  `json:"type"`
+	Value string  `json:"value"`
+	Note  *string `json:"note,omitempty"`
 }
 
 // AddListEntry adds one entry. typ is domain|ip|process|device (per list).
-func (c *Client) AddListEntry(kind listKind, typ, value string) (apitypes.ACLList, error) {
+// Optional note sets/updates the remark; omit (nil) to leave an existing
+// remark alone on re-add. Pass a pointer to "" to clear.
+func (c *Client) AddListEntry(kind listKind, typ, value string, note ...string) (apitypes.ACLList, error) {
+	body := listEntry{Type: typ, Value: value}
+	if len(note) > 0 {
+		n := note[0]
+		body.Note = &n
+	}
 	var out apitypes.ACLList
-	err := c.do(http.MethodPost, "/api/"+string(kind), listEntry{Type: typ, Value: value}, &out)
+	err := c.do(http.MethodPost, "/api/"+string(kind), body, &out)
 	return out, err
 }
 
@@ -99,6 +107,14 @@ func (c *Client) DeleteCustomRule(id string) error {
 func (c *Client) MoveCustomRule(id string, dir int) ([]apitypes.CustomRule, error) {
 	var out []apitypes.CustomRule
 	err := c.do(http.MethodPost, "/api/customrules/"+url.PathEscape(id)+"/move", map[string]int{"dir": dir}, &out)
+	return out, err
+}
+
+// MoveCustomRuleTop promotes a rule to index 0 (highest first-match priority).
+// Not a pin — later adds/moves can push it down again.
+func (c *Client) MoveCustomRuleTop(id string) ([]apitypes.CustomRule, error) {
+	var out []apitypes.CustomRule
+	err := c.do(http.MethodPost, "/api/customrules/"+url.PathEscape(id)+"/move", map[string]string{"to": "top"}, &out)
 	return out, err
 }
 

@@ -25,9 +25,11 @@ import (
 // Rules is the no-proxy snapshot.
 //   - Domains: matched as domain_suffix (+ domain_regex for globs) -> direct.
 //   - IPs: matched as ip_cidr -> direct.
+//   - Notes: optional remarks keyed as "<dim>:<value>" (informational only).
 type Rules struct {
-	Domains []string `json:"domains"`
-	IPs     []string `json:"ips"`
+	Domains []string          `json:"domains"`
+	IPs     []string          `json:"ips"`
+	Notes   map[string]string `json:"notes,omitempty"`
 }
 
 // Store is a file-backed no-proxy list, safe for concurrent use.
@@ -65,6 +67,8 @@ func NewStore(path string) (*Store, error) {
 func (r *Rules) sanitize() int {
 	removed := 0
 	r.IPs = liststore.Filter(r.IPs, liststore.ValidCIDR, &removed)
+	r.Notes = liststore.PruneNotes(r.Notes, "ip", r.IPs)
+	r.Notes = liststore.PruneNotes(r.Notes, "domain", r.Domains)
 	return removed
 }
 
@@ -81,6 +85,7 @@ func snapshot(r Rules) Rules {
 	return Rules{
 		Domains: append([]string(nil), r.Domains...),
 		IPs:     append([]string(nil), r.IPs...),
+		Notes:   liststore.CloneNotes(r.Notes),
 	}
 }
 
@@ -90,8 +95,9 @@ func (s *Store) Set(r Rules) (Rules, error) {
 }
 
 // AddDomain / RemoveDomain / AddIP / RemoveIP mutate and persist, returning the
-// new snapshot. Validation errors leave the store unchanged.
-func (s *Store) AddDomain(d string) (Rules, error) {
+// new snapshot. Validation errors leave the store unchanged. Optional note
+// (variadic) sets/updates the remark; omit to leave an existing remark alone.
+func (s *Store) AddDomain(d string, note ...string) (Rules, error) {
 	d = strings.ToLower(strings.TrimSpace(d))
 	if d == "" || strings.ContainsAny(d, "/ \t") {
 		return s.Get(), fmt.Errorf("invalid domain: %q", d)
@@ -99,20 +105,39 @@ func (s *Store) AddDomain(d string) (Rules, error) {
 	if strings.Trim(d, "*?.") == "" {
 		return s.Get(), fmt.Errorf("domain pattern too broad: %q", d)
 	}
-	return s.mutate(func() { s.data.Domains = liststore.Add(s.data.Domains, d) })
+	return s.mutate(func() {
+		s.data.Domains = liststore.Add(s.data.Domains, d)
+		applyNote(&s.data.Notes, "domain", d, note)
+	})
 }
 func (s *Store) RemoveDomain(d string) (Rules, error) {
-	return s.mutate(func() { s.data.Domains = liststore.Remove(s.data.Domains, d) })
+	return s.mutate(func() {
+		s.data.Domains = liststore.Remove(s.data.Domains, d)
+		s.data.Notes = liststore.ClearNote(s.data.Notes, "domain", d)
+	})
 }
-func (s *Store) AddIP(ip string) (Rules, error) {
+func (s *Store) AddIP(ip string, note ...string) (Rules, error) {
 	ip = strings.TrimSpace(ip)
 	if !liststore.ValidCIDR(ip) {
 		return s.Get(), fmt.Errorf("invalid ip/cidr: %q (use an IP or CIDR, not a domain)", ip)
 	}
-	return s.mutate(func() { s.data.IPs = liststore.Add(s.data.IPs, ip) })
+	return s.mutate(func() {
+		s.data.IPs = liststore.Add(s.data.IPs, ip)
+		applyNote(&s.data.Notes, "ip", ip, note)
+	})
 }
 func (s *Store) RemoveIP(ip string) (Rules, error) {
-	return s.mutate(func() { s.data.IPs = liststore.Remove(s.data.IPs, ip) })
+	return s.mutate(func() {
+		s.data.IPs = liststore.Remove(s.data.IPs, ip)
+		s.data.Notes = liststore.ClearNote(s.data.Notes, "ip", ip)
+	})
+}
+
+func applyNote(notes *map[string]string, dim, value string, note []string) {
+	if len(note) == 0 {
+		return
+	}
+	*notes = liststore.SetNote(*notes, dim, value, note[0])
 }
 
 func (s *Store) mutate(fn func()) (Rules, error) {

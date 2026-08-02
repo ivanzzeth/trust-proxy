@@ -370,6 +370,27 @@ func (s *Store) Move(id string, dir int) (Rules, error) {
 	})
 }
 
+// MoveTop promotes id to index 0 (highest first-match priority). No-op when
+// already first or unknown. This is a one-shot reorder, not a pin — later
+// adds/moves can push it down again.
+func (s *Store) MoveTop(id string) (Rules, error) {
+	return s.mutate(func() {
+		idx := -1
+		for i := range s.data.Rules {
+			if s.data.Rules[i].ID == id {
+				idx = i
+				break
+			}
+		}
+		if idx <= 0 {
+			return
+		}
+		r := s.data.Rules[idx]
+		copy(s.data.Rules[1:idx+1], s.data.Rules[0:idx])
+		s.data.Rules[0] = r
+	})
+}
+
 func (s *Store) mutate(fn func()) (Rules, error) {
 	s.mu.Lock()
 	fn()

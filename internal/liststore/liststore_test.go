@@ -45,6 +45,33 @@ func TestValidCIDR(t *testing.T) {
 	}
 }
 
+func TestNotes(t *testing.T) {
+	var notes map[string]string
+	notes = SetNote(notes, "ip", "1.2.3.4", "  Canonical NTP  ")
+	if got := NoteOf(notes, "ip", "1.2.3.4"); got != "Canonical NTP" {
+		t.Fatalf("SetNote: got %q", got)
+	}
+	if NoteKey("ip", "1.2.3.4") != "ip:1.2.3.4" {
+		t.Fatal("NoteKey shape")
+	}
+	// empty clears
+	notes = SetNote(notes, "ip", "1.2.3.4", "")
+	if notes != nil {
+		t.Fatalf("expected nil after clear, got %v", notes)
+	}
+	notes = SetNote(nil, "domain", "a.com", "keep")
+	notes = SetNote(notes, "domain", "b.com", "drop")
+	notes = PruneNotes(notes, "domain", []string{"a.com"})
+	if NoteOf(notes, "domain", "a.com") != "keep" || NoteOf(notes, "domain", "b.com") != "" {
+		t.Fatalf("PruneNotes: got %v", notes)
+	}
+	cp := CloneNotes(notes)
+	cp["domain:a.com"] = "mutated"
+	if notes["domain:a.com"] != "keep" {
+		t.Fatal("CloneNotes aliased")
+	}
+}
+
 func TestMutatePersistsAndSnapshots(t *testing.T) {
 	type rules struct{ Items []string }
 	path := filepath.Join(t.TempDir(), "rules.json")

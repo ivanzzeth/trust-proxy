@@ -93,7 +93,8 @@
       "deny": "Deny",
       "subjects": "Subjects",
       "permitHint": "Destinations that may leave the network. Also granted by packs/rule-sets with a permit role — see Rules → Routing for the full list. Empty = deny all.",
-      "subjectsHint": "Optional source gates. When non-empty, unlisted processes or devices cannot egress even to a permitted destination."
+      "subjectsHint": "Optional source gates. When non-empty, unlisted processes or devices cannot egress even to a permitted destination.",
+      "notePh": "Note (optional)"
     },
     "whitelist": {
       "desc": "Permit destinations (domains & IPs). Default-deny: anything not listed (and not granted by a permit pack/rule-set) is blocked. Processes & Devices are Subjects, not destinations.",

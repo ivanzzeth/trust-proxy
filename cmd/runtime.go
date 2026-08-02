@@ -882,15 +882,20 @@ var (
 	scBreakDelay int
 	scBreakOKs   int
 	scStale      int
-	scBlackhole  int
-	scDisabled   bool
+	scBlackhole   int
+	scStallSec    int
+	scStallUpload int
+	scStallAge    int
+	scDisabled    bool
 )
 
 var scoringFlags = []string{
 	"min-samples", "weight-reliability", "weight-latency", "weight-throughput",
 	"reward", "penalty", "max-streak", "latency-good", "latency-bad",
 	"throughput-good", "tie-margin", "breaker-failures", "breaker-delay",
-	"breaker-successes", "stale-hours", "blackhole-streak", "disabled",
+	"breaker-successes", "stale-hours", "blackhole-streak",
+	"stream-stall", "stream-stall-min-upload", "stream-stall-min-age",
+	"disabled",
 }
 
 func weightTouched(cmd *cobra.Command) bool {
@@ -928,6 +933,12 @@ var groupsScoringCmd = &cobra.Command{
                         called a blackhole (score 0, breaker forced open, but
                         still listed). Subscriptions do ship these. -1 turns
                         the detection off.
+  --stream-stall        seconds of download silence after a large upload
+                        before the gateway kills the live conn and demotes
+                        the member (so the client's retry switches). Scoring
+                        alone only steers new dials. -1 = off.
+  --stream-stall-min-upload / --stream-stall-min-age
+                        floors that keep short or brand-new connections safe.
   --disabled            turn scoring off entirely; groups then rank on probe
                         latency alone, exactly as before this feature existed.
 
@@ -973,25 +984,34 @@ With no flags this prints the values in force.`,
 				} else {
 					fmt.Printf("blackhole detection: off\n")
 				}
+				if k.StreamStallSec > 0 {
+					fmt.Printf("stream stall       : kill after %ds silence (min upload %d B, min age %ds)\n",
+						k.StreamStallSec, k.StreamStallMinUpload, k.StreamStallMinAgeSec)
+				} else {
+					fmt.Printf("stream stall       : off\n")
+				}
 			})
 		}
 		patch := map[string]*int{
-			"min-samples":        &cfg.Scoring.MinSamples,
-			"weight-reliability": &cfg.Scoring.WeightReliability,
-			"weight-latency":     &cfg.Scoring.WeightLatency,
-			"weight-throughput":  &cfg.Scoring.WeightThroughput,
-			"reward":             &cfg.Scoring.RewardPerSuccess,
-			"penalty":            &cfg.Scoring.PenaltyPerFailure,
-			"max-streak":         &cfg.Scoring.MaxStreak,
-			"latency-good":       &cfg.Scoring.LatencyGoodMS,
-			"latency-bad":        &cfg.Scoring.LatencyBadMS,
-			"throughput-good":    &cfg.Scoring.ThroughputGoodKBps,
-			"tie-margin":         &cfg.Scoring.TieMarginPoints,
-			"breaker-failures":   &cfg.Scoring.BreakerFailures,
-			"breaker-delay":      &cfg.Scoring.BreakerDelaySeconds,
-			"breaker-successes":  &cfg.Scoring.BreakerSuccesses,
-			"stale-hours":        &cfg.Scoring.StaleHours,
-			"blackhole-streak":   &cfg.Scoring.BlackholeStreak,
+			"min-samples":             &cfg.Scoring.MinSamples,
+			"weight-reliability":      &cfg.Scoring.WeightReliability,
+			"weight-latency":          &cfg.Scoring.WeightLatency,
+			"weight-throughput":       &cfg.Scoring.WeightThroughput,
+			"reward":                  &cfg.Scoring.RewardPerSuccess,
+			"penalty":                 &cfg.Scoring.PenaltyPerFailure,
+			"max-streak":              &cfg.Scoring.MaxStreak,
+			"latency-good":            &cfg.Scoring.LatencyGoodMS,
+			"latency-bad":             &cfg.Scoring.LatencyBadMS,
+			"throughput-good":         &cfg.Scoring.ThroughputGoodKBps,
+			"tie-margin":              &cfg.Scoring.TieMarginPoints,
+			"breaker-failures":        &cfg.Scoring.BreakerFailures,
+			"breaker-delay":           &cfg.Scoring.BreakerDelaySeconds,
+			"breaker-successes":       &cfg.Scoring.BreakerSuccesses,
+			"stale-hours":             &cfg.Scoring.StaleHours,
+			"blackhole-streak":        &cfg.Scoring.BlackholeStreak,
+			"stream-stall":            &cfg.Scoring.StreamStallSec,
+			"stream-stall-min-upload": &cfg.Scoring.StreamStallMinUpload,
+			"stream-stall-min-age":    &cfg.Scoring.StreamStallMinAgeSec,
 		}
 		values := map[string]int{
 			"min-samples": scMinSamples, "weight-reliability": scWRel,
@@ -1002,6 +1022,8 @@ With no flags this prints the values in force.`,
 			"breaker-failures": scBreakFails, "breaker-delay": scBreakDelay,
 			"breaker-successes": scBreakOKs, "stale-hours": scStale,
 			"blackhole-streak": scBlackhole,
+			"stream-stall": scStallSec, "stream-stall-min-upload": scStallUpload,
+			"stream-stall-min-age": scStallAge,
 		}
 		for name, dst := range patch {
 			if cmd.Flags().Changed(name) {
@@ -1105,6 +1127,9 @@ func init() {
 	groupsScoringCmd.Flags().IntVar(&scBreakOKs, "breaker-successes", 0, "trial successes needed to close the breaker again")
 	groupsScoringCmd.Flags().IntVar(&scStale, "stale-hours", 0, "discard observations older than this on restart")
 	groupsScoringCmd.Flags().IntVar(&scBlackhole, "blackhole-streak", proxyscore.DefaultBlackholeStreak, "consecutive dead connections (handshake ok, nothing came back) before a node scores 0; -1 = off")
+	groupsScoringCmd.Flags().IntVar(&scStallSec, "stream-stall", proxyscore.DefaultStreamStallSec, "seconds of download silence after a large upload before killing the live conn; -1 = off")
+	groupsScoringCmd.Flags().IntVar(&scStallUpload, "stream-stall-min-upload", proxyscore.DefaultStreamStallMinUpload, "bytes uploaded before the stall watchdog arms")
+	groupsScoringCmd.Flags().IntVar(&scStallAge, "stream-stall-min-age", proxyscore.DefaultStreamStallMinAgeSec, "seconds a connection must live before stall kill is allowed")
 	groupsScoringCmd.Flags().BoolVar(&scDisabled, "disabled", false, "turn scoring off; groups rank on probe latency alone")
 	endpointsAddCmd.Flags().StringVarP(&endpointsFile, "file", "f", "", "JSON endpoint document (- for stdin)")
 	endpointsToggleCmd.Flags().BoolVar(&customEnable, "enabled", true, "target state")

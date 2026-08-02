@@ -39,8 +39,11 @@ func TestEveryScoringKnobHasAFlag(t *testing.T) {
 		"breaker_delay_seconds": "breaker-delay",
 		"breaker_successes":     "breaker-successes",
 		"stale_hours":           "stale-hours",
-		"blackhole_streak":      "blackhole-streak",
-		"disabled":              "disabled",
+		"blackhole_streak":         "blackhole-streak",
+		"stream_stall_sec":         "stream-stall",
+		"stream_stall_min_upload":  "stream-stall-min-upload",
+		"stream_stall_min_age_sec": "stream-stall-min-age",
+		"disabled":                 "disabled",
 	}
 
 	rt := reflect.TypeOf(apitypes.ProxyScoring{})

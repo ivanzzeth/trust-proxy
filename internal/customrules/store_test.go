@@ -81,6 +81,35 @@ func TestMove_Reorders(t *testing.T) {
 	}
 }
 
+func TestMoveTop_PromotesToIndexZero(t *testing.T) {
+	s := newStore(t)
+	_, _ = s.Add(apitypes.CustomRule{Match: "domain", Value: "a.com", Action: "direct"})
+	_, _ = s.Add(apitypes.CustomRule{Match: "domain", Value: "b.com", Action: "direct"})
+	c, _ := s.Add(apitypes.CustomRule{Match: "domain", Value: "c.com", Action: "direct"})
+	idC := c.Rules[2].ID
+
+	r, err := s.MoveTop(idC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Rules[0].Value != "c.com" {
+		t.Fatalf("want c.com at index 0, got %+v", r.Rules)
+	}
+	if r.Rules[1].Value != "a.com" || r.Rules[2].Value != "b.com" {
+		t.Fatalf("relative order of others should shift down: %+v", r.Rules)
+	}
+	// Already first: no-op.
+	r, _ = s.MoveTop(idC)
+	if r.Rules[0].Value != "c.com" {
+		t.Fatalf("move-top on first should be no-op: %+v", r.Rules)
+	}
+	// Unknown id: no-op.
+	r, _ = s.MoveTop("missing")
+	if r.Rules[0].Value != "c.com" || len(r.Rules) != 3 {
+		t.Fatalf("unknown id should leave list unchanged: %+v", r.Rules)
+	}
+}
+
 func TestSanitize_DropsInvalidOnLoad(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "customrules.json")

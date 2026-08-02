@@ -20,15 +20,15 @@ func (s *Server) snapshotLivePolicy() apitypes.PolicySlot {
 	slot := apitypes.PolicySlot{Final: "direct"}
 	if s.wl != nil {
 		wl := s.wl.Get()
-		slot.Whitelist = apitypes.Rules{Domains: wl.Domains, IPs: wl.IPs, Processes: wl.Processes, Devices: wl.Devices}
+		slot.Whitelist = apitypes.Rules{Domains: wl.Domains, IPs: wl.IPs, Processes: wl.Processes, Devices: wl.Devices, Notes: wl.Notes}
 	}
 	if s.bl != nil {
 		bl := s.bl.Get()
-		slot.Blacklist = apitypes.Blacklist{Domains: bl.Domains, Keywords: bl.Keywords, Regexes: bl.Regexes, IPs: bl.IPs}
+		slot.Blacklist = apitypes.Blacklist{Domains: bl.Domains, Keywords: bl.Keywords, Regexes: bl.Regexes, IPs: bl.IPs, Notes: bl.Notes}
 	}
 	if s.dl != nil {
 		dl := s.dl.Get()
-		slot.Directlist = apitypes.DirectList{Domains: dl.Domains, IPs: dl.IPs}
+		slot.Directlist = apitypes.DirectList{Domains: dl.Domains, IPs: dl.IPs, Notes: dl.Notes}
 	}
 	if s.cr != nil {
 		slot.CustomRules = append([]apitypes.CustomRule(nil), s.cr.Get().Rules...)

@@ -154,16 +154,19 @@ func cloneSlot(s apitypes.PolicySlot) apitypes.PolicySlot {
 			IPs:       append([]string(nil), s.Whitelist.IPs...),
 			Processes: append([]string(nil), s.Whitelist.Processes...),
 			Devices:   append([]string(nil), s.Whitelist.Devices...),
+			Notes:     cloneNotes(s.Whitelist.Notes),
 		},
 		Blacklist: apitypes.Blacklist{
 			Domains:  append([]string(nil), s.Blacklist.Domains...),
 			Keywords: append([]string(nil), s.Blacklist.Keywords...),
 			Regexes:  append([]string(nil), s.Blacklist.Regexes...),
 			IPs:      append([]string(nil), s.Blacklist.IPs...),
+			Notes:    cloneNotes(s.Blacklist.Notes),
 		},
 		Directlist: apitypes.DirectList{
 			Domains: append([]string(nil), s.Directlist.Domains...),
 			IPs:     append([]string(nil), s.Directlist.IPs...),
+			Notes:   cloneNotes(s.Directlist.Notes),
 		},
 		CustomRules: append([]apitypes.CustomRule(nil), s.CustomRules...),
 		RuleSets:    append([]apitypes.RuleSet(nil), s.RuleSets...),
@@ -179,6 +182,17 @@ func cloneSlot(s apitypes.PolicySlot) apitypes.PolicySlot {
 	if s.DNS != nil {
 		d := *s.DNS
 		out.DNS = &d
+	}
+	return out
+}
+
+func cloneNotes(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
 	}
 	return out
 }

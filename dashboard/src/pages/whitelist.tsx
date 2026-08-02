@@ -27,7 +27,8 @@ export default function Whitelist({
     qc.invalidateQueries({ queryKey: ['status'] });
   };
   const add = useMutation({
-    mutationFn: (v: { type: WLType; value: string }) => api.addWL(v.type, v.value),
+    mutationFn: (v: { type: WLType; value: string; note?: string }) =>
+      api.addWL(v.type, v.value, v.note),
     onSuccess: invalidate,
     onError: (e) => toast.error(String((e as Error).message)),
   });
@@ -38,6 +39,7 @@ export default function Whitelist({
 
   const showPermit = section === 'all' || section === 'permit';
   const showSubjects = section === 'all' || section === 'subjects';
+  const notes = wl?.notes ?? {};
 
   return (
     <div>
@@ -58,7 +60,8 @@ export default function Whitelist({
               hint={t('pages.whitelist.domainsHint')}
               placeholder={t('pages.whitelist.domainsPh')}
               items={wl?.domains ?? []}
-              onAdd={(v) => add.mutate({ type: 'domain', value: v })}
+              notes={notes}
+              onAdd={(v, note) => add.mutate({ type: 'domain', value: v, note })}
               onDel={(v) => del.mutate({ type: 'domain', value: v })}
             />
             <WLCard
@@ -67,7 +70,8 @@ export default function Whitelist({
               title={t('pages.whitelist.ip')}
               placeholder={t('pages.whitelist.ipPh')}
               items={wl?.ips ?? []}
-              onAdd={(v) => add.mutate({ type: 'ip', value: v })}
+              notes={notes}
+              onAdd={(v, note) => add.mutate({ type: 'ip', value: v, note })}
               onDel={(v) => del.mutate({ type: 'ip', value: v })}
             />
           </>
@@ -81,7 +85,8 @@ export default function Whitelist({
               hint={t('pages.whitelist.processesHint')}
               placeholder={t('pages.whitelist.processesPh')}
               items={wl?.processes ?? []}
-              onAdd={(v) => add.mutate({ type: 'process', value: v })}
+              notes={notes}
+              onAdd={(v, note) => add.mutate({ type: 'process', value: v, note })}
               onDel={(v) => del.mutate({ type: 'process', value: v })}
             />
             <WLCard
@@ -91,7 +96,8 @@ export default function Whitelist({
               hint={t('pages.whitelist.devicesHint')}
               placeholder={t('pages.whitelist.devicesPh')}
               items={wl?.devices ?? []}
-              onAdd={(v) => add.mutate({ type: 'device', value: v })}
+              notes={notes}
+              onAdd={(v, note) => add.mutate({ type: 'device', value: v, note })}
               onDel={(v) => del.mutate({ type: 'device', value: v })}
             />
           </>
@@ -102,11 +108,13 @@ export default function Whitelist({
 }
 
 function WLCard({
+  type,
   icon: Icon,
   title,
   hint,
   placeholder,
   items,
+  notes,
   onAdd,
   onDel,
 }: {
@@ -116,16 +124,19 @@ function WLCard({
   hint?: string;
   placeholder: string;
   items: string[];
-  onAdd: (v: string) => void;
+  notes: Record<string, string>;
+  onAdd: (v: string, note?: string) => void;
   onDel: (v: string) => void;
 }) {
   const { t } = useTranslation();
   const [v, setV] = useState('');
+  const [note, setNote] = useState('');
   const submit = () => {
     const val = v.trim();
     if (val) {
-      onAdd(val);
+      onAdd(val, note.trim() || undefined);
       setV('');
+      setNote('');
     }
   };
   return (
@@ -141,33 +152,47 @@ function WLCard({
         {hint && <p className="text-xs leading-relaxed text-muted-foreground">{hint}</p>}
       </CardHeader>
       <CardContent className="flex flex-1 flex-col gap-3">
-        <div className="flex gap-2">
+        <div className="flex flex-col gap-2">
+          <div className="flex gap-2">
+            <Input
+              value={v}
+              placeholder={placeholder}
+              onChange={(e) => setV(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && submit()}
+            />
+            <Button size="icon" variant="secondary" onClick={submit} disabled={!v.trim()}>
+              <Plus className="size-4" />
+            </Button>
+          </div>
           <Input
-            value={v}
-            placeholder={placeholder}
-            onChange={(e) => setV(e.target.value)}
+            value={note}
+            placeholder={t('pages.acls.notePh')}
+            onChange={(e) => setNote(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && submit()}
           />
-          <Button size="icon" variant="secondary" onClick={submit} disabled={!v.trim()}>
-            <Plus className="size-4" />
-          </Button>
         </div>
         <div className="min-h-24 space-y-1">
           {items.length === 0 && <p className="py-4 text-center text-xs text-muted-foreground">{t('common.empty')}</p>}
-          {items.map((it) => (
-            <div
-              key={it}
-              className="group flex items-center justify-between rounded-md px-2 py-1 text-sm hover:bg-muted/60"
-            >
-              <span className="tnum truncate">{it}</span>
-              <button
-                onClick={() => onDel(it)}
-                className="ml-2 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 cursor-pointer"
+          {items.map((it) => {
+            const remark = notes[`${type}:${it}`];
+            return (
+              <div
+                key={it}
+                className="group flex items-start justify-between gap-2 rounded-md px-2 py-1 text-sm hover:bg-muted/60"
               >
-                <X className="size-3.5" />
-              </button>
-            </div>
-          ))}
+                <div className="min-w-0">
+                  <div className="tnum truncate">{it}</div>
+                  {remark && <div className="truncate text-xs text-muted-foreground">{remark}</div>}
+                </div>
+                <button
+                  onClick={() => onDel(it)}
+                  className="mt-0.5 ml-2 shrink-0 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100 cursor-pointer"
+                >
+                  <X className="size-3.5" />
+                </button>
+              </div>
+            );
+          })}
         </div>
       </CardContent>
     </Card>

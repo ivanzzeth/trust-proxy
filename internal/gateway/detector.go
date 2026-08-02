@@ -24,10 +24,13 @@ type detector struct {
 	// outbounds resolves a group tag to the member it currently uses, so a record
 	// says which exit carried the connection rather than which group was asked.
 	outbounds adapter.OutboundManager
+	// mgr is optional: when set, proxied TCP conns get the stream-stall
+	// watchdog (kill + demote on upload-then-silence).
+	mgr *Manager
 }
 
-func newDetector(engine *detect.Engine, outbounds adapter.OutboundManager) *detector {
-	return &detector{engine: engine, outbounds: outbounds}
+func newDetector(engine *detect.Engine, outbounds adapter.OutboundManager, mgr *Manager) *detector {
+	return &detector{engine: engine, outbounds: outbounds, mgr: mgr}
 }
 
 var (
@@ -86,6 +89,9 @@ func (d *detector) RoutedConnection(ctx context.Context, conn net.Conn, m adapte
 		ev.SetTiming(connTiming{timing})
 	}
 	c := d.engine.Wrap(conn, ev)
+	if d.mgr != nil {
+		c = d.mgr.wrapStreamStall(c, ev)
+	}
 	// Auto-disposal: threat-intel hits (and mid-stream exfil via Wrap) drop the
 	// connection and persist the destination onto the blacklist.
 	if ev.Block && d.engine.AutoBlock() {

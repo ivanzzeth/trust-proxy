@@ -186,12 +186,17 @@ func (s *Server) applySlot(slot apitypes.PolicySlot, postureName string) ([]stri
 		wl: whitelist.Rules{
 			Domains: slot.Whitelist.Domains, IPs: slot.Whitelist.IPs,
 			Processes: slot.Whitelist.Processes, Devices: slot.Whitelist.Devices,
+			Notes: slot.Whitelist.Notes,
 		},
 		bl: blacklist.Rules{
 			Domains: slot.Blacklist.Domains, Keywords: slot.Blacklist.Keywords,
 			Regexes: slot.Blacklist.Regexes, IPs: slot.Blacklist.IPs,
+			Notes: slot.Blacklist.Notes,
 		},
-		dl:   directlist.Rules{Domains: slot.Directlist.Domains, IPs: slot.Directlist.IPs},
+		dl: directlist.Rules{
+			Domains: slot.Directlist.Domains, IPs: slot.Directlist.IPs,
+			Notes: slot.Directlist.Notes,
+		},
 		cr:   customrules.Rules{Rules: append([]apitypes.CustomRule(nil), slot.CustomRules...)},
 		sets: ruleset.Sets{Sets: append([]apitypes.RuleSet(nil), slot.RuleSets...)},
 	}

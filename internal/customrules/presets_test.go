@@ -69,6 +69,13 @@ func TestPresets_ExitMatchesRules(t *testing.T) {
 				if r.Action != apitypes.CustomActionDirect || r.Node != "" {
 					t.Fatalf("preset %q (direct) rule %q: action=%q node=%q, want direct", p.Name, r.Value, r.Action, r.Node)
 				}
+			case apitypes.PackExitMixed:
+				// Per-rule egress is intentional; only reject unknown actions.
+				switch r.Action {
+				case apitypes.CustomActionDirect, apitypes.CustomActionProxy, apitypes.CustomActionNode, apitypes.CustomActionBlock:
+				default:
+					t.Fatalf("preset %q (mixed) rule %q: unexpected action %q", p.Name, r.Value, r.Action)
+				}
 			case "":
 				// Permit-only packs (e.g. China wide) have no Exit hint.
 			default:
@@ -152,23 +159,40 @@ func TestPresets_CursorCoversAgentNetwork(t *testing.T) {
 	if cursor == nil {
 		t.Fatal("Cursor preset missing")
 	}
+	if cursor.Exit != apitypes.PackExitMixed {
+		t.Fatalf("Cursor exit=%q, want mixed (api5 direct + rest Overseas)", cursor.Exit)
+	}
 	want := map[string]bool{
-		"cursor.com": false, "cursor.sh": false,
+		"api5.cursor.sh": false,
+		"cursor.com":     false, "cursor.sh": false,
 		"cursorapi.com": false, "cursor-cdn.com": false, "cursorvm.com": false,
 		"todesktop.com": false,
 	}
-	for _, r := range cursor.Rules {
+	api5Idx, cursorShIdx := -1, -1
+	for i, r := range cursor.Rules {
 		if _, ok := want[r.Value]; ok {
 			want[r.Value] = true
 		}
-		if r.Node != "" && r.Node != "🌏 Overseas" {
-			// overseasRules pins OverseasGroupTag
+		switch r.Value {
+		case "api5.cursor.sh":
+			api5Idx = i
+			if r.Action != apitypes.CustomActionDirect {
+				t.Fatalf("api5.cursor.sh must be direct (Agent streams), got action=%q", r.Action)
+			}
+		case "cursor.sh":
+			cursorShIdx = i
+			if r.Action != apitypes.CustomActionProxy || r.Node != proxygroups.OverseasGroupTag {
+				t.Fatalf("cursor.sh must be Overseas, got action=%q node=%q", r.Action, r.Node)
+			}
 		}
 	}
 	for d, ok := range want {
 		if !ok {
 			t.Fatalf("Cursor preset missing %q (needed under TUN for Agent/tools)", d)
 		}
+	}
+	if api5Idx < 0 || cursorShIdx < 0 || api5Idx >= cursorShIdx {
+		t.Fatalf("api5.cursor.sh (idx %d) must precede cursor.sh (idx %d); first match wins", api5Idx, cursorShIdx)
 	}
 }
 

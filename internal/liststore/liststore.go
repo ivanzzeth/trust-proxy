@@ -12,8 +12,90 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 )
+
+// NoteKey builds the map key used in Rules.Notes: "<dim>:<value>".
+// dim is the list dimension (domain|ip|process|device|keyword|regex) — the
+// same strings the API mutation body uses for "type".
+func NoteKey(dim, value string) string {
+	return dim + ":" + value
+}
+
+// CloneNotes returns a shallow copy of notes (nil stays nil).
+func CloneNotes(notes map[string]string) map[string]string {
+	if notes == nil {
+		return nil
+	}
+	out := make(map[string]string, len(notes))
+	for k, v := range notes {
+		out[k] = v
+	}
+	return out
+}
+
+// SetNote writes or clears a remark. Empty note deletes the key. Returns the
+// (possibly newly allocated) map; never returns a non-nil empty map — callers
+// get nil so JSON omits the field.
+func SetNote(notes map[string]string, dim, value, note string) map[string]string {
+	key := NoteKey(dim, value)
+	note = strings.TrimSpace(note)
+	if note == "" {
+		if notes == nil {
+			return nil
+		}
+		delete(notes, key)
+		if len(notes) == 0 {
+			return nil
+		}
+		return notes
+	}
+	if notes == nil {
+		notes = map[string]string{}
+	}
+	notes[key] = note
+	return notes
+}
+
+// ClearNote drops the remark for dim/value if present.
+func ClearNote(notes map[string]string, dim, value string) map[string]string {
+	return SetNote(notes, dim, value, "")
+}
+
+// PruneNotes drops remark keys whose dim prefix matches dim and whose value
+// is not in keep. Used after sanitize drops invalid entries so orphan notes
+// don't linger on disk.
+func PruneNotes(notes map[string]string, dim string, keep []string) map[string]string {
+	if notes == nil {
+		return nil
+	}
+	alive := make(map[string]struct{}, len(keep))
+	for _, v := range keep {
+		alive[v] = struct{}{}
+	}
+	prefix := dim + ":"
+	for k := range notes {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if _, ok := alive[k[len(prefix):]]; !ok {
+			delete(notes, k)
+		}
+	}
+	if len(notes) == 0 {
+		return nil
+	}
+	return notes
+}
+
+// NoteOf returns the remark for dim/value, or "" if none.
+func NoteOf(notes map[string]string, dim, value string) string {
+	if notes == nil {
+		return ""
+	}
+	return notes[NoteKey(dim, value)]
+}
 
 // ValidCIDR reports whether s is a usable ip_cidr entry (a CIDR or a bare IP).
 func ValidCIDR(s string) bool {

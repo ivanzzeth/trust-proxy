@@ -49,6 +49,42 @@ func TestMutateWhitelistAddAndRemove(t *testing.T) {
 	}
 }
 
+func TestMutateWhitelistNote(t *testing.T) {
+	s := newLivePolicyServer(t)
+
+	rec := doJSON(s.handleAddWhitelist, `{"type":"ip","value":"185.125.190.58","note":"Canonical NTP"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("add with note: status=%d body=%s", rec.Code, rec.Body)
+	}
+	var got whitelist.Rules
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Notes["ip:185.125.190.58"] != "Canonical NTP" {
+		t.Fatalf("note missing: %+v", got.Notes)
+	}
+	// Re-add without note preserves it.
+	rec = doJSON(s.handleAddWhitelist, `{"type":"ip","value":"185.125.190.58"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-add: status=%d body=%s", rec.Code, rec.Body)
+	}
+	got = whitelist.Rules{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.Notes["ip:185.125.190.58"] != "Canonical NTP" {
+		t.Fatalf("re-add wiped note: %+v", got.Notes)
+	}
+	// Explicit empty clears.
+	rec = doJSON(s.handleAddWhitelist, `{"type":"ip","value":"185.125.190.58","note":""}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("clear note: status=%d body=%s", rec.Code, rec.Body)
+	}
+	got = whitelist.Rules{}
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.Notes["ip:185.125.190.58"] != "" {
+		t.Fatalf("expected clear, got %+v", got.Notes)
+	}
+}
+
 func TestMutateWhitelistUnknownType(t *testing.T) {
 	s := newLivePolicyServer(t)
 	rec := doJSON(s.handleAddWhitelist, `{"type":"bogus","value":"x"}`)
