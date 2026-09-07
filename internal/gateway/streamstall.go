@@ -57,22 +57,21 @@ type stallConn struct {
 	stallFor  time.Duration
 	started   time.Time
 
-	lastDownUnix int64 // unix nano; updated on Write
+	lastDownUnix int64 // unix nano; updated when remote download bytes arrive
 	killed       atomic.Bool
 	closeOnce    sync.Once
 }
 
 func (c *stallConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
-	return n, err
-}
-
-func (c *stallConn) Write(b []byte) (int, error) {
-	n, err := c.Conn.Write(b)
 	if n > 0 {
 		atomic.StoreInt64(&c.lastDownUnix, time.Now().UnixNano())
 	}
 	return n, err
+}
+
+func (c *stallConn) Write(b []byte) (int, error) {
+	return c.Conn.Write(b)
 }
 
 func (c *stallConn) Close() error {
