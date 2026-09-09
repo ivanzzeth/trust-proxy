@@ -1,12 +1,30 @@
 package gateway
 
 import (
+	"net"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/ivanzzeth/trust-proxy/internal/detect"
 )
+
+type progressConn struct{}
+
+func (progressConn) Read(b []byte) (int, error) {
+	if len(b) == 0 {
+		return 0, nil
+	}
+	b[0] = 1
+	return 1, nil
+}
+func (progressConn) Write(b []byte) (int, error)      { return len(b), nil }
+func (progressConn) Close() error                     { return nil }
+func (progressConn) LocalAddr() net.Addr              { return nil }
+func (progressConn) RemoteAddr() net.Addr             { return nil }
+func (progressConn) SetDeadline(time.Time) error      { return nil }
+func (progressConn) SetReadDeadline(time.Time) error  { return nil }
+func (progressConn) SetWriteDeadline(time.Time) error { return nil }
 
 func TestIsProxyMemberOutbound(t *testing.T) {
 	for _, tc := range []struct {
@@ -59,5 +77,25 @@ func TestStallConn_ShouldKill(t *testing.T) {
 	c.minAge = time.Minute
 	if c.shouldKill() {
 		t.Fatal("young connection must not kill")
+	}
+}
+
+func TestStallConn_OnlyDownloadRefreshesSilenceClock(t *testing.T) {
+	c := &stallConn{Conn: progressConn{}}
+	old := time.Now().Add(-time.Minute).UnixNano()
+	atomic.StoreInt64(&c.lastDownUnix, old)
+
+	if _, err := c.Write([]byte("upload")); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt64(&c.lastDownUnix); got != old {
+		t.Fatalf("upload refreshed download clock: got %d want %d", got, old)
+	}
+
+	if _, err := c.Read(make([]byte, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if got := atomic.LoadInt64(&c.lastDownUnix); got <= old {
+		t.Fatalf("download did not refresh silence clock: got %d, old %d", got, old)
 	}
 }
