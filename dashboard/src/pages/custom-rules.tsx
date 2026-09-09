@@ -198,7 +198,14 @@ export default function CustomRules({ embedded }: { embedded?: boolean }) {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm font-medium">{p.name}</span>
-                  {p.exit === 'overseas' ? (
+                  {p.exit === 'pinned' ? (
+                    /* The pinned country lives on the rules themselves, so the
+                       badge shows the real group tag (e.g. "🇺🇸 US") rather than
+                       a generic word — which country it is IS the setting. */
+                    <Badge variant="default" title={t('pages.customRules.exitPinnedHint')}>
+                      📌 {p.rules.find((r) => r.node)?.node ?? t('pages.customRules.exitPinned')}
+                    </Badge>
+                  ) : p.exit === 'overseas' ? (
                     <Badge variant="default" title={t('pages.customRules.exitOverseasHint')}>
                       🌏 {t('pages.customRules.exitOverseas')}
                     </Badge>

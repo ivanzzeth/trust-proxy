@@ -9,7 +9,8 @@ import (
 // explicitly — Route never opens the ACL gate by itself.
 //
 // Prefer RuleSets (geosite-*) for broad services. Keep custom Rules when egress
-// must pin a group (Overseas) or when no clean geosite category exists.
+// must pin a group (a country group, for account-bound AI services) or when no
+// clean geosite category exists.
 //
 // China is split:
 //   - "China (wide)" — Permit geosite-cn (security warning: mainland C2 allowed)
@@ -17,29 +18,70 @@ import (
 //
 // Old one-click "CN works" = enable both.
 var Presets = []apitypes.PackPreset{
+	// The four AI packs pin ONE country group each instead of routing through the
+	// shared Overseas urltest. Overseas ranks ~all non-HK/CN nodes by latency, so
+	// on a real subscription it spans a dozen countries (measured on a live
+	// gateway: 26 nodes / 14 countries, including TR, VN, PH, TH, MY) and from
+	// mainland China those are frequently the *fastest* — which is exactly how a
+	// single logged-in ChatGPT session ends up dialling from GB, KR, SG and VN
+	// within one week (measured, same gateway). Anthropic/OpenAI treat that as a
+	// hijacked account: re-auth loops, "unusual activity", or a region they
+	// refuse outright. A stable exit beats a fast one for anything account-bound.
+	//
+	// Egress stays "proxy" with Node set (not egress "node"): if the user has no
+	// node in that country the group does not exist, and a proxy rule self-heals
+	// to the default proxy group. Egress "node" would be dropped instead — and a
+	// dropped rule loses its Permit too, so the service would be default-DENIED
+	// rather than merely routed elsewhere.
 	{
-		Name:        "Claude",
-		Description: "Anthropic Claude (web, API, Claude Code): permit domains + route via Overseas (never HK/CN).",
-		Exit:        apitypes.PackExitOverseas,
-		Rules:       overseasRules("Claude", "anthropic.com", "claude.ai", "claude.com"),
+		Name: "Claude",
+		Description: "Anthropic Claude (web, API, Claude Code, Artifacts): permit + pin every request to " + usTag + ". " +
+			"Includes hCaptcha (the claude.ai login challenge) and the keyword catch-alls that cover hosts not yet listed.",
+		Warning: "The keyword rules (anthropic / claude) permit any hostname containing those words, " +
+			"not just Anthropic's. That is deliberate belt-and-braces for a service that keeps adding hosts — " +
+			"drop those two rules if you want suffix-exact permits only.",
+		Exit: apitypes.PackExitPinned,
+		Rules: concatRules(
+			countryRules("Claude", "US",
+				"anthropic.com",         // api / console / statsig / a-api / s-cdn / assets-proxy
+				"claude.ai",             // app / downloads / assets
+				"claude.com",            // platform / status
+				"claudeusercontent.com", // Artifacts iframes (*.frame.claudeusercontent.com)
+				// claude.ai's login challenge. Shared infra, so this pins other
+				// sites' hCaptcha too — that is the trade for a login that works.
+				"hcaptcha.com",
+			),
+			countryKeywords("Claude", "US", "anthropic", "claude"),
+		),
 	},
 	{
 		Name:        "OpenAI",
-		Description: "OpenAI ChatGPT / API / Sora: permit domains + route via Overseas.",
-		Exit:        apitypes.PackExitOverseas,
-		Rules:       overseasRules("OpenAI", "openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "sora.com"),
+		Description: "OpenAI ChatGPT / API / Sora / Codex: permit + pin every request to " + jpTag + ".",
+		Warning: "The keyword rules (openai / chatgpt) permit any hostname containing those words. " +
+			"Drop them if you want suffix-exact permits only.",
+		Exit: apitypes.PackExitPinned,
+		Rules: concatRules(
+			countryRules("OpenAI", "JP",
+				"openai.com",         // api / auth / cdn / files / images / sentinel / help
+				"chatgpt.com",        // app, plus ab. / ws. / learn. and the Codex backend
+				"oaistatic.com",      // web assets (auth-cdn, persistent, help-center-cdn)
+				"oaiusercontent.com", // uploads / generated files (sdmntpr*)
+				"sora.com",
+			),
+			countryKeywords("OpenAI", "JP", "openai", "chatgpt"),
+		),
 	},
 	{
 		Name: "Cursor",
-		Description: "Cursor editor + Agent/tools: permit official hosts; Agent streaming " +
-			"(api5.*) goes direct for stability, editor/API/CDN via Overseas. " +
-			"Under TUN these must be permitted or the IDE agent hangs. Re-apply the pack to refresh.",
+		Description: "Cursor editor + Agent/tools: permit official hosts, pinned to " + usTag + "; Agent streaming " +
+			"(api5.*) goes direct for stability. Under TUN these must be permitted or the IDE agent hangs. " +
+			"Re-apply the pack to refresh.",
 		Exit: apitypes.PackExitMixed,
 		// More-specific matchers first: domain_suffix api5.cursor.sh must beat
-		// the broad cursor.sh Overseas rule (first match wins).
+		// the broad cursor.sh rule (first match wins).
 		Rules: concatRules(
 			directRules("Cursor", "api5.cursor.sh"),
-			overseasRules("Cursor",
+			countryRules("Cursor", "US",
 				"cursor.com", "cursor.sh",
 				"cursorapi.com", "cursor-cdn.com", "cursorvm.com",
 				"todesktop.com",
@@ -49,14 +91,24 @@ var Presets = []apitypes.PackPreset{
 	},
 	{
 		Name:        "AI (other)",
-		Description: "Gemini / Grok / Perplexity / …: permit + route via proxy (Auto).",
-		Exit:        apitypes.PackExitAuto,
-		Rules: proxyRules("AI (other)",
-			"gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com", "deepmind.com",
+		Description: "Gemini / Grok / Perplexity / Copilot / inference hosts: permit + pin to " + usTag + ".",
+		Exit:        apitypes.PackExitPinned,
+		Rules: countryRules("AI (other)", "US",
+			"gemini.google.com", "aistudio.google.com", "generativelanguage.googleapis.com",
+			"notebooklm.google.com", "labs.google", "deepmind.com",
 			"x.ai", "grok.com", "perplexity.ai",
 			"mistral.ai", "cohere.com", "groq.com", "poe.com",
 			"huggingface.co", "hf.co", "midjourney.com", "suno.com",
-			"ollama.com"),
+			"ollama.com",
+			// Coding assistants other than Cursor (own pack).
+			"githubcopilot.com", "codeium.com", "windsurf.com",
+			// Inference / model hosts an app or agent dials directly.
+			"openrouter.ai", "together.ai", "fireworks.ai", "replicate.com",
+			"deepinfra.com", "novita.ai", "anyscale.com",
+			// Media generation.
+			"elevenlabs.io", "runwayml.com", "stability.ai", "civitai.com",
+			"heygen.com", "luma-api.com", "pika.art",
+			"character.ai"),
 	},
 	{
 		Name:        "Dev",
@@ -212,13 +264,13 @@ var githubGitCIDRs = []string{
 	"20.26.156.215/32", "20.26.156.214/32",
 }
 
-func packRules(pack, action, node string, domains ...string) []apitypes.CustomRule {
+func packRulesMatch(pack, match, action, node string, values ...string) []apitypes.CustomRule {
 	p := true
-	out := make([]apitypes.CustomRule, 0, len(domains))
-	for _, d := range domains {
+	out := make([]apitypes.CustomRule, 0, len(values))
+	for _, v := range values {
 		out = append(out, apitypes.CustomRule{
-			Match:   apitypes.CustomMatchDomainSuffix,
-			Value:   d,
+			Match:   match,
+			Value:   v,
 			Action:  action,
 			Egress:  action,
 			Permit:  &p,
@@ -228,6 +280,10 @@ func packRules(pack, action, node string, domains ...string) []apitypes.CustomRu
 		})
 	}
 	return out
+}
+
+func packRules(pack, action, node string, domains ...string) []apitypes.CustomRule {
+	return packRulesMatch(pack, apitypes.CustomMatchDomainSuffix, action, node, domains...)
 }
 
 func proxyCIDRs(pack string, cidrs ...string) []apitypes.CustomRule {
@@ -263,8 +319,24 @@ func proxyRules(pack string, domains ...string) []apitypes.CustomRule {
 	return packRules(pack, apitypes.CustomActionProxy, "", domains...)
 }
 
-func overseasRules(pack string, domains ...string) []apitypes.CustomRule {
-	return packRules(pack, apitypes.CustomActionProxy, proxygroups.OverseasGroupTag, domains...)
+// Country group tags as the gateway builds them when AutoCountry is on
+// (proxygroups.CountryName => flag + ISO code). Named here so a preset reads as
+// "pinned to US" rather than as an emoji literal.
+var (
+	usTag = proxygroups.CountryName("US")
+	jpTag = proxygroups.CountryName("JP")
+)
+
+// countryRules pins domains to one country group. See the comment above the AI
+// presets for why the egress is "proxy"-with-Node and not "node".
+func countryRules(pack, code string, domains ...string) []apitypes.CustomRule {
+	return packRules(pack, apitypes.CustomActionProxy, proxygroups.CountryName(code), domains...)
+}
+
+// countryKeywords is countryRules over domain_keyword matchers — the catch-all
+// half of an AI pack, for the hosts a service adds between our releases.
+func countryKeywords(pack, code string, keywords ...string) []apitypes.CustomRule {
+	return packRulesMatch(pack, apitypes.CustomMatchKeyword, apitypes.CustomActionProxy, proxygroups.CountryName(code), keywords...)
 }
 
 func directRules(pack string, domains ...string) []apitypes.CustomRule {

@@ -1,6 +1,7 @@
 package customrules
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/ivanzzeth/trust-proxy/internal/proxygroups"
@@ -68,6 +69,15 @@ func TestPresets_ExitMatchesRules(t *testing.T) {
 			case apitypes.PackExitDirect:
 				if r.Action != apitypes.CustomActionDirect || r.Node != "" {
 					t.Fatalf("preset %q (direct) rule %q: action=%q node=%q, want direct", p.Name, r.Value, r.Action, r.Node)
+				}
+			case apitypes.PackExitPinned:
+				// The point of a pinned pack is that every rule leaves through
+				// the SAME country. A rule that lost its Node (or that names
+				// the roaming Overseas group) puts the pack back on a
+				// latency-ranked exit that spans a dozen countries — the exact
+				// failure this exit kind exists to prevent.
+				if r.Action != apitypes.CustomActionProxy || r.Node == "" || r.Node == proxygroups.OverseasGroupTag {
+					t.Fatalf("preset %q (pinned) rule %q: action=%q node=%q, want proxy -> a country group", p.Name, r.Value, r.Action, r.Node)
 				}
 			case apitypes.PackExitMixed:
 				// Per-rule egress is intentional; only reject unknown actions.
@@ -160,7 +170,7 @@ func TestPresets_CursorCoversAgentNetwork(t *testing.T) {
 		t.Fatal("Cursor preset missing")
 	}
 	if cursor.Exit != apitypes.PackExitMixed {
-		t.Fatalf("Cursor exit=%q, want mixed (api5 direct + rest Overseas)", cursor.Exit)
+		t.Fatalf("Cursor exit=%q, want mixed (api5 direct + rest pinned)", cursor.Exit)
 	}
 	want := map[string]bool{
 		"api5.cursor.sh": false,
@@ -181,8 +191,8 @@ func TestPresets_CursorCoversAgentNetwork(t *testing.T) {
 			}
 		case "cursor.sh":
 			cursorShIdx = i
-			if r.Action != apitypes.CustomActionProxy || r.Node != proxygroups.OverseasGroupTag {
-				t.Fatalf("cursor.sh must be Overseas, got action=%q node=%q", r.Action, r.Node)
+			if r.Action != apitypes.CustomActionProxy || r.Node != usTag {
+				t.Fatalf("cursor.sh must be pinned to %q, got action=%q node=%q", usTag, r.Action, r.Node)
 			}
 		}
 	}
@@ -332,4 +342,107 @@ func TestPresets_TelegramCoversOfficialCIDRs(t *testing.T) {
 			t.Fatalf("Telegram missing official CIDR %s from core.telegram.org/resources/cidr.txt", cidr)
 		}
 	}
+}
+
+// aiPacks are the packs whose traffic is account-bound: the service ties the
+// session to where it came from, so a roaming exit costs you a re-auth loop or
+// a region block. They must each pin exactly one country.
+var aiPacks = []string{"Claude", "OpenAI", "Cursor", "AI (other)"}
+
+func presetByName(t *testing.T, name string) *apitypes.PackPreset {
+	t.Helper()
+	for i := range Presets {
+		if Presets[i].Name == name {
+			return &Presets[i]
+		}
+	}
+	t.Fatalf("preset %q missing", name)
+	return nil
+}
+
+// Every AI pack sends all of its proxied traffic to ONE country group. This is
+// the regression that started it: the packs used to target the shared Overseas
+// urltest, which ranks ~all non-HK/CN nodes by latency. On a real subscription
+// that was 26 nodes across 14 countries (TR/VN/PH/TH/MY included), and one
+// logged-in ChatGPT session was measured dialling from GB, KR, SG and VN inside
+// a single week. Two countries in one pack is the same bug, just smaller.
+func TestPresets_AIPacksPinExactlyOneCountry(t *testing.T) {
+	for _, name := range aiPacks {
+		p := presetByName(t, name)
+		nodes := map[string]bool{}
+		for _, r := range p.Rules {
+			if r.Action != apitypes.CustomActionProxy {
+				continue // Cursor's api5 direct rule is deliberate
+			}
+			if r.Node == proxygroups.OverseasGroupTag {
+				t.Fatalf("preset %q rule %q routes via %s — pin a country instead", name, r.Value, proxygroups.OverseasGroupTag)
+			}
+			if r.Node == "" {
+				t.Fatalf("preset %q rule %q has no node: it falls back to Auto, which includes HK/CN", name, r.Value)
+			}
+			nodes[r.Node] = true
+		}
+		if len(nodes) != 1 {
+			t.Fatalf("preset %q spreads over %d country groups (%v), want exactly 1", name, len(nodes), nodes)
+		}
+	}
+}
+
+// Hosts seen carrying real traffic on a live gateway (200k connections, 6 days).
+// Each must be matched by its pack — a suffix rule or a keyword catch-all. The
+// four marked "was uncovered" only worked because the operator had hand-written
+// keyword rules the shipped packs did not have.
+func TestPresets_AIPacksCoverObservedHosts(t *testing.T) {
+	observed := map[string][]string{
+		"Claude": {
+			"api.anthropic.com", "a-api.anthropic.com", "s-cdn.anthropic.com",
+			"a-cdn.anthropic.com", "assets-proxy.anthropic.com",
+			"claude.ai", "a.claude.ai", "downloads.claude.ai", "assets.claude.ai",
+			"claude.com", "platform.claude.com", "status.claude.com",
+			"ee021cd9-afdd-4077-840f-9df23204b8a4.frame.claudeusercontent.com", // was uncovered
+			"hcaptcha.com", // was uncovered
+		},
+		"OpenAI": {
+			"chatgpt.com", "ab.chatgpt.com", "ws.chatgpt.com", "learn.chatgpt.com",
+			"chat.openai.com", "api.openai.com", "auth.openai.com", "cdn.openai.com",
+			"files.openai.com", "images.openai.com", "sentinel.openai.com",
+			"support.api.openai.com", "cdn.platform.openai.com",
+			"auth-cdn.oaistatic.com", "persistent.oaistatic.com", "help-center-cdn.oaistatic.com",
+			"sdmntprsouthcentralus.oaiusercontent.com", "sdmntprcentralus.oaiusercontent.com",
+		},
+		"Cursor": {"cursor.com", "api5.cursor.sh"},
+	}
+	for pack, hosts := range observed {
+		p := presetByName(t, pack)
+		for _, h := range hosts {
+			if !packMatches(p, h) {
+				t.Fatalf("preset %q does not match %q (seen in real traffic)", pack, h)
+			}
+		}
+	}
+}
+
+// packMatches reports whether any enabled rule in the pack would match host,
+// mirroring sing-box's domain_suffix / domain_keyword / domain semantics.
+func packMatches(p *apitypes.PackPreset, host string) bool {
+	for _, r := range p.Rules {
+		if !r.Enabled {
+			continue
+		}
+		switch r.Match {
+		case apitypes.CustomMatchDomainSuffix:
+			if host == r.Value || strings.HasSuffix(host, "."+r.Value) || strings.HasSuffix(host, r.Value) {
+				return true
+			}
+		case apitypes.CustomMatchKeyword:
+			if strings.Contains(host, r.Value) {
+				return true
+			}
+		case apitypes.CustomMatchDomain:
+			if host == r.Value {
+				return true
+			}
+		}
+	}
+	return false
 }

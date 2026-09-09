@@ -197,7 +197,13 @@ const (
 	PackExitOverseas = "overseas" // via the shared Overseas group (geofenced services)
 	PackExitAuto     = "auto"     // via the default proxy group (fastest)
 	PackExitDirect   = "direct"   // direct, no proxy
-	PackExitMixed    = "mixed"    // per-rule egress (some direct, some Overseas/proxy)
+	PackExitMixed    = "mixed"    // per-rule egress (some direct, some pinned/proxy)
+	// PackExitPinned routes every rule through ONE country group (e.g. "🇺🇸 US").
+	// Account-bound services care more about a stable exit country than about
+	// latency: a group that re-ranks across regions logs you out, trips fraud
+	// checks, or lands on a region the service refuses. The pinned tag is on the
+	// rules themselves (Node), so the UI reads it from there.
+	PackExitPinned = "pinned"
 )
 
 // Custom-rule actions (legacy aliases of CustomEgress*) + match kinds.
@@ -341,13 +347,13 @@ type ACLList struct {
 	// Builtin are always-on entries the gateway owns (No-Proxy's LAN/private
 	// ranges). Read-only: the API reports them so a client doesn't present the
 	// list as if those ranges could be removed.
-	Builtin   []string          `json:"builtin,omitempty"`
-	Domains   []string          `json:"domains,omitempty"`
-	IPs       []string          `json:"ips,omitempty"`
-	Processes []string          `json:"processes,omitempty"`
-	Devices   []string          `json:"devices,omitempty"`
-	Keywords  []string          `json:"keywords,omitempty"`
-	Regexes   []string          `json:"regexes,omitempty"`
+	Builtin   []string `json:"builtin,omitempty"`
+	Domains   []string `json:"domains,omitempty"`
+	IPs       []string `json:"ips,omitempty"`
+	Processes []string `json:"processes,omitempty"`
+	Devices   []string `json:"devices,omitempty"`
+	Keywords  []string `json:"keywords,omitempty"`
+	Regexes   []string `json:"regexes,omitempty"`
 	// Notes are optional remarks keyed as "<dim>:<value>" (e.g. "ip:1.2.3.4").
 	// Informational only — never consulted by the data plane.
 	Notes map[string]string `json:"notes,omitempty"`

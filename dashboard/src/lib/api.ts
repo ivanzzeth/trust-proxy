@@ -133,7 +133,7 @@ export interface PackPreset {
   name: string;
   description: string;
   warning?: string;
-  exit?: 'overseas' | 'auto' | 'direct' | 'mixed';
+  exit?: 'overseas' | 'auto' | 'direct' | 'mixed' | 'pinned';
   rule_sets?: PackRuleSet[];
   rules: CustomRule[];
 }
