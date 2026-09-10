@@ -654,3 +654,102 @@ func TestRecordStreamStallDemotes(t *testing.T) {
 		t.Fatal("disabled stall must not record demotion")
 	}
 }
+
+// The ratchet, reproduced from a live gateway. One network-wide blip (laptop
+// sleep / Wi-Fi drop) fails every member at once; each collects a long dial-fail
+// streak and reliability 0. The members then recover, and urltest proves it
+// every interval — but the score used to ignore a successful probe unless the
+// member had been a confirmed blackhole, so FailStreak stayed pinned, so Select
+// never handed it traffic, so Observe(true) — the only thing that cleared the
+// streak — never ran. Measured on a real subscription: 32 of 39 members at score
+// 23-29 with fail_streak 29-31 and a fresh 94-318ms probe delay.
+func TestSuccessfulProbeRehabilitatesADemotedMember(t *testing.T) {
+	s := newTestStore(t, Config{})
+	observeN(s, "node", 40, false, 0) // the blip
+
+	before, _ := s.Score("node")
+	st := s.snapshotOne(t, "node")
+	if st.FailStreak < 10 || st.Reliability != 0 {
+		t.Fatalf("precondition: want a hard-demoted member, got streak=%d reliability=%v", st.FailStreak, st.Reliability)
+	}
+	if before >= 60 {
+		t.Fatalf("precondition: want a demoted score, got %v", before)
+	}
+
+	// The member is back, and the only evidence available is the probe: nothing
+	// routes traffic to a member scored in the twenties.
+	s.NoteProbe("node", true, 120*time.Millisecond)
+
+	st = s.snapshotOne(t, "node")
+	if st.FailStreak != 0 {
+		t.Fatalf("fail streak survived a successful probe: %d", st.FailStreak)
+	}
+	if st.Reliability != neutralReliability {
+		t.Fatalf("reliability = %v after a successful probe, want %v (neutral)", st.Reliability, neutralReliability)
+	}
+	after, _ := s.Score("node")
+	if after <= before {
+		t.Fatalf("score did not recover: %v -> %v", before, after)
+	}
+}
+
+// Neutral and no further: a probe is weak evidence (generate_204 can pass while
+// real TLS to the destination fails), so a probe-healed member must rank behind
+// one with real successes behind it.
+func TestProbeHealingStopsAtNeutral(t *testing.T) {
+	s := newTestStore(t, Config{})
+	observeN(s, "probed", 40, false, 0)
+	for i := 0; i < 5; i++ {
+		s.NoteProbe("probed", true, 50*time.Millisecond)
+	}
+	if got := s.snapshotOne(t, "probed").Reliability; got != neutralReliability {
+		t.Fatalf("repeated probes pushed reliability to %v, want it capped at %v", got, neutralReliability)
+	}
+
+	observeN(s, "proven", 20, true, 50*time.Millisecond)
+	probed, _ := s.Score("probed")
+	proven, _ := s.Score("proven")
+	if probed >= proven {
+		t.Fatalf("probe-healed member (%v) ranks at or above one with real traffic (%v)", probed, proven)
+	}
+}
+
+// A probe must not rescue a member that keeps failing for real: the next real
+// failure demotes it again, from neutral rather than from 100.
+func TestRealFailureAfterProbeHealingDemotesAgain(t *testing.T) {
+	s := newTestStore(t, Config{})
+	observeN(s, "node", 40, false, 0)
+	s.NoteProbe("node", true, 80*time.Millisecond)
+	healed, _ := s.Score("node")
+
+	observeN(s, "node", 5, false, 0)
+	again, _ := s.Score("node")
+	if again >= healed {
+		t.Fatalf("real failures after probe healing did not demote: %v -> %v", healed, again)
+	}
+}
+
+// A failed probe still says nothing — that rule predates this change and the
+// healing path must not quietly invert it.
+func TestFailedProbeDoesNotDemote(t *testing.T) {
+	s := newTestStore(t, Config{})
+	observeN(s, "node", 20, true, 50*time.Millisecond)
+	before, _ := s.Score("node")
+	s.NoteProbe("node", false, 0)
+	after, _ := s.Score("node")
+	if after != before {
+		t.Fatalf("a failed probe changed the score: %v -> %v", before, after)
+	}
+}
+
+// snapshotOne returns one member's record via the public snapshot.
+func (s *Store) snapshotOne(t *testing.T, tag string) View {
+	t.Helper()
+	for _, v := range s.Snapshot([]string{tag}) {
+		if v.Tag == tag {
+			return v
+		}
+	}
+	t.Fatalf("no score record for %q", tag)
+	return View{}
+}

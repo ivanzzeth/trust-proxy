@@ -231,6 +231,11 @@ func normalizeTag(tag string) string {
 	return tag
 }
 
+// neutralReliability is "no opinion": the ceiling a successful probe can lift a
+// demoted member back to. Real traffic (Observe) is what earns more, and the
+// initial value for an unobserved member is 100 — warm-up, not an opinion.
+const neutralReliability = 50
+
 // outboundTypes are the sing-box outbound types detector.outStr can prefix a tag
 // with. An allow-list rather than "strip anything before a slash": a node named
 // "airport/tokyo-01" must keep its name, or it becomes a third distinct key.
@@ -437,11 +442,33 @@ func (s *Store) NoteProbe(tag string, success bool, latency time.Duration) {
 	if latency > 0 {
 		st.LatencyMS = pushInt(st.LatencyMS, int(latency.Milliseconds()))
 	}
-	// Soft-heal reliability after a blackhole: confirmation zeroed it, and with
-	// streak cleared scoreLocked would otherwise still land near the bottom
-	// until many real successes accumulate — leaving a recovered node unused.
-	if wasBlackhole && st.Reliability < 50 {
-		st.Reliability = 50
+	// A successful probe rehabilitates a demoted member, but only as far as
+	// neutral.
+	//
+	// It used to heal only a confirmed blackhole, and that left a ratchet with no
+	// way out: a member demoted by consecutive dial failures is scored near the
+	// bottom, so Select never hands it traffic, so Observe(true) — the only thing
+	// that cleared FailStreak — never runs. The probe proved every 30s that the
+	// member was fine and the score ignored the proof. Measured on a live gateway
+	// after one network-wide blip (laptop sleep, Wi-Fi drop: every member fails at
+	// once): 32 of 39 members sat at score 23-29 with fail_streak 29-31 and a
+	// fresh 94-318ms probe delay, i.e. `last_ok: true` and `reliability: 0` in the
+	// same record. Throughput through the one surviving member was 4x worse than
+	// the subscription could do. One blip, and the whole subscription was
+	// condemned until someone reset the store by hand.
+	//
+	// Neutral and no further, because a probe is weak evidence: generate_204 can
+	// pass while real TLS to the actual destination still fails, which is exactly
+	// what urltest's own dial cooldown exists for. Healing to 50 puts the member
+	// back in contention behind everything with real traffic behind it, and the
+	// next real failure demotes it again immediately.
+	//
+	// This does not let a probe *punish* (that rule is in urlTest: a failed probe
+	// deliberately does not Observe(false)) and it does not clear a blackhole on
+	// its own — BlackholeStreak above is reset because bytes did come back through
+	// the member, which is the blackhole's own disproof.
+	if st.Reliability < neutralReliability {
+		st.Reliability = neutralReliability
 		st.FailStreak = 0
 	}
 	st.LastOK = true
