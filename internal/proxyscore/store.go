@@ -59,9 +59,11 @@ type Stats struct {
 	OKStreak    int     `json:"ok_streak"`
 	FailStreak  int     `json:"fail_streak"`
 
-	// LatencyMS and ThroughputKBps are bounded windows; the score uses their
-	// median so one outlier cannot move it and a recovered node is not held
-	// down by an hour-old disaster.
+	// LatencyMS and ThroughputKBps are bounded windows. Latency is read as a
+	// median so one outlier cannot move it and a recovered node is not held down
+	// by an hour-old disaster; throughput is read as a maximum, because an idle
+	// connection can only bias a throughput sample downward — see
+	// throughputScore.
 	LatencyMS      []int     `json:"latency_ms,omitempty"`
 	ThroughputKBps []float64 `json:"throughput_kbps,omitempty"`
 
@@ -640,11 +642,30 @@ func (s *Store) latencyScore(st *Stats) float64 {
 }
 
 // throughputScore maps median KB/s onto 0..100, neutral 50 without samples.
+// throughputScore asks "how fast can this member go", so it reads the BEST
+// sample in the window rather than the median.
+//
+// bytes/wall-clock is only a throughput measurement when the transfer was the
+// thing taking the time. A streamed completion, an SSE channel or a long poll
+// moves a few hundred KiB at the application's pace over minutes, and the same
+// arithmetic reports single-digit KB/s for a link that is fine. Measured on a
+// live gateway: every member's median sat at 1.7-94 KB/s while a bulk download
+// through the selected one did 2500 KB/s, so throughput_score was ~5/100 for
+// healthy and unhealthy members alike — 20% of the scale carrying no
+// information, and a UI number that reads as "this node is terrible".
+//
+// The asymmetry is what makes max the right statistic: idleness can only bias a
+// sample DOWN, while nothing can transfer faster than the link, so the largest
+// observation is the closest thing to capacity that passive measurement can
+// produce. One freak-high sample is bounded by the real rate; one idle
+// connection is not bounded at all on the low side. "Is it behaving right now"
+// is answered by reliability, latency and the breaker, not here, and the window
+// is bounded (maxSeries) so a member that has genuinely slowed ages out.
 func (s *Store) throughputScore(st *Stats) float64 {
 	if len(st.ThroughputKBps) == 0 {
 		return 50
 	}
-	kbps := medianFloat(st.ThroughputKBps)
+	kbps := maxFloat(st.ThroughputKBps)
 	good := float64(s.cfg.TpGood())
 	if kbps >= good {
 		return 100
@@ -713,7 +734,9 @@ func (s *Store) viewLocked(st *Stats) View {
 		v.LatencyMS = medianInt(st.LatencyMS)
 	}
 	if len(st.ThroughputKBps) > 0 {
-		v.ThroughputKBps = round1(medianFloat(st.ThroughputKBps))
+		// The same statistic throughputScore reads, so the badge and the number
+		// behind it cannot disagree.
+		v.ThroughputKBps = round1(maxFloat(st.ThroughputKBps))
 	}
 	if !st.UpdatedAt.IsZero() {
 		v.UpdatedAt = st.UpdatedAt.UTC().Format(time.RFC3339)
@@ -811,6 +834,18 @@ func medianInt(s []int) int {
 	c := append([]int(nil), s...)
 	sort.Ints(c)
 	return c[len(c)/2]
+}
+
+// maxFloat returns the largest sample. See throughputScore for why throughput is
+// read as a maximum and latency as a median.
+func maxFloat(s []float64) float64 {
+	out := s[0]
+	for _, v := range s[1:] {
+		if v > out {
+			out = v
+		}
+	}
+	return out
 }
 
 func medianFloat(s []float64) float64 {

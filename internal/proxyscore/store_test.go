@@ -753,3 +753,59 @@ func (s *Store) snapshotOne(t *testing.T, tag string) View {
 	t.Fatalf("no score record for %q", tag)
 	return View{}
 }
+
+// Throughput is a capacity question. bytes/wall-clock is only a throughput
+// measurement when the transfer was the thing taking the time: a streamed
+// completion or an SSE channel moves a few hundred KiB at the application's pace
+// over minutes, and the same arithmetic reports single-digit KB/s for a link that
+// is fine. Measured on a live gateway: every member's median sat at 1.7-94 KB/s
+// while a bulk download through the selected one did 2500 KB/s, so the term
+// carried no information about any of them.
+func TestThroughputIgnoresIdleConnections(t *testing.T) {
+	s := newTestStore(t, Config{ThroughputGoodKBps: 2000})
+	observeN(s, "node", DefaultMinSamples, true, 50*time.Millisecond)
+
+	// One bulk transfer that actually measured the link: 4 MiB in 2s = 2048 KB/s.
+	s.RecordTransfer("node", Transfer{Download: 4 << 20, Duration: 2 * time.Second, Handshook: true})
+	// Then a long run of streamed responses: real bytes, mostly idle time.
+	for i := 0; i < 8; i++ {
+		s.RecordTransfer("node", Transfer{Download: 200 << 10, Duration: 120 * time.Second, Handshook: true})
+	}
+
+	v := s.snapshotOne(t, "node")
+	if v.Throughput < 90 {
+		t.Fatalf("throughput score = %v after one real measurement plus idle streams, want ~100: the idle samples buried it", v.Throughput)
+	}
+	if v.ThroughputKBps < 1000 {
+		t.Fatalf("reported throughput = %v KB/s, want the measured ~2048: the number behind the score must be the one the score used", v.ThroughputKBps)
+	}
+}
+
+// A member that has genuinely never gone fast still scores low — max is not a
+// free pass, it just refuses to count idleness as slowness.
+func TestThroughputStillPunishesASlowMember(t *testing.T) {
+	s := newTestStore(t, Config{ThroughputGoodKBps: 2000})
+	observeN(s, "slow", DefaultMinSamples, true, 50*time.Millisecond)
+	for i := 0; i < 6; i++ {
+		// 100 KiB in 2s = 50 KB/s, every time: this one really is slow.
+		s.RecordTransfer("slow", Transfer{Download: 100 << 10, Duration: 2 * time.Second, Handshook: true})
+	}
+	if got := s.snapshotOne(t, "slow").Throughput; got > 10 {
+		t.Fatalf("throughput score = %v for a member that never exceeded 50 KB/s, want it low", got)
+	}
+}
+
+// The healthy case the live gateway could not produce: reliability and latency
+// good, and the throughput term no longer dragging the total down to ~79.
+func TestHealthyMemberCanScoreNearTheTop(t *testing.T) {
+	s := newTestStore(t, Config{ThroughputGoodKBps: 2000})
+	observeN(s, "good", 30, true, 40*time.Millisecond)
+	s.RecordTransfer("good", Transfer{Download: 8 << 20, Duration: 3 * time.Second, Handshook: true})
+	for i := 0; i < 10; i++ {
+		s.RecordTransfer("good", Transfer{Download: 120 << 10, Duration: 90 * time.Second, Handshook: true})
+	}
+	got, _ := s.Score("good")
+	if got < 90 {
+		t.Fatalf("a member with 98%% reliability, 40ms latency and a measured 2.7 MB/s scores %v", got)
+	}
+}
