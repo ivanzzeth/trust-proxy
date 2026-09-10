@@ -77,6 +77,10 @@ type Manager struct {
 	// instance — does not throw away everything we learned about the nodes that
 	// were not touched.
 	scores *proxyscore.Store
+	// stalls watches wrapped connections for the mid-stream stall shape from a
+	// single goroutine; see stallSweeper.
+	stallOnce sync.Once
+	stalls    *stallSweeper
 
 	rebuildMu sync.Mutex // serializes rebuilds
 
@@ -110,8 +114,8 @@ type Manager struct {
 	// Applied in rebuild via FilterEligibleNodes; survives subscription refresh.
 	disabledTags map[string]bool
 	mgmtPorts    []int
-	final     string // catch-all egress when ACL gate is open (default direct)
-	posture   string // strict|split — Split skips L3 permit gate (default-allow)
+	final        string // catch-all egress when ACL gate is open (default direct)
+	posture      string // strict|split — Split skips L3 permit gate (default-allow)
 	// clientMode means this instance does not enforce egress policy itself: it
 	// captures local traffic and hands it to a gateway that does. Its own Permit
 	// gate is therefore off — leaving it on would force every client machine to

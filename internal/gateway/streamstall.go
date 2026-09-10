@@ -33,7 +33,7 @@ func (m *Manager) wrapStreamStall(conn net.Conn, ev *detect.Event) net.Conn {
 		started:   time.Now(),
 	}
 	atomic.StoreInt64(&w.lastDownUnix, time.Now().UnixNano())
-	go w.watch()
+	m.stallSweeper().add(w)
 	return w
 }
 
@@ -58,14 +58,22 @@ type stallConn struct {
 	started   time.Time
 
 	lastDownUnix int64 // unix nano; updated when remote download bytes arrive
-	killed       atomic.Bool
-	closeOnce    sync.Once
+	// finished means "stop watching this connection": it was closed, it failed,
+	// or we killed it. Never demote a member on a finished connection.
+	finished atomic.Bool
 }
 
 func (c *stallConn) Read(b []byte) (int, error) {
 	n, err := c.Conn.Read(b)
 	if n > 0 {
 		atomic.StoreInt64(&c.lastDownUnix, time.Now().UnixNano())
+	}
+	if err != nil {
+		// The shape we hunt is a read that never returns, not one that fails.
+		// Once it has failed there is nothing left to wait for, and counting
+		// the silence afterwards would demote the member for a connection that
+		// merely ended — EOF included.
+		c.finished.Store(true)
 	}
 	return n, err
 }
@@ -75,27 +83,100 @@ func (c *stallConn) Write(b []byte) (int, error) {
 }
 
 func (c *stallConn) Close() error {
-	c.closeOnce.Do(func() { c.killed.Store(true) })
+	c.finished.Store(true)
 	return c.Conn.Close()
 }
 
-func (c *stallConn) watch() {
+// stallSweeper watches every wrapped connection from one goroutine.
+//
+// This was a goroutine and a 1s ticker per connection. The per-tick cost was
+// never the point — a timer fire is cheap — the lifetime was: the watcher
+// learned a connection was over only on its next tick, and only when Close()
+// came through the wrapper, so a connection that ended any other way kept its
+// goroutine and its 1Hz timer for the life of the process. Long-lived idle
+// streams are the normal case rather than the edge (on a live gateway the
+// oldest proxied connection was 9.8 hours old: ~35k wakeups to decide nothing),
+// and each of those tickers also held the Event and the conn from being freed.
+type stallSweeper struct {
+	mu      sync.Mutex
+	conns   map[*stallConn]struct{}
+	running bool
+}
+
+// stallSweeper returns the manager's sweeper, creating it on first use.
+func (m *Manager) stallSweeper() *stallSweeper {
+	m.stallOnce.Do(func() { m.stalls = &stallSweeper{conns: map[*stallConn]struct{}{}} })
+	return m.stalls
+}
+
+func (w *stallSweeper) add(c *stallConn) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.conns[c] = struct{}{}
+	if w.running {
+		return
+	}
+	// Started on demand and stopped when the last watched connection goes, so
+	// an idle gateway holds no timer at all.
+	w.running = true
+	go w.run()
+}
+
+func (w *stallSweeper) run() {
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 	for range tick.C {
-		if c.killed.Load() {
-			return
+		if w.sweep() == 0 {
+			w.mu.Lock()
+			// Re-check under the lock: add() may have arrived between the sweep
+			// and here, and it only starts a goroutine when running is false.
+			if len(w.conns) == 0 {
+				w.running = false
+				w.mu.Unlock()
+				return
+			}
+			w.mu.Unlock()
 		}
-		if !c.shouldKill() {
+	}
+}
+
+// sweep evaluates every watched connection and returns how many are left.
+func (w *stallSweeper) sweep() int {
+	w.mu.Lock()
+	live := make([]*stallConn, 0, len(w.conns))
+	for c := range w.conns {
+		live = append(live, c)
+	}
+	w.mu.Unlock()
+
+	var kill []*stallConn
+	var drop []*stallConn
+	for _, c := range live {
+		if c.finished.Load() {
+			drop = append(drop, c)
 			continue
 		}
-		if !c.killed.CompareAndSwap(false, true) {
-			return
+		if c.shouldKill() {
+			kill = append(kill, c)
+		}
+	}
+	// Close outside the lock: Close() runs user code down the conn chain.
+	for _, c := range kill {
+		if !c.finished.CompareAndSwap(false, true) {
+			continue
 		}
 		c.mgr.RecordStreamStall(c.ev.Outbound)
 		_ = c.Conn.Close()
-		return
 	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, c := range drop {
+		delete(w.conns, c)
+	}
+	for _, c := range kill {
+		delete(w.conns, c)
+	}
+	return len(w.conns)
 }
 
 func (c *stallConn) shouldKill() bool {
