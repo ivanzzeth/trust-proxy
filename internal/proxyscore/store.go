@@ -222,6 +222,12 @@ func (s *Store) SetConfig(cfg Config) {
 //
 // Splitting on the FIRST "/" is what makes this safe: a tag may itself contain
 // slashes, and the prefix is an outbound type, never a user-chosen name.
+// NormalizeTag is normalizeTag for callers that must key on the same identity
+// the store does — the gateway checks a tag against the live member list before
+// recording, and "anytls/tokyo-01" and "tokyo-01" have to be the same node there
+// too, or the check rejects every sample that came through the finalize sink.
+func NormalizeTag(tag string) string { return normalizeTag(tag) }
+
 func normalizeTag(tag string) string {
 	if i := strings.IndexByte(tag, '/'); i >= 0 {
 		if _, isType := outboundTypes[tag[:i]]; isType {

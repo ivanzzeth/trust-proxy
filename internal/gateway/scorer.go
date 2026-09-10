@@ -40,16 +40,64 @@ func (b boxScorer) TieMargin() float64 { return float64(b.store.Config().TieMarg
 // NoteProbe forwards a Clash / urltest probe success into the scorer so
 // blackhole / open-breaker members can recover without already carrying traffic.
 func (m *Manager) NoteProbe(tag string, success bool, latency time.Duration) {
-	if m != nil && m.scores != nil {
+	if m != nil && m.scores != nil && m.scorableMember(tag) {
 		m.scores.NoteProbe(tag, success, latency)
 	}
+}
+
+// setEligibleMembers records the tags that may be scored. Called from rebuild()
+// with the post-FilterEligibleNodes list, i.e. exactly the outbounds the data
+// plane can actually dial.
+func (m *Manager) setEligibleMembers(nodes []apitypes.Node, eps []apitypes.Endpoint) {
+	var epTags []string
+	for _, e := range eps {
+		if e.Enabled && e.Tag != "" {
+			epTags = append(epTags, e.Tag)
+		}
+	}
+	set := make(map[string]struct{})
+	for _, t := range memberTags(nodes, epTags) {
+		set[proxyscore.NormalizeTag(t)] = struct{}{}
+	}
+	m.eligible.Store(&set)
+}
+
+// scorableMember reports whether tag names an outbound that can actually carry
+// traffic, so an observation about it means something.
+//
+// The case this exists for: a connection is tracked when it starts, and
+// detector.outStr follows a group to the member in use via Now(). Right after a
+// rebuild a freshly built urltest group has not elected anyone yet, Now() is
+// empty, and the group's own tag comes through instead. Measured on a live
+// gateway: `🇺🇸 US` and `🇯🇵 JP` — country *groups* — had score records, with
+// blackhole_streak 2 and 1. Two more such connections and the blackhole verdict
+// would have condemned the group itself: score 0, breaker forced open. That group
+// is what a pinned rule targets (Claude → US), so the thing being condemned would
+// have been the user's deliberate choice of exit, while every member of it kept
+// working.
+//
+// The sample is dropped rather than reattributed. At track time the group really
+// had no selection, so the member is not knowable there; recovering it needs the
+// dial chain at finalize, which is a bigger change than refusing to act on an
+// attribution we know is wrong.
+//
+// An empty set means "not built yet" and allows everything: before the first
+// rebuild there is no member list to check against, and silently discarding the
+// first connections of a gateway's life would be worse than a stale tag.
+func (m *Manager) scorableMember(tag string) bool {
+	set := m.eligible.Load()
+	if set == nil || len(*set) == 0 {
+		return true
+	}
+	_, ok := (*set)[proxyscore.NormalizeTag(tag)]
+	return ok
 }
 
 // RecordTransfer feeds the throughput term from a finished connection, and the
 // blackhole detector — a node that completes handshakes and relays nothing is
 // invisible to the dial path, which only ever sees a successful dial.
 func (m *Manager) RecordTransfer(tag string, t proxyscore.Transfer) {
-	if m.scores != nil {
+	if m.scores != nil && m.scorableMember(tag) {
 		m.scores.RecordTransfer(tag, t)
 	}
 }
@@ -59,7 +107,7 @@ func (m *Manager) RecordTransfer(tag string, t proxyscore.Transfer) {
 // whole event rather than picking fields, so the mapping exists once — a second
 // copy in the caller is how a field stops being read without anything failing.
 func (m *Manager) RecordEvent(ev detect.Event) {
-	if m.scores == nil || ev.DurationMS <= 0 {
+	if m.scores == nil || ev.DurationMS <= 0 || !m.scorableMember(ev.Outbound) {
 		return
 	}
 	m.scores.RecordTransfer(ev.Outbound, proxyscore.Transfer{

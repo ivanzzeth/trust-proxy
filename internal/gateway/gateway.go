@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	box "github.com/sagernet/sing-box"
@@ -81,6 +82,12 @@ type Manager struct {
 	// single goroutine; see stallSweeper.
 	stallOnce sync.Once
 	stalls    *stallSweeper
+	// eligible is the set of tags that may be scored, refreshed on every rebuild
+	// from the same FilterEligibleNodes result the outbounds are built from. Read
+	// on the finalize path, so it is an atomic snapshot rather than something
+	// behind m.mu: the detect engine calls that sink from under its own lock, and
+	// reaching back for a Manager lock there is how a lock cycle gets built.
+	eligible atomic.Pointer[map[string]struct{}]
 
 	rebuildMu sync.Mutex // serializes rebuilds
 
@@ -943,6 +950,7 @@ func (m *Manager) rebuild() error {
 
 	// Junk info lines and operator-disabled tags never enter Auto/urltest.
 	nodes = FilterEligibleNodes(nodes, disabled)
+	m.setEligibleMembers(nodes, eps)
 
 	base, err := os.ReadFile(m.configPath)
 	if err != nil {

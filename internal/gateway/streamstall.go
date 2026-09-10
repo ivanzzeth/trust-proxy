@@ -208,7 +208,10 @@ func (c *stallConn) shouldKill() bool {
 // next Select prefers someone else. Same breaker force-open as blackhole —
 // conclusive evidence, no waiting for BreakerFailures more samples.
 func (m *Manager) RecordStreamStall(outbound string) {
-	if m == nil || m.scores == nil {
+	// scorableMember: a stall kill names whatever the connection was routed to,
+	// which right after a rebuild can be a group rather than a member. See
+	// Manager.scorableMember.
+	if m == nil || m.scores == nil || !m.scorableMember(outbound) {
 		return
 	}
 	m.scores.RecordStreamStall(outbound)
