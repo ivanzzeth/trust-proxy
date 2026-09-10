@@ -475,9 +475,26 @@ func (s *Store) NoteProbe(tag string, success bool, latency time.Duration) {
 	// deliberately does not Observe(false)) and it does not clear a blackhole on
 	// its own — BlackholeStreak above is reset because bytes did come back through
 	// the member, which is the blackhole's own disproof.
+	// Two separate things, which the first version of this wrongly did under one
+	// condition — so a member sitting at reliability 92 with a stale streak of 1
+	// never shed it (seen on the live gateway right after deploying that version).
+	//
+	// The streak decays by one per successful probe rather than resetting. It
+	// means "consecutive failures with nothing good in between", and a probe is
+	// partial evidence that the run ended — partial because generate_204 can pass
+	// while real TLS to the destination still fails. Resetting it would let such
+	// a member dodge the escalating penalty forever (failure, probe, failure,
+	// probe…, each failure charged once instead of N times), and the escalation is
+	// what makes a genuinely broken member drop fast. Decaying lets a member that
+	// really did recover walk back to zero over a few rounds, while one that keeps
+	// failing real traffic outruns the decay.
+	if st.FailStreak > 0 {
+		st.FailStreak--
+	}
+	// The reliability lift is a floor, never a ceiling: it rescues a member the
+	// ratchet had pinned at the bottom and leaves a healthy one alone.
 	if st.Reliability < neutralReliability {
 		st.Reliability = neutralReliability
-		st.FailStreak = 0
 	}
 	st.LastOK = true
 	if wasBlackhole {

@@ -681,15 +681,64 @@ func TestSuccessfulProbeRehabilitatesADemotedMember(t *testing.T) {
 	s.NoteProbe("node", true, 120*time.Millisecond)
 
 	st = s.snapshotOne(t, "node")
-	if st.FailStreak != 0 {
-		t.Fatalf("fail streak survived a successful probe: %d", st.FailStreak)
-	}
 	if st.Reliability != neutralReliability {
 		t.Fatalf("reliability = %v after a successful probe, want %v (neutral)", st.Reliability, neutralReliability)
 	}
 	after, _ := s.Score("node")
 	if after <= before {
 		t.Fatalf("score did not recover: %v -> %v", before, after)
+	}
+	// Reliability is the 50% term, so the score recovers on the first probe even
+	// though the streak only decays — what matters is the member being selectable
+	// again, after which real traffic decides.
+	if after < 50 {
+		t.Fatalf("score = %v after rehabilitation, want the member back in contention", after)
+	}
+}
+
+// The streak is "consecutive failures with nothing good in between", so a
+// successful probe pays it down — one round at a time, because a probe is only
+// partial evidence. A member that really recovered walks back to zero.
+func TestProbeDecaysTheFailStreak(t *testing.T) {
+	s := newTestStore(t, Config{})
+	observeN(s, "node", 4, false, 0)
+	if got := s.snapshotOne(t, "node").FailStreak; got != 4 {
+		t.Fatalf("precondition: streak = %d, want 4", got)
+	}
+	s.NoteProbe("node", true, 50*time.Millisecond)
+	if got := s.snapshotOne(t, "node").FailStreak; got != 3 {
+		t.Fatalf("one probe took the streak to %d, want 3 (decay, not reset)", got)
+	}
+	for i := 0; i < 5; i++ {
+		s.NoteProbe("node", true, 50*time.Millisecond)
+	}
+	if got := s.snapshotOne(t, "node").FailStreak; got != 0 {
+		t.Fatalf("streak = %d after enough probes, want 0", got)
+	}
+}
+
+// A healthy member with one stale failure behind it sheds the streak too — the
+// first version of this coupled shedding to reliability being below neutral, so a
+// member at 92 kept a streak of 1 forever. Observed on a live gateway.
+func TestProbeShedsAStaleStreakOnAHealthyMember(t *testing.T) {
+	s := newTestStore(t, Config{})
+	observeN(s, "node", 30, true, 40*time.Millisecond)
+	s.Observe("node", Outcome{Success: false, Err: "early IO/TLS failure"})
+
+	st := s.snapshotOne(t, "node")
+	if st.FailStreak != 1 || st.Reliability < 60 {
+		t.Fatalf("precondition: want a healthy member with one failure, got streak=%d reliability=%v", st.FailStreak, st.Reliability)
+	}
+	relBefore := st.Reliability
+
+	s.NoteProbe("node", true, 40*time.Millisecond)
+
+	st = s.snapshotOne(t, "node")
+	if st.FailStreak != 0 {
+		t.Fatalf("a healthy member kept its stale streak: %d", st.FailStreak)
+	}
+	if st.Reliability != relBefore {
+		t.Fatalf("the probe moved a healthy member's reliability: %v -> %v; the lift is a floor, not an assignment", relBefore, st.Reliability)
 	}
 }
 
