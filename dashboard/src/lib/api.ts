@@ -105,6 +105,9 @@ export interface Directlist {
   domains: string[];
   ips: string[];
   builtin: string[];
+  /** Whether `builtin` is actually on the Route axis. Off is for an exit that IS
+   *  the far side of those ranges (WireGuard / Tailscale); they stay permitted. */
+  private_direct: boolean;
   notes?: Record<string, string>;
 }
 export type DLType = 'domain' | 'ip';
@@ -819,8 +822,11 @@ export const api = {
       domains: d.domains ?? [],
       ips: d.ips ?? [],
       builtin: d.builtin ?? [],
+      private_direct: d.private_direct ?? true,
       notes: d.notes ?? {},
     })),
+  setDLPrivate: (on: boolean) =>
+    put<Directlist>('/directlist/private', { private_direct: on }),
   addDL: (type: DLType, value: string, note?: string) =>
     post<Directlist>('/directlist', note !== undefined ? { type, value, note } : { type, value }),
   delDL: (type: DLType, value: string) => del<Directlist>('/directlist', { type, value }),

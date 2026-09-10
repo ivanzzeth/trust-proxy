@@ -190,6 +190,13 @@ func runSelftest() error {
 		// Permit⊥Route / prior-bug regressions
 		"routeonly.tp", "permitonly.tp", "china.tp", "accounts.google.com", "api2.cursor.sh",
 		"baidu.tp", "login.tp",
+		// Posture dual-slot + quarantine targets. A target with no record here
+		// dies at the L4 `action: resolve` step, and get() cannot tell that from
+		// a policy reject — it reported five of these as "blocked" for weeks.
+		"strict-slot.tp", "split-slot.tp", "banned.tp",
+		// The DNS section swaps in its own stub resolvers; harmless here, and it
+		// keeps every target in one list so the guard below can check them.
+		"dnsdirect.tp", "dnsproxy.tp", "rscn.tp",
 		// node-exit.tp is the dial address of our mock upstream. It resolves to
 		// 127.0.0.1 via hosts, but must NOT be a literal loopback IP — otherwise
 		// Auto treats the live node as a local agent (WARP-style) and the
@@ -201,6 +208,21 @@ func runSelftest() error {
 	dns := apitypes.DNSConfig{
 		Servers: []apitypes.DNSServer{{Tag: "hosts", Type: "hosts", Records: hostRecords}},
 		Final:   "hosts",
+	}
+	// knownHost guards against the failure that hid five scenarios: a target with
+	// no record dies at the L4 `action: resolve` step, and get() returns "" for
+	// that exactly as it does for a policy reject — so the run reported
+	// "want=node got=blocked" and looked like a gate bug instead of a typo.
+	knownHost := func(target string) bool {
+		host := target
+		if h, _, err := net.SplitHostPort(target); err == nil {
+			host = h
+		}
+		if net.ParseIP(host) != nil {
+			return true // dialed by IP: no resolution needed
+		}
+		_, ok := hostRecords[host]
+		return ok
 	}
 
 	engine := detect.New(500)
@@ -244,11 +266,17 @@ func runSelftest() error {
 	selfExe, _ := os.Executable()
 	selfProc := filepath.Base(selfExe)
 
+	boolPtr := func(v bool) *bool { return &v }
 	reset := func() {
 		_ = mgr.SetPosture(apitypes.PostureStrict)
 		_ = mgr.SetWhitelist(whitelist.Rules{})
 		_ = mgr.SetBlacklist(blacklist.Rules{})
-		_ = mgr.SetDirectList(directlist.Rules{})
+		// Every origin in this offline harness lives on loopback, and the built-in
+		// private/LAN floor legitimately routes loopback direct — which silently
+		// turned every "permitted domain follows Final/Route" assertion into
+		// got=direct. Off here; the two scenarios that exist to test the floor
+		// turn it back on explicitly. e2e covers it for real (TEST-NET-3 origin).
+		_ = mgr.SetDirectList(directlist.Rules{PrivateDirect: boolPtr(false)})
 		_ = mgr.SetCustomRules(customrules.Rules{})
 		_ = mgr.SetRuleSets(ruleset.Sets{})
 		_ = mgr.SetProxyGroups(testPG)
@@ -270,6 +298,11 @@ func runSelftest() error {
 	}
 	// run reconfigures policy, waits for the rebuild, and asserts the egress path.
 	run := func(name string, setup func(), target, want string) {
+		if !knownHost(target) {
+			fail++
+			fmt.Printf("  FAIL  %-48s target %q has no DNS record in this harness: add it to hostRecords (it would report as \"blocked\")\n", name, target)
+			return
+		}
 		reset()
 		setup()
 		selectProxyGroup(clashPort, "g")
@@ -317,11 +350,19 @@ func runSelftest() error {
 		_ = mgr.SetDirectList(directlist.Rules{Domains: []string{"np.tp"}})
 	}, "np.tp", "direct")
 	run("built-in private CIDR needs Permit first", func() {
-		// private CIDRs are route-direct when gate open; without Permit, blocked.
+		// private CIDRs are route-direct when the gate is open; without Permit,
+		// blocked. The floor is on here (reset() turns it off for the rest).
+		_ = mgr.SetDirectList(directlist.Rules{PrivateDirect: boolPtr(true)})
 	}, "127.0.0.1", "")
 	run("built-in private CIDR -> direct when gate open", func() {
+		_ = mgr.SetDirectList(directlist.Rules{PrivateDirect: boolPtr(true)})
 		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}})
 	}, "127.0.0.1", "direct")
+	// The switch itself: same gate, floor off, so LAN follows Final instead.
+	run("private floor off -> LAN follows Final", func() {
+		_ = mgr.SetDirectList(directlist.Rules{PrivateDirect: boolPtr(false)})
+		_ = mgr.SetWhitelist(whitelist.Rules{Domains: []string{"allow.tp"}})
+	}, "127.0.0.1", "node")
 
 	fmt.Println("== Permit ⊥ Route (custom axes) ==")
 	run("route-only custom (no Permit) -> blocked", func() {
@@ -380,7 +421,7 @@ func runSelftest() error {
 			Match: "domain_suffix", Value: "split-slot.tp", Egress: "none",
 			Permit: permitPtr(true), Pack: "selftest-split", Enabled: true,
 		}}}
-		if err := mgr.ApplyProfile(nodes, strictWL, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{},
+		if err := mgr.ApplyProfile(nodes, strictWL, blacklist.Rules{}, directlist.Rules{PrivateDirect: boolPtr(false)}, customrules.Rules{},
 			ruleset.Sets{}, testPG, dns, "", "proxy", apitypes.PostureStrict); err != nil {
 			fail++
 			fmt.Printf("  FAIL  dual-slot: set Strict slot: %v\n", err)
@@ -389,7 +430,7 @@ func runSelftest() error {
 			check("dual-slot Strict: listed -> node", "node", get("strict-slot.tp"))
 			check("dual-slot Strict: unlisted blocked", "", get("deny.tp"))
 		}
-		if err := mgr.ApplyProfile(nodes, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{}, splitCR,
+		if err := mgr.ApplyProfile(nodes, whitelist.Rules{}, blacklist.Rules{}, directlist.Rules{PrivateDirect: boolPtr(false)}, splitCR,
 			ruleset.Sets{}, testPG, dns, "", "proxy", apitypes.PostureSplit); err != nil {
 			fail++
 			fmt.Printf("  FAIL  dual-slot: set Split slot: %v\n", err)
@@ -400,7 +441,7 @@ func runSelftest() error {
 			check("dual-slot Split: Strict host not in Split wl (still open via Split)", "node", get("strict-slot.tp"))
 		}
 		// Restore Strict snapshot — Split pack must NOT leak into Strict.
-		if err := mgr.ApplyProfile(nodes, strictWL, blacklist.Rules{}, directlist.Rules{}, customrules.Rules{},
+		if err := mgr.ApplyProfile(nodes, strictWL, blacklist.Rules{}, directlist.Rules{PrivateDirect: boolPtr(false)}, customrules.Rules{},
 			ruleset.Sets{}, testPG, dns, "", "proxy", apitypes.PostureStrict); err != nil {
 			fail++
 			fmt.Printf("  FAIL  dual-slot: restore Strict: %v\n", err)

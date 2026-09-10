@@ -65,6 +65,24 @@ func (s *Server) snapshotLivePolicy() apitypes.PolicySlot {
 	return slot
 }
 
+// keepMachineFields copies the no-proxy fields that describe THIS MACHINE's exit
+// topology rather than its policy, so a slot or profile switch cannot change
+// them. PrivateDirect answers "is my exit the far side of 10.0.0.0/8?" — that is
+// a fact about the WireGuard/Tailscale endpoint this gateway dials, not a choice
+// that belongs to a posture or a saved profile. A snapshot taken before the
+// switch existed has it unset, so without this, activating any older slot would
+// silently put LAN back on the direct path (or take it off) — the same shape as
+// the profile that used to reopen interrupt_exist_connections.
+//
+// Same reasoning keeps inbound listen out of snapshots entirely; this field
+// cannot be moved out of the no-proxy store, so it is carried instead.
+func (s *Server) keepMachineFields(in *policyInputs) {
+	if s.dl == nil {
+		return
+	}
+	in.dl.PrivateDirect = s.dl.Get().PrivateDirect
+}
+
 // policyInputs is the store-shaped form of a PolicySlot/Profile's policy
 // fields, ready to hand to ProfileApplier.ApplyProfile.
 type policyInputs struct {
@@ -93,6 +111,7 @@ type policyInputs struct {
 // callers that resolved them from a fallback (rather than an explicit slot/
 // profile value) can skip overwriting the store with what's already there.
 func (s *Server) alignLiveStores(in policyInputs, setPG, setDNS bool, final string, setFinal bool, logPrefix string) []string {
+	s.keepMachineFields(&in)
 	var diverged []string
 	note := func(store string, err error) {
 		logging.L().Warn().Err(err).Str("op", logPrefix).Str("store", store).Msg("align live store failed")

@@ -220,6 +220,9 @@ func (s *Server) applySlot(slot apitypes.PolicySlot, postureName string) ([]stri
 		final = "direct"
 	}
 	nodes := s.profApplier.Nodes()
+	// See keepMachineFields: a posture switch decides the gate, not whether this
+	// machine's exit carries 10.0.0.0/8.
+	s.keepMachineFields(&in)
 
 	if err := s.profApplier.ApplyProfile(nodes, in.wl, in.bl, in.dl, in.cr, in.sets, in.pg, in.dns, "", final, postureName); err != nil {
 		return nil, err

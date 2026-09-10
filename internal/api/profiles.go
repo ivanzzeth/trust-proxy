@@ -110,6 +110,10 @@ func (s *Server) handleActivateProfile(w http.ResponseWriter, r *http.Request) {
 		dns:  s.resolveProfileDNS(p),
 	}
 
+	// The data plane is configured from `in` before alignLiveStores runs, so the
+	// machine-scoped no-proxy fields have to be carried here too.
+	s.keepMachineFields(&in)
+
 	if err := s.profApplier.ApplyProfile(nodes, in.wl, in.bl, in.dl, in.cr, in.sets, in.pg, in.dns, p.Mode, p.Final, ""); err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return

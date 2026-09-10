@@ -131,8 +131,16 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 
 	allowSfx := append([]string(nil), wlSfx...)
 	allowRgx := append([]string(nil), wlRgx...)
+	// The Permit gate always carries the private ranges: LAN must never be shut
+	// off by default-deny, and that is not a routing choice.
 	allowIPs := append(append([]string(nil), wl.IPs...), privateCIDRs...)
-	directIPs := append(append([]string(nil), dl.IPs...), privateCIDRs...)
+	// The Route axis is a choice, and for a WireGuard/Tailscale exit that IS the
+	// far side of 10.0.0.0/8 the built-in "LAN goes direct" is the wrong one.
+	// Off moves private destinations to whatever Route says; it never blocks them.
+	directIPs := append([]string(nil), dl.IPs...)
+	if dl.BypassPrivate() {
+		directIPs = append(directIPs, privateCIDRs...)
+	}
 
 	// L4: custom → no-proxy → route-proxy RS → route-direct RS.
 	var egress []json.RawMessage

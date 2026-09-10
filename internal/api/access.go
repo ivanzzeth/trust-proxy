@@ -129,6 +129,9 @@ func routeLevels() map[string]access {
 		"GET /api/directlist":    accessAdmin,
 		"POST /api/directlist":   accessAdmin,
 		"DELETE /api/directlist": accessAdmin,
+		// Takes the built-in LAN ranges off the Route axis — a gateway-wide
+		// routing change, so admin like the rest of the no-proxy surface.
+		"PUT /api/directlist/private": accessAdmin,
 
 		"GET /api/customrules":                   accessAdmin,
 		"POST /api/customrules":                  accessAdmin,

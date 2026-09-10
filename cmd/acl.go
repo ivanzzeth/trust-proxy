@@ -51,7 +51,11 @@ var aclLsCmd = &cobra.Command{
 				}
 			}
 			if len(list.Builtin) > 0 {
-				fmt.Printf("builtin (%d, always on, read-only):\n", len(list.Builtin))
+				state := "on the Route axis"
+				if !list.BypassPrivate() {
+					state = "OFF — these follow Route/Final, not direct"
+				}
+				fmt.Printf("builtin (%d, read-only, %s):\n", len(list.Builtin), state)
 				for _, v := range list.Builtin {
 					fmt.Println("  " + v)
 				}
@@ -118,10 +122,44 @@ var aclRmCmd = &cobra.Command{
 	},
 }
 
+// aclPrivateCmd is a setting, not an entry: the built-in ranges stay read-only
+// (no footgun to delete nine rows), and this is the one switch that takes them
+// off the Route axis — for an exit that IS the far side of 10/8 (WireGuard /
+// Tailscale). They stay in the Permit gate either way, so this cannot block LAN.
+var aclPrivateCmd = &cobra.Command{
+	Use:       "private <on|off>",
+	Short:     "Keep the built-in LAN/private ranges on the Route axis as direct",
+	Args:      cobra.ExactArgs(1),
+	ValidArgs: []string{"on", "off"},
+	RunE: func(cmd *cobra.Command, args []string) error {
+		var on bool
+		switch args[0] {
+		case "on":
+			on = true
+		case "off":
+			on = false
+		default:
+			return fmt.Errorf("want on or off, got %q", args[0])
+		}
+		list, err := sdk().SetNoProxyPrivateDirect(on)
+		if err != nil {
+			return err
+		}
+		return out(list, func() {
+			if list.BypassPrivate() {
+				fmt.Println("built-in LAN/private ranges: direct (default)")
+				return
+			}
+			fmt.Println("built-in LAN/private ranges: now follow Route/Final instead of direct")
+			fmt.Println("  they are still permitted — this changed where they go, not whether they may go")
+		})
+	},
+}
+
 func init() {
 	for _, c := range []*cobra.Command{aclAddCmd, aclRmCmd} {
 		c.Flags().StringVar(&aclType, "type", "domain", "entry kind: domain|ip|process|device (deny also: keyword|regex)")
 	}
 	aclAddCmd.Flags().StringVar(&aclNote, "note", "", "optional remark (shown in ls / console; re-add with --note \"\" to clear)")
-	aclCmd.AddCommand(aclLsCmd, aclAddCmd, aclRmCmd)
+	aclCmd.AddCommand(aclLsCmd, aclAddCmd, aclRmCmd, aclPrivateCmd)
 }

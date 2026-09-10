@@ -134,7 +134,10 @@
       "ipHint": "These destination IPs/CIDRs egress direct (never through the proxy) — only if already permitted.",
       "ipPh": "203.0.113.0/24",
       "builtinTitle": "Built-in (LAN / private)",
-      "builtinHint": "Common private, loopback, link-local and CGNAT ranges are always routed direct when traffic is permitted — no need to add them."
+      "builtinHint": "Common private, loopback, link-local and CGNAT ranges are always routed direct when traffic is permitted — no need to add them.",
+      "privateToggle": "Route these direct",
+      "privateToggleHint": "On (default) the ranges above always egress direct. Turn it off only when your exit IS the far side of them — a WireGuard or Tailscale endpoint that carries 10.0.0.0/8 — so they should follow Route/Final instead.",
+      "privateOffWarn": "LAN and loopback now follow Route/Final instead of going direct. They are still permitted — this changed where they go, not whether they may go. If your exit does not actually carry these ranges, LAN access will break."
     }
   },
   "auth": {

@@ -240,7 +240,10 @@ func (m *Manager) EffectiveRules() []apitypes.RuleView {
 	if len(dlRgx) > 0 {
 		add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "domain_regex", Values: truncVals(dlRgx, 20), Note: "route-only (does not permit)"})
 	}
-	ipVals := append(append([]string(nil), dl.IPs...), privateCIDRs...)
+	ipVals := append([]string(nil), dl.IPs...)
+	if dl.BypassPrivate() {
+		ipVals = append(ipVals, privateCIDRs...)
+	}
 	add(apitypes.RuleView{Layer: "L4", Source: "no-proxy", Action: "route:direct", Matcher: "ip_cidr", Values: truncVals(ipVals, 20), Note: "includes built-in LAN/private ranges; route-only"})
 	for _, tag := range proxySets {
 		add(apitypes.RuleView{Layer: "L4", Source: "rule-set:" + tag, Action: "route:proxy", Matcher: "rule_set", Values: []string{tag}})

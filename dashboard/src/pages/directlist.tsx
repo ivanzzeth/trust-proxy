@@ -33,7 +33,13 @@ export default function DirectList({ embedded }: { embedded?: boolean }) {
     mutationFn: (v: { type: DLType; value: string }) => api.delDL(v.type, v.value),
     onSuccess: invalidate,
   });
+  const setPrivate = useMutation({
+    mutationFn: (on: boolean) => api.setDLPrivate(on),
+    onSuccess: invalidate,
+    onError: (e) => toast.error(String((e as Error).message)),
+  });
   const notes = dl?.notes ?? {};
+  const privateOn = dl?.private_direct ?? true;
 
   return (
     <div>
@@ -48,10 +54,40 @@ export default function DirectList({ embedded }: { embedded?: boolean }) {
           </CardTitle>
           <p className="text-xs leading-relaxed text-muted-foreground">{t('pages.directlist.builtinHint')}</p>
         </CardHeader>
-        <CardContent className="flex flex-wrap gap-1.5">
-          {(dl?.builtin ?? []).map((c) => (
-            <Badge key={c} variant="outline" className="tnum font-mono text-[10px]">{c}</Badge>
-          ))}
+        <CardContent>
+          <div className="mb-3 flex flex-wrap gap-1.5">
+            {(dl?.builtin ?? []).map((c) => (
+              <Badge
+                key={c}
+                variant="outline"
+                className={`tnum font-mono text-[10px] ${privateOn ? '' : 'line-through opacity-50'}`}
+              >
+                {c}
+              </Badge>
+            ))}
+          </div>
+          {/* The entries stay read-only — one deliberate switch instead of nine
+              deletable rows. Off is for an exit that IS the far side of these
+              ranges; they remain permitted either way. */}
+          <label className="flex items-start gap-2 text-xs">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={privateOn}
+              onChange={(e) => setPrivate.mutate(e.target.checked)}
+            />
+            <span>
+              <span className="font-medium">{t('pages.directlist.privateToggle')}</span>
+              <span className="block leading-relaxed text-muted-foreground">
+                {t('pages.directlist.privateToggleHint')}
+              </span>
+            </span>
+          </label>
+          {!privateOn && (
+            <p className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-xs leading-relaxed">
+              {t('pages.directlist.privateOffWarn')}
+            </p>
+          )}
         </CardContent>
       </Card>
 

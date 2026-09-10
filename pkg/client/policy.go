@@ -75,6 +75,19 @@ func (c *Client) DeleteListEntry(kind listKind, typ, value string) (apitypes.ACL
 	return out, err
 }
 
+// SetNoProxyPrivateDirect turns the built-in LAN/private Route bypass on or off.
+// Off moves those ranges from "always direct" to whatever Route says — for an
+// exit that IS the far side of them. They stay in the Permit gate regardless, so
+// this can never block LAN.
+func (c *Client) SetNoProxyPrivateDirect(on bool) (apitypes.ACLList, error) {
+	var out apitypes.ACLList
+	body := struct {
+		PrivateDirect bool `json:"private_direct"`
+	}{PrivateDirect: on}
+	err := c.do(http.MethodPut, "/api/directlist/private", body, &out)
+	return out, err
+}
+
 // ---- custom rules + policy packs ---------------------------------------
 
 // CustomRules returns the ordered custom rule list (L4 priority order).

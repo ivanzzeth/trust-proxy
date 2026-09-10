@@ -30,7 +30,21 @@ type Rules struct {
 	Domains []string          `json:"domains"`
 	IPs     []string          `json:"ips"`
 	Notes   map[string]string `json:"notes,omitempty"`
+	// PrivateDirect keeps the engine's built-in LAN/private/reserved bypass on
+	// the Route axis. nil or true = on, which is what every existing store and
+	// every default install means.
+	//
+	// Turning it off is for the one deployment where "LAN goes direct" is wrong:
+	// a WireGuard / Tailscale exit that IS the other side of 10.0.0.0/8, where
+	// the point of the tunnel is to carry those ranges. It moves private
+	// destinations from "always direct" to "whatever Route says" — it does NOT
+	// remove them from the Permit gate, so LAN is never blocked by flipping it.
+	PrivateDirect *bool `json:"private_direct,omitempty"`
 }
+
+// BypassPrivate reports whether the built-in private/LAN ranges still belong on
+// the Route axis as direct. Absent means yes.
+func (r Rules) BypassPrivate() bool { return r.PrivateDirect == nil || *r.PrivateDirect }
 
 // Store is a file-backed no-proxy list, safe for concurrent use.
 type Store struct {
@@ -41,7 +55,8 @@ type Store struct {
 
 // NewStore opens (or seeds) the store at path. A fresh store starts empty; the
 // built-in private/reserved CIDRs are added by the gateway engine, not seeded
-// here, so they can't be accidentally removed.
+// here, so they can't be accidentally removed — only switched off as a whole
+// via PrivateDirect.
 func NewStore(path string) (*Store, error) {
 	s := &Store{path: path}
 	b, err := os.ReadFile(path)
@@ -82,16 +97,26 @@ func (s *Store) Get() Rules {
 }
 
 func snapshot(r Rules) Rules {
-	return Rules{
+	out := Rules{
 		Domains: append([]string(nil), r.Domains...),
 		IPs:     append([]string(nil), r.IPs...),
 		Notes:   liststore.CloneNotes(r.Notes),
 	}
+	if r.PrivateDirect != nil {
+		v := *r.PrivateDirect
+		out.PrivateDirect = &v
+	}
+	return out
 }
 
 // Set replaces the whole no-proxy list and persists.
 func (s *Store) Set(r Rules) (Rules, error) {
 	return s.mutate(func() { s.data = snapshot(r) })
+}
+
+// SetPrivateDirect turns the built-in private/LAN Route bypass on or off.
+func (s *Store) SetPrivateDirect(on bool) (Rules, error) {
+	return s.mutate(func() { v := on; s.data.PrivateDirect = &v })
 }
 
 // AddDomain / RemoveDomain / AddIP / RemoveIP mutate and persist, returning the

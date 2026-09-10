@@ -181,63 +181,63 @@ type EndpointsApplier interface {
 
 // Options configures the API server.
 type Options struct {
-	Addr         string
-	Store        *subscription.Store
-	Applier      Applier
-	Whitelist    *whitelist.Store
-	WLApplier    WhitelistApplier
-	Blacklist    *blacklist.Store
-	BLApplier    BlacklistApplier
-	Directlist   *directlist.Store
-	DLApplier    DirectListApplier
-	QueryStats   QueryStatsProvider
-	NetState     NetworkStateProvider
-	Fingerprints FingerprintProvider
-	Detection    *detectcfg.Store
-	DetApplier   DetectionApplier
-	Quarantine   *quarantine.Store
-	QuarApplier  QuarantineApplier
-	CustomRules  *customrules.Store
-	CRApplier    CustomRulesApplier
-	RulesView    RulesViewer
-	ProxyGroups  *proxygroups.Store
-	PGApplier    ProxyGroupsApplier
-	Scorer       ProxyScorer
-	Detect       *detect.Engine
-	Mode         ModeController
-	RuleSets     *ruleset.Store
-	RSApplier    RuleSetApplier
-	Profiles     *profile.Store
-	ProfApplier  ProfileApplier
-	Posture      *posture.Store
-	Final        *finalroute.Store
-	FinalApplier FinalApplier
-	DNS          *dnscfg.Store
-	DNSApplier   DNSApplier
-	Users        *users.Store // console accounts, roles, API keys
-	Authn        *authn.Authn // session tokens (JWT); nil disables sessions
-	DataDir      string       // where the bootstrap code and other secrets live
-	InbApplier   InboundApplier
-	InbListen    *inboundcfg.Store
-	InbListenApp InboundListenApplier
-	Retention    *retentioncfg.Store
-	RetApplier   RetentionApplier
-	TUN          *tuncfg.Store
-	TUNApplier   TUNApplier
+	Addr          string
+	Store         *subscription.Store
+	Applier       Applier
+	Whitelist     *whitelist.Store
+	WLApplier     WhitelistApplier
+	Blacklist     *blacklist.Store
+	BLApplier     BlacklistApplier
+	Directlist    *directlist.Store
+	DLApplier     DirectListApplier
+	QueryStats    QueryStatsProvider
+	NetState      NetworkStateProvider
+	Fingerprints  FingerprintProvider
+	Detection     *detectcfg.Store
+	DetApplier    DetectionApplier
+	Quarantine    *quarantine.Store
+	QuarApplier   QuarantineApplier
+	CustomRules   *customrules.Store
+	CRApplier     CustomRulesApplier
+	RulesView     RulesViewer
+	ProxyGroups   *proxygroups.Store
+	PGApplier     ProxyGroupsApplier
+	Scorer        ProxyScorer
+	Detect        *detect.Engine
+	Mode          ModeController
+	RuleSets      *ruleset.Store
+	RSApplier     RuleSetApplier
+	Profiles      *profile.Store
+	ProfApplier   ProfileApplier
+	Posture       *posture.Store
+	Final         *finalroute.Store
+	FinalApplier  FinalApplier
+	DNS           *dnscfg.Store
+	DNSApplier    DNSApplier
+	Users         *users.Store // console accounts, roles, API keys
+	Authn         *authn.Authn // session tokens (JWT); nil disables sessions
+	DataDir       string       // where the bootstrap code and other secrets live
+	InbApplier    InboundApplier
+	InbListen     *inboundcfg.Store
+	InbListenApp  InboundListenApplier
+	Retention     *retentioncfg.Store
+	RetApplier    RetentionApplier
+	TUN           *tuncfg.Store
+	TUNApplier    TUNApplier
 	Endpoints     *endpoints.Store
 	EPApplier     EndpointsApplier
 	NodeOverrides *nodeoverride.Store
 	NOApplier     NodeOverridesApplier
 	History       *history.Store
 	Detections    *detect.Store // durable alert findings (JSONL)
-	Nodes        *nodes.Store  // brain: registry of remote gateways (reverse-proxied)
-	GWApplier    GatewayExitApplier
-	CMApplier    ClientModeApplier
-	Token        string        // if set, /api/* requires this bearer token (probe mode)
-	Version      string        // this build's version, reported on /api/health from loopback
-	Clash        *clash.Client // low-level Clash primitives, proxied to the browser
-	ConsoleDir   string        // on-disk dashboard dir (dev); used when ConsoleFS is nil
-	ConsoleFS    fs.FS         // embedded dashboard build (release); wins over ConsoleDir
+	Nodes         *nodes.Store  // brain: registry of remote gateways (reverse-proxied)
+	GWApplier     GatewayExitApplier
+	CMApplier     ClientModeApplier
+	Token         string        // if set, /api/* requires this bearer token (probe mode)
+	Version       string        // this build's version, reported on /api/health from loopback
+	Clash         *clash.Client // low-level Clash primitives, proxied to the browser
+	ConsoleDir    string        // on-disk dashboard dir (dev); used when ConsoleFS is nil
+	ConsoleFS     fs.FS         // embedded dashboard build (release); wins over ConsoleDir
 }
 
 // Server exposes /api/* and serves the console.
@@ -384,6 +384,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	s.route(mux, "GET /api/directlist", s.handleGetDirectlist)
 	s.route(mux, "POST /api/directlist", s.handleAddDirectlist)
 	s.route(mux, "DELETE /api/directlist", s.handleDelDirectlist)
+	s.route(mux, "PUT /api/directlist/private", s.handleSetDirectlistPrivate)
 	s.route(mux, "GET /api/customrules", s.handleListCustomRules)
 	s.route(mux, "POST /api/customrules", s.handleAddCustomRule)
 	s.route(mux, "PATCH /api/customrules/{id}", s.handlePatchCustomRule)
@@ -1082,7 +1083,47 @@ func (s *Server) handleGetDirectlist(w http.ResponseWriter, r *http.Request) {
 		"ips":     rules.IPs,
 		"notes":   rules.Notes,
 		"builtin": gateway.PrivateCIDRs(),
+		// Whether `builtin` is actually on the Route axis. Off is for an exit
+		// that IS the far side of those ranges (WireGuard / Tailscale); they stay
+		// permitted either way.
+		"private_direct": rules.BypassPrivate(),
 	})
+}
+
+// handleSetDirectlistPrivate toggles the built-in private/LAN Route bypass.
+// Separate from the entry CRUD because it is not an entry: the built-in ranges
+// stay read-only (no footgun to delete nine rows one by one), and this is the
+// one deliberate switch that takes them off the Route axis.
+func (s *Server) handleSetDirectlistPrivate(w http.ResponseWriter, r *http.Request) {
+	if s.dl == nil {
+		writeErr(w, http.StatusServiceUnavailable, "directlist not available")
+		return
+	}
+	var req struct {
+		PrivateDirect *bool `json:"private_direct"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "bad json")
+		return
+	}
+	if req.PrivateDirect == nil {
+		writeErr(w, http.StatusBadRequest, "private_direct is required")
+		return
+	}
+	prev := s.dl.Get()
+	rules, err := s.dl.SetPrivateDirect(*req.PrivateDirect)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	var apply func(directlist.Rules) error
+	if s.dlApplier != nil {
+		apply = s.dlApplier.SetDirectList
+	}
+	if applyOrRollback(w, rules, prev, apply, s.dl.Set, "apply directlist: ") {
+		return
+	}
+	writeJSON(w, http.StatusOK, rules)
 }
 
 func (s *Server) handleAddDirectlist(w http.ResponseWriter, r *http.Request) {

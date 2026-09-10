@@ -357,7 +357,15 @@ type ACLList struct {
 	// Notes are optional remarks keyed as "<dim>:<value>" (e.g. "ip:1.2.3.4").
 	// Informational only — never consulted by the data plane.
 	Notes map[string]string `json:"notes,omitempty"`
+	// PrivateDirect (No-Proxy only) reports whether Builtin is actually on the
+	// Route axis. Off is for an exit that IS the far side of those ranges
+	// (WireGuard / Tailscale); they stay permitted either way. Absent = on.
+	PrivateDirect *bool `json:"private_direct,omitempty"`
 }
+
+// BypassPrivate reports whether the built-in LAN/private ranges egress direct.
+// Absent means yes, which is what every default install means.
+func (l ACLList) BypassPrivate() bool { return l.PrivateDirect == nil || *l.PrivateDirect }
 
 // FinalConfig is the catch-all egress for permitted-but-unrouted traffic.
 type FinalConfig struct {
@@ -415,6 +423,13 @@ type Rules struct {
 }
 
 // DirectList is the no-proxy / bypass snapshot (mirrors directlist.Rules).
+// DirectList is the no-proxy half of a posture slot / profile snapshot.
+//
+// It deliberately has no PrivateDirect: that field says whether this machine's
+// exit IS the far side of the built-in LAN ranges, which is a fact about the
+// endpoint the gateway dials, not a policy a snapshot should carry. Adding it
+// here would make every slot saved before it existed switch the bypass back on
+// when activated. internal/api keeps it across switches instead.
 type DirectList struct {
 	Domains []string          `json:"domains"`
 	IPs     []string          `json:"ips"`

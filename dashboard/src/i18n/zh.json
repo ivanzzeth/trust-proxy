@@ -134,7 +134,10 @@
       "ipHint": "这些目标 IP/CIDR 走直连（绝不经代理）——前提是已许可。",
       "ipPh": "203.0.113.0/24",
       "builtinTitle": "内置（LAN / 私网）",
-      "builtinHint": "常见私网、环回、链路本地、CGNAT 网段在流量已许可时始终直连——无需手动添加。"
+      "builtinHint": "常见私网、环回、链路本地、CGNAT 网段在流量已许可时始终直连——无需手动添加。",
+      "privateToggle": "这些网段直连",
+      "privateToggleHint": "默认开启：上面这些网段始终直连出网。只有当你的出口**就是**这些网段的对侧时才关掉它——比如承载 10.0.0.0/8 的 WireGuard / Tailscale 端点——此时它们应当跟随 Route/Final。",
+      "privateOffWarn": "LAN 与环回现在跟随 Route/Final，不再直连。它们仍然是被许可的——改变的是去哪，不是能不能去。如果你的出口并不真的承载这些网段，内网访问会断。"
     }
   },
   "auth": {
