@@ -126,3 +126,54 @@ func TestEligibleSnapshotFollowsFilterEligibleNodes(t *testing.T) {
 		t.Fatal("an airport quota line is scorable")
 	}
 }
+
+// A subscription ships rows shaped like proxies that are really quota text.
+// They are kept out of every urltest group, so they can never carry a byte — but
+// the score list was built from the raw node list, and all three showed up at
+// "100, preferred", indistinguishable from the best real exit in the table.
+func TestScoreListDropsAirportInfoLines(t *testing.T) {
+	m := &Manager{scores: proxyscore.New(filepath.Join(t.TempDir(), "scores.json"), proxyscore.Config{})}
+	m.nodes = []apitypes.Node{
+		scoreNode("🇯🇵 Japan丨01"),
+		scoreNode("35.77 GB | 300 GB"),
+		scoreNode("Expire Date: 2027-07-23"),
+		scoreNode("Traffic Reset: 25 Days Left"),
+	}
+
+	got := map[string]bool{}
+	for _, tag := range m.MemberTags() {
+		got[tag] = true
+	}
+	if !got["🇯🇵 Japan丨01"] {
+		t.Fatal("a real node is missing from the score list")
+	}
+	for _, junk := range []string{"35.77 GB | 300 GB", "Expire Date: 2027-07-23", "Traffic Reset: 25 Days Left"} {
+		if got[junk] {
+			t.Fatalf("airport info line %q is listed as a scorable member", junk)
+		}
+	}
+
+	for _, v := range m.Scores(nil) {
+		if v.Tag != "🇯🇵 Japan丨01" {
+			t.Fatalf("score snapshot contains %q", v.Tag)
+		}
+	}
+}
+
+// A node the operator disabled is still a node: its history is usually why they
+// disabled it, so it must not vanish from the table the way junk does.
+func TestScoreListKeepsDisabledNodes(t *testing.T) {
+	m := &Manager{scores: proxyscore.New(filepath.Join(t.TempDir(), "scores.json"), proxyscore.Config{})}
+	m.nodes = []apitypes.Node{scoreNode("🇯🇵 Japan丨01"), scoreNode("🇭🇰 Hong Kong丨09")}
+	m.disabledTags = map[string]bool{"🇭🇰 Hong Kong丨09": true}
+
+	found := false
+	for _, tag := range m.MemberTags() {
+		if tag == "🇭🇰 Hong Kong丨09" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("an operator-disabled node disappeared from the score list")
+	}
+}

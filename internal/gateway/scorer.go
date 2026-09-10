@@ -140,11 +140,24 @@ func (m *Manager) Scores(tags []string) []proxyscore.View {
 // MemberTags lists the outbound tags currently in the proxy group: nodes,
 // gateway exits and enabled endpoints, named exactly as the data plane names
 // them.
+//
+// Airport info lines are dropped. A subscription ships rows like
+// "35.77 GB | 300 GB", "Expire Date: 2027-07-23" and "Traffic Reset: 25 Days
+// Left" — quota text shaped like a proxy. They are already kept out of every
+// urltest group, so they can never carry a byte, but the score list was built
+// from the raw node list and showed all three sitting at "100, preferred",
+// indistinguishable from the best real exit in the table (observed on a live
+// gateway). A row that cannot be selected has no score to report.
+//
+// Operator-disabled nodes stay: a disabled node is a real exit somebody turned
+// off, and its history is usually the reason they did.
 func (m *Manager) MemberTags() []string {
 	m.mu.Lock()
 	nodes := append(append([]apitypes.Node(nil), m.nodes...), m.gwExits...)
 	eps := append([]apitypes.Endpoint(nil), m.endpoints...)
 	m.mu.Unlock()
+	// nil disabled set: FilterEligibleNodes then removes junk only.
+	nodes = FilterEligibleNodes(nodes, nil)
 	var epTags []string
 	for _, e := range eps {
 		if e.Enabled && e.Tag != "" {
