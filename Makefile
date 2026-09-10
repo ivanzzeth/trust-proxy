@@ -22,11 +22,16 @@ LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 # `make` on its own lists what there is to run.
 .DEFAULT_GOAL := help
 
-# Redeploy defaults (override: make redeploy MODE=manual)
-DATA_DIR  ?= $(HOME)/.trust-proxy
+# redeploy passes nothing by default: `install` reads this machine's own data
+# directory, config and capture mode. Set MODE only to *change* the mode.
+#
+# There used to be DATA_DIR ?= $(HOME)/.trust-proxy here, handed to a sudo'd
+# serve. Two rules at once: the user-level data directory does not exist any
+# more, and root writing into a login user's home is exactly what poisons that
+# directory for the desktop shell afterwards (the failure shows up three steps
+# later as "the app will not open").
+MODE      ?=
 CONFIG    ?=
-MODE      ?= tun
-PID_FILE  ?= $(DATA_DIR)/serve.pid
 
 ## Show the targets and what they are for (this is what plain `make` does).
 ##
@@ -220,15 +225,26 @@ cross:
 build-embed: build-ui
 	go build -tags "$(TAGS) embed_ui" -ldflags "$(LDFLAGS)" -o trust-proxy .
 
-## Build embedded UI + binary, then restart the daemon.
-## One sudo wraps stop+start (one password). Override MODE=manual to skip root if unused.
+## Build the embedded-UI binary and install it over the running service.
+## One sudo. `install` is idempotent — re-running it IS the upgrade.
+##
+## This target used to start `serve --daemon` from the repo with
+## --data $HOME/.trust-proxy --mode tun. Everything about that is now wrong:
+## the process would not be owned by launchd/systemd (so `env` reports
+## `takeover` and the service is never the thing running), root would write
+## into a login user's home, --mode would override whatever this machine has
+## in its store, and it never stopped the real service — so the new instance
+## just failed to bind 21584 and the operator was told "done".
+##
+## `install` does the whole job instead: managed copy -> service definition ->
+## restart -> wait for it to answer. It leaves the data directory, the capture
+## mode and the policy alone, which is what makes it safe to run on a machine
+## that is working.
 redeploy: build-embed
-	@echo "==> restarting serve (data=$(DATA_DIR) mode=$(MODE))"
-	sudo sh -c '$(CURDIR)/trust-proxy proxy stop --pid "$(PID_FILE)" 2>/dev/null || true; \
-		sleep 1; \
-		cd "$(CURDIR)" && ./trust-proxy serve --daemon --data "$(DATA_DIR)" $(if $(CONFIG),-c "$(CONFIG)",) --mode "$(MODE)"'
+	@echo "==> installing $$(./trust-proxy --version) over the running service"
+	sudo $(CURDIR)/trust-proxy install $(if $(MODE),--mode "$(MODE)",) $(if $(CONFIG),-c "$(CONFIG)",)
 	@echo "==> done. UI http://127.0.0.1:21585/  (hard-refresh if needed)"
-	@echo "    stop:  sudo $(CURDIR)/trust-proxy proxy stop --pid $(PID_FILE)"
+	@echo "    check: ./trust-proxy env --json   (action should be \"attach\")"
 
 ## Cut a release: write the version everywhere it has to be a literal, run the
 ## gates, commit and tag. `make release VERSION=0.10.0` (add PUSH=1 to push,
