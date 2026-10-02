@@ -313,7 +313,7 @@ func TestPresets_DevRoutesBulkDependencyDownloadsDirect(t *testing.T) {
 		t.Fatal("Dev preset missing")
 	}
 	want := map[string]bool{
-		"deb.debian.org": false, "registry.npmjs.org": false,
+		"deb.debian.org": false, "nodejs.org": false, "registry.npmjs.org": false,
 		"files.pythonhosted.org": false, "pypi.org": false,
 		"release-assets.githubusercontent.com": false, "storage.googleapis.com": false,
 	}

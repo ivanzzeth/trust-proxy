@@ -71,6 +71,7 @@ var Presets = []apitypes.PackPreset{
 			// githubusercontent.com proxy rule (first match wins).
 			directRules("Dev",
 				"deb.debian.org",
+				"nodejs.org",
 				"registry.npmjs.org",
 				"files.pythonhosted.org", "pypi.org",
 				"release-assets.githubusercontent.com",
