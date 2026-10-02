@@ -42,11 +42,12 @@ func tightenDataDir(dir string) (changed bool) {
 // tightenLogFile narrows the daemon log, which neither our umask nor an explicit
 // mode can reach.
 //
-// The service does not run `serve --daemon`: systemd redirects stdout/stderr with
-// StandardOutput=append: and launchd with StandardOutPath, so the *service manager*
-// creates the file, at 0644, and neither offers a way to ask for anything else. It
-// matters because the log is not boring — it carries the one-time bootstrap claim
-// code verbatim, every destination every account reaches, and sniffed SNI.
+// Legacy service units redirected stdout/stderr directly to this path, so the
+// service manager created it at 0644. Current units let the in-process rotating
+// logger own the file, but existing installations keep the old mode until it is
+// explicitly narrowed. It matters because the log is not boring — it carries
+// the one-time bootstrap claim code verbatim, every destination every account
+// reaches, and sniffed SNI.
 //
 // Best-effort and idempotent: run at startup, after the manager has created the
 // file (or before, in which case there is nothing to do and the next start gets it).

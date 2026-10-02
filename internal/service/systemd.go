@@ -48,6 +48,10 @@ func (c Config) Unit() (string, error) {
 
 	b.WriteString("[Service]\n")
 	b.WriteString("Type=simple\n")
+	// systemd owns the process lifecycle, so serve runs in the foreground. Mark
+	// it as the service child to install the in-process diode+lumberjack stack;
+	// otherwise retention.json never governs serve.log.
+	b.WriteString("Environment=TP_DAEMON=1\n")
 	b.WriteString("ExecStart=" + strings.Join(quoted, " ") + "\n")
 	// Same reasoning as launchd's KeepAlive: a gateway that stays down stops
 	// enforcing policy. RestartSec keeps a config error from becoming a spin.
@@ -60,10 +64,11 @@ func (c Config) Unit() (string, error) {
 	// /dev/net/tun has to stay reachable, so DevicePolicy is left alone.
 	b.WriteString("StateDirectory=trust-proxy\n")
 	b.WriteString("WorkingDirectory=" + systemdQuote(filepath.Dir(c.Binary)) + "\n")
-	// The log goes to the same file as on macOS *and* to the journal, so
-	// `journalctl -u trust-proxy` works the way a Linux admin expects.
-	b.WriteString("StandardOutput=append:" + systemdQuote(c.LogPath) + "\n")
-	b.WriteString("StandardError=append:" + systemdQuote(c.LogPath) + "\n")
+	// serve owns serve.log through lumberjack. A second systemd append fd would
+	// bypass rotation and can keep writing into a renamed generation. Journal is
+	// a bounded fallback for failures before logging.Setup is installed.
+	b.WriteString("StandardOutput=journal\n")
+	b.WriteString("StandardError=journal\n")
 	// A gateway that is killed mid-reconfiguration can leave a machine without a
 	// route, so it gets time to put things back (mode revert, tun teardown).
 	b.WriteString("TimeoutStopSec=20\n")

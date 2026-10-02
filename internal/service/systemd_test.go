@@ -24,6 +24,9 @@ func TestUnitRunsTheGatewayWithTheGivenPaths(t *testing.T) {
 	}
 	for _, want := range []string{
 		"ExecStart=/usr/local/libexec/trust-proxy serve -c /var/lib/trust-proxy/config.json --data /var/lib/trust-proxy --api-addr 127.0.0.1:21585",
+		"Environment=TP_DAEMON=1",
+		"StandardOutput=journal",
+		"StandardError=journal",
 		"Restart=always",
 		"WantedBy=multi-user.target",
 		"CAP_NET_ADMIN", // TUN would not work without it
@@ -89,8 +92,24 @@ func TestUnitQuotesPathsWithSpaces(t *testing.T) {
 	if !strings.Contains(u, `--data "/home/ivan/My Gateway/data"`) {
 		t.Fatalf("data dir with a space is not quoted:\n%s", u)
 	}
-	if !strings.Contains(u, `StandardOutput=append:"/home/ivan/My Gateway/data/serve.log"`) {
-		t.Fatalf("log path with a space is not quoted:\n%s", u)
+	if strings.Contains(u, "StandardOutput=append:") || strings.Contains(u, "StandardError=append:") {
+		t.Fatalf("service manager must not append to serve.log outside lumberjack:\n%s", u)
+	}
+}
+
+// serve.log has exactly one owner: the in-process lumberjack writer. A service
+// manager append fd bypasses retention and keeps writing to an old inode across
+// rotation; this is how a configured 32 MB log can grow without bound.
+func TestUnitNeverWritesServeLogOutsideTheRotator(t *testing.T) {
+	u, err := linuxConfig().Unit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(u, linuxConfig().LogPath) {
+		t.Fatalf("unit must not redirect stdout/stderr directly to serve.log:\n%s", u)
+	}
+	if !strings.Contains(u, "Environment=TP_DAEMON=1") {
+		t.Fatalf("systemd foreground process would not install the rotating logger:\n%s", u)
 	}
 }
 
