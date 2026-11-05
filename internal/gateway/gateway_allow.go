@@ -32,8 +32,10 @@ import (
 // Strict, NO gate is emitted and the catch-all stays blocked (fail-closed).
 // Split skips the L3 gate (default-allow) and always flips catch-all to Final.
 //
-// Custom routing rules (cr) are the ordered, top-priority slice of L4. A node
-// egress whose target tag isn't live is skipped (self-heal).
+// No-proxy is the top-priority L4 escape hatch: an operator who explicitly
+// bypasses a metered or broken proxy must not be overridden by a broad custom
+// pack rule. Custom routing rules (cr) remain ordered immediately below it. A
+// node egress whose target tag isn't live is skipped (self-heal).
 func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets ruleset.Sets, dl directlist.Rules, cr customrules.Rules, memberTags []string, final, posture string) error {
 	routeRaw, ok := cfg["route"]
 	if !ok {
@@ -142,13 +144,17 @@ func injectAllow(cfg map[string]json.RawMessage, wl whitelist.Rules, sets rulese
 		directIPs = append(directIPs, privateCIDRs...)
 	}
 
-	// L4: custom → no-proxy → route-proxy RS → route-direct RS.
+	// L4: no-proxy → custom → route-proxy RS → route-direct RS.
+	//
+	// This ordering is intentional. The old custom-first order meant an exact
+	// no-proxy entry such as release-assets.githubusercontent.com still matched
+	// the Dev pack's broader githubusercontent.com proxy suffix first.
 	var egress []json.RawMessage
-	egress = append(egress, customEgress...)
 	if len(dlSfx) > 0 {
 		r, _ := json.Marshal(map[string]any{"domain_suffix": dlSfx, "action": "route", "outbound": "direct"})
 		egress = append(egress, r)
 	}
+	egress = append(egress, customEgress...)
 	if len(dlRgx) > 0 {
 		r, _ := json.Marshal(map[string]any{"domain_regex": dlRgx, "action": "route", "outbound": "direct"})
 		egress = append(egress, r)

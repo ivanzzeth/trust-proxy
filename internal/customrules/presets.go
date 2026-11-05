@@ -113,24 +113,30 @@ var Presets = []apitypes.PackPreset{
 	{
 		Name:        "Dev",
 		Description: "GitHub + Microsoft-dev via geosite (permit+proxy), plus Git SSH / registry pins.",
-		Exit:        apitypes.PackExitAuto,
+		Exit:        apitypes.PackExitMixed,
 		RuleSets:    catalogRSRole(apitypes.RuleRolePermitRouteProxy, "geosite-github", "geosite-microsoft-dev"),
 		Rules: concatRules(
+			// Bulk dependency artifacts are intentionally direct. These hosts are
+			// high-volume bootstrap traffic from disposable sandboxes; forcing them
+			// through a metered proxy caused sustained 25-78 Mbps proxy-node ingress.
+			// Keep the more-specific GitHub release-assets rule before the broad
+			// githubusercontent.com proxy rule (first match wins).
+			directRules("Dev",
+				"deb.debian.org",
+				"nodejs.org",
+				"registry.npmjs.org",
+				"files.pythonhosted.org", "pypi.org",
+				"release-assets.githubusercontent.com",
+				"storage.googleapis.com"),
 			proxyRules("Dev", "ssh.github.com", "github.com", "githubusercontent.com"),
 			proxyCIDRs("Dev", githubGitCIDRs...),
 			proxyRules("Dev", "code.visualstudio.com", "vscode.download.prss.microsoft.com"),
 			proxyRules("Dev",
-				"npmjs.org", "npmjs.com", "pypi.org", "pythonhosted.org",
+				"npmjs.com", "pythonhosted.org",
 				"pkg.go.dev", "proxy.golang.org", "sum.golang.org",
 				"docker.io", "docker.com"),
-			// OS package repos. Without these a `docker build` running
-			// `apt-get install` falls through to Final=direct and pulls from
-			// the origin CDN at ~50 KB/s (measured: 6.4 MB/s once proxied) —
-			// a base-image layer that should take seconds takes half an hour.
-			// Language registries alone are not enough: every Dockerfile hits
-			// apt/apk before it ever hits pip or npm.
 			proxyRules("Dev",
-				"deb.debian.org", "security.debian.org",
+				"security.debian.org",
 				"archive.ubuntu.com", "security.ubuntu.com", "ports.ubuntu.com",
 				"dl-cdn.alpinelinux.org"),
 		),

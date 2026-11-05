@@ -1111,6 +1111,26 @@ func TestCustomRules_AllowSetAndOrder(t *testing.T) {
 	}
 }
 
+func TestNoProxyOverridesBroaderCustomProxyRule(t *testing.T) {
+	dl := directlist.Rules{Domains: []string{"release-assets.githubusercontent.com"}}
+	cr := customrules.Rules{Rules: []apitypes.CustomRule{{
+		Match: apitypes.CustomMatchDomainSuffix, Value: "githubusercontent.com",
+		Egress: apitypes.CustomEgressProxy, Enabled: true,
+	}}}
+	merged := buildCR(t, whitelist.Rules{}, blacklist.Rules{}, dl, cr, ruleset.Sets{}, nil)
+	parseValidate(t, merged)
+	rules := routeRules(t, merged)
+	directIdx := firstIdx(rules, func(r map[string]any) bool {
+		return containsStr(r["domain_suffix"], "release-assets.githubusercontent.com") && r["outbound"] == "direct"
+	})
+	proxyIdx := firstIdx(rules, func(r map[string]any) bool {
+		return containsStr(r["domain_suffix"], "githubusercontent.com") && r["outbound"] == ProxyGroupTag
+	})
+	if directIdx < 0 || proxyIdx < 0 || directIdx >= proxyIdx {
+		t.Fatalf("no-proxy must precede broader custom proxy: direct=%d proxy=%d rules=%v", directIdx, proxyIdx, rules)
+	}
+}
+
 // A node rule routes to that outbound iff the tag is a live member; otherwise
 // the whole rule is skipped (self-heal) and the box still builds.
 func TestCustomRules_NodeSelfHeal(t *testing.T) {

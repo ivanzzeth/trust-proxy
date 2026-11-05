@@ -311,6 +311,52 @@ func TestPresets_DevCoversGitSSH(t *testing.T) {
 	}
 }
 
+func TestPresets_DevRoutesBulkDependencyDownloadsDirect(t *testing.T) {
+	var dev *apitypes.PackPreset
+	for i := range Presets {
+		if Presets[i].Name == "Dev" {
+			dev = &Presets[i]
+			break
+		}
+	}
+	if dev == nil {
+		t.Fatal("Dev preset missing")
+	}
+	want := map[string]bool{
+		"deb.debian.org": false, "nodejs.org": false, "registry.npmjs.org": false,
+		"files.pythonhosted.org": false, "pypi.org": false,
+		"release-assets.githubusercontent.com": false, "storage.googleapis.com": false,
+	}
+	for _, r := range dev.Rules {
+		if _, ok := want[r.Value]; !ok {
+			continue
+		}
+		if r.Action != apitypes.CustomActionDirect {
+			t.Fatalf("bulk dependency host %q action = %q, want direct", r.Value, r.Action)
+		}
+		want[r.Value] = true
+	}
+	for domain, found := range want {
+		if !found {
+			t.Errorf("bulk dependency host %q missing from direct rules", domain)
+		}
+	}
+	// release-assets is under githubusercontent.com. The specific direct rule
+	// must precede that broad proxy suffix or first-match routing still proxies it.
+	asset, broad := -1, -1
+	for i, r := range dev.Rules {
+		if r.Value == "release-assets.githubusercontent.com" {
+			asset = i
+		}
+		if r.Value == "githubusercontent.com" {
+			broad = i
+		}
+	}
+	if asset < 0 || broad < 0 || asset >= broad {
+		t.Fatalf("release-assets direct rule must precede githubusercontent proxy rule: asset=%d broad=%d", asset, broad)
+	}
+}
+
 // Telegram must include official DC CIDRs — live history showed thousands of
 // IP-only blocks (91.108.56.125 / 149.154.171.5) with geosite domains alone.
 func TestPresets_TelegramCoversOfficialCIDRs(t *testing.T) {
