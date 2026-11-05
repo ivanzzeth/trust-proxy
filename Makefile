@@ -17,7 +17,7 @@ LDFLAGS := -X github.com/ivanzzeth/trust-proxy/cmd.version=$(VERSION)
 .PHONY: help run app build build-ui build-go build-embed build-app cross check-build-owner tidy \
 	e2e-fleet e2e-linux e2e-tun e2e-tun-dind e2e-policy e2e-dataplane e2e-macos e2e-desktop dashboard dashboard-dev dashboard-test \
 	deps clean e2e redeploy desktop desktop-dev desktop-sidecar app-service-hint \
-	release version-check
+	release release-init desktop-release version-check
 
 # `make` on its own lists what there is to run.
 .DEFAULT_GOAL := help
@@ -246,20 +246,31 @@ redeploy: build-embed
 	@echo "==> done. UI http://127.0.0.1:21585/  (hard-refresh if needed)"
 	@echo "    check: ./trust-proxy env --json   (action should be \"attach\")"
 
-## Cut a release: write the version everywhere it has to be a literal, run the
-## gates, commit and tag. `make release VERSION=0.10.0` (add PUSH=1 to push,
-## which is what actually publishes). `make version-check` just reports.
-##
-## The Go binary takes its version from `git describe`, so only the desktop
-## shell needs this — but its number lives in three files, and three files is
-## three chances to update two of them (they had reached 0.7.0 / 0.9.0 / 0.7.0).
-## cmd/version_test.go fails if they disagree, so this is not optional hygiene.
+## release-init — 生成 deploy/env/prod/（API_TOKEN 自动生成，不覆盖已有）
+release-init:
+	./scripts/release-init.sh $(or $(ENV),prod)
+
+## release — 生产发布（配置见 deploy/env/prod/，不入库）
+##   make release TAG=v0.13.0
+##   make release ONLY=preflight
+##   make release SKIP=build,push TAG=v0.13.0   # 只升 helm / 回滚
+## ⛔ ACK 必须 GATEWAY_MODE=manual（默认）；禁止 TUN 接管集群网络。
 release:
-	@test -n "$(VERSION)" || { echo "usage: make release VERSION=0.10.0 [PUSH=1]"; exit 1; }
-	@scripts/release.sh "$(VERSION)" $(if $(PUSH),--push,)
+	./scripts/release.sh --mode $(or $(MODE),manual) \
+		$(if $(TAG),--tag $(TAG),) \
+		$(if $(ONLY),--only $(ONLY),) \
+		$(if $(SKIP),--skip $(SKIP),) \
+		$(if $(ENV_DIR),--env-dir $(ENV_DIR),) \
+		$(if $(DRY_RUN),--dry-run,)
+
+## desktop-release — 桌面壳版本号三处对齐、跑门禁、打 tag（与 K8s 发布无关）
+##   make desktop-release VERSION=0.10.0 [PUSH=1]
+desktop-release:
+	@test -n "$(VERSION)" || { echo "usage: make desktop-release VERSION=0.10.0 [PUSH=1]"; exit 1; }
+	@scripts/cut-desktop-release.sh "$(VERSION)" $(if $(PUSH),--push,)
 
 version-check:
-	@scripts/release.sh --check
+	@scripts/cut-desktop-release.sh --check
 
 tidy:
 	go mod tidy

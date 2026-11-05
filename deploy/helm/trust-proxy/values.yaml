@@ -7,6 +7,8 @@
 image:
   repository: ghcr.io/ivanzzeth/trust-proxy
   tag: "" # defaults to .Chart.AppVersion
+  # 有 digest 时模板用 repo@sha256:…（make release 注入）；空则回落 tag。
+  digest: ""
   pullPolicy: IfNotPresent
   pullSecrets: []
 

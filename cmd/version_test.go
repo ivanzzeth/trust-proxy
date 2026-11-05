@@ -15,7 +15,7 @@ import (
 // a literal, and three literals is three chances to update two of them. They
 // had already reached 0.7.0 / 0.9.0 / 0.7.0 before anyone looked.
 //
-// scripts/release.sh is the only thing that should write them. This is what
+// scripts/cut-desktop-release.sh is the only thing that should write them. This is what
 // makes that true: a script nobody is forced to run drifts exactly as fast as
 // no script at all, and the symptom — an .app reporting a version that is not
 // the release it came from — surfaces long after the commit that caused it.
@@ -39,7 +39,7 @@ func TestTheDesktopVersionAgreesWithItself(t *testing.T) {
 		}
 		m := f.re.FindSubmatch(b)
 		if m == nil {
-			t.Fatalf("%s has no version field any more — scripts/release.sh writes it, "+
+			t.Fatalf("%s has no version field any more — scripts/cut-desktop-release.sh writes it, "+
 				"so it has to be findable the same way", f.path)
 		}
 		found[f.path] = string(m[1])
@@ -53,7 +53,7 @@ func TestTheDesktopVersionAgreesWithItself(t *testing.T) {
 		}
 		if v != first {
 			t.Fatalf("the desktop version disagrees with itself:\n  %s = %s\n  %s = %s\n\n"+
-				"set them all at once:  scripts/release.sh <version>", firstPath, first, path, v)
+				"set them all at once:  scripts/cut-desktop-release.sh <version>", firstPath, first, path, v)
 		}
 	}
 }

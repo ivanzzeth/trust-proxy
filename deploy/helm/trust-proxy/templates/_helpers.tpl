@@ -45,6 +45,20 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
+{{/*
+镜像引用：有 digest 就用 `repo@sha256:…`，否则回落 `repo:tag`。
+
+为什么 digest 优先：tag 可变。同一个 tag 再推一次，`IfNotPresent` 会让 kubelet
+继续用节点上缓存的旧层 —— 表现是「发布成功、pod Running、行为却还是旧的」，
+而且没有任何东西是红的。digest 让这件事在结构上不可能发生。
+形状照抄 ai-sandbox / ai-router。
+*/}}
 {{- define "trust-proxy.image" -}}
-{{- printf "%s:%s" .Values.image.repository (default .Chart.AppVersion .Values.image.tag) -}}
+{{- with .Values.image -}}
+{{- if .digest -}}
+{{ .repository }}@{{ .digest }}
+{{- else -}}
+{{ .repository }}:{{ .tag | default $.Chart.AppVersion }}
+{{- end -}}
+{{- end -}}
 {{- end -}}

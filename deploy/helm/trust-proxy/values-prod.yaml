@@ -1,0 +1,18 @@
+# 生产差异。镜像 / Secret 名由 make release --set。
+#
+# ⛔ mode 必须是 manual：ACK 上给 AI 网关（及可选用 HTTPS_PROXY 的 workload）
+# 做显式出口代理。mode=tun 会接管节点转发，可能拖垮集群其他网络通信。
+# release.sh 也会再次门禁拒绝 TUN（除非 ALLOW_TUN_MODE=1）。
+
+mode: manual
+posture: split
+autoBlock: false
+
+# 节点 opt-in：kubectl label node <node> trust-proxy.io/gateway=true
+nodeSelector:
+  trust-proxy.io/gateway: "true"
+
+image:
+  pullPolicy: IfNotPresent
+  # digest 由 release --set；空则回落 tag
+  digest: ""

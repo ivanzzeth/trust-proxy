@@ -4,6 +4,10 @@
 
 data/
 
+# 生产环境本地配置包(kubeconfig + 凭据),整目录不入库。模板在 deploy/env/prod.example/。
+/deploy/env/prod/
+/.release/
+
 # shadcn dashboard (our console) — regenerable artifacts
 /dashboard/dist
 /dashboard/node_modules
